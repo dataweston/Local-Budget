@@ -1,0 +1,242 @@
+import { SquareClient, SquareEnvironment, SquareError } from 'square';
+
+const squareEnv = process.env.SQUARE_ENV || process.env.SQUARE_ENVIRONMENT;
+const isSquareProduction = squareEnv === 'production';
+const squareAppId =
+  process.env.SQUARE_APPLICATION_ID || process.env.SQUARE_APP_ID || '';
+const squareAppSecret =
+  process.env.SQUARE_APPLICATION_SECRET || process.env.SQUARE_APP_SECRET || '';
+
+// Square client configuration (SDK v43+)
+const squareClient = new SquareClient({
+  token: process.env.SQUARE_ACCESS_TOKEN || '',
+  environment: isSquareProduction
+    ? SquareEnvironment.Production
+    : SquareEnvironment.Sandbox,
+});
+
+export { squareClient };
+
+// ============================================================================
+// OAuth Flow Helpers
+// ============================================================================
+
+const SQUARE_OAUTH_URL = isSquareProduction
+  ? 'https://connect.squareup.com/oauth2/authorize'
+  : 'https://connect.squareupsandbox.com/oauth2/authorize';
+
+// Generate OAuth authorization URL
+export function getSquareOAuthUrl(state: string) {
+  if (!squareAppId) {
+    throw new Error('Missing Square application id');
+  }
+  const params = new URLSearchParams({
+    client_id: squareAppId,
+    scope: [
+      'PAYMENTS_READ',
+      'PAYMENTS_WRITE',
+      'ORDERS_READ',
+      'ORDERS_WRITE',
+      'MERCHANT_PROFILE_READ',
+      'BANK_ACCOUNTS_READ',
+      'CUSTOMERS_READ',
+      'ITEMS_READ',
+    ].join(' '),
+    state,
+    session: 'false',
+  });
+
+  return `${SQUARE_OAUTH_URL}?${params.toString()}`;
+}
+
+// Exchange authorization code for access token
+export async function exchangeSquareAuthCode(code: string) {
+  if (!squareAppId || !squareAppSecret) {
+    throw new Error('Missing Square application credentials');
+  }
+  const response = await squareClient.oAuth.obtainToken({
+    clientId: squareAppId,
+    clientSecret: squareAppSecret,
+    grantType: 'authorization_code',
+    code,
+  });
+
+  return response;
+}
+
+// Refresh an expired access token
+export async function refreshSquareToken(refreshToken: string) {
+  if (!squareAppId || !squareAppSecret) {
+    throw new Error('Missing Square application credentials');
+  }
+  const response = await squareClient.oAuth.obtainToken({
+    clientId: squareAppId,
+    clientSecret: squareAppSecret,
+    grantType: 'refresh_token',
+    refreshToken,
+  });
+
+  return response;
+}
+
+// ============================================================================
+// Banking & Balance Helpers
+// ============================================================================
+
+// Create a client with a specific access token (for OAuth users)
+function createUserClient(accessToken: string) {
+  return new SquareClient({
+    token: accessToken,
+    environment: isSquareProduction
+      ? SquareEnvironment.Production
+      : SquareEnvironment.Sandbox,
+  });
+}
+
+// Get all linked bank accounts
+export async function getSquareBankAccounts(accessToken?: string) {
+  const client = accessToken ? createUserClient(accessToken) : squareClient;
+  
+  // SDK v43 returns a Page object with data property
+  const page = await client.bankAccounts.list();
+  const bankAccounts = page.data || [];
+  
+  return bankAccounts;
+}
+
+// Get Square balance (from locations)
+export async function getSquareBalance(accessToken?: string) {
+  const client = accessToken ? createUserClient(accessToken) : squareClient;
+  
+  // Get all locations to aggregate balances
+  const locationsResponse = await client.locations.list();
+  const locations = locationsResponse.locations || [];
+  
+  // Each location has its own balance info
+  return locations.map((location) => ({
+    locationId: location.id,
+    name: location.name,
+    currency: location.currency,
+    // Note: Actual balance comes from cash drawer or bank deposits
+  }));
+}
+
+// ============================================================================
+// Transaction/Payment Helpers
+// ============================================================================
+
+// Payment type for internal use
+interface SquarePaymentRecord {
+  id?: string;
+  locationId?: string;
+  amountMoney?: { amount?: bigint; currency?: string };
+  createdAt?: string;
+  note?: string;
+  status?: string;
+  sourceType?: string;
+  customerId?: string;
+}
+
+// List payments (transactions) with pagination
+export async function listSquarePayments(options: {
+  accessToken?: string;
+  beginTime?: string;
+  endTime?: string;
+  locationId?: string;
+  limit?: number;
+}) {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+
+  // SDK v43 returns a Page object with data property
+  const page = await client.payments.list({
+    beginTime: options.beginTime,
+    endTime: options.endTime,
+    locationId: options.locationId,
+  });
+
+  const payments = (page.data || []).slice(0, options.limit || 100);
+
+  return { payments };
+}
+
+// List orders with items for detailed transaction info
+export async function listSquareOrders(options: {
+  accessToken?: string;
+  locationIds: string[];
+  limit?: number;
+}) {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+
+  const response = await client.orders.search({
+    locationIds: options.locationIds,
+    limit: options.limit || 100,
+    query: {
+      sort: {
+        sortField: 'CREATED_AT',
+        sortOrder: 'DESC',
+      },
+    },
+  });
+
+  return {
+    orders: response.orders || [],
+  };
+}
+
+// ============================================================================
+// Type Mappings
+// ============================================================================
+
+export interface SquareTransactionData {
+  id: string;
+  locationId?: string;
+  amount: number;
+  currency: string;
+  date: string;
+  description: string;
+  status: string;
+  sourceType?: string;
+  customerId?: string;
+}
+
+// Map Square payment to our format
+export function mapSquarePayment(payment: any): SquareTransactionData {
+  return {
+    id: payment.id,
+    locationId: payment.locationId,
+    amount: Number(payment.amountMoney?.amount || 0) / 100, // Square uses cents
+    currency: payment.amountMoney?.currency || 'USD',
+    date: payment.createdAt,
+    description: payment.note || `Square Payment ${payment.id.slice(-6)}`,
+    status: payment.status,
+    sourceType: payment.sourceType,
+    customerId: payment.customerId,
+  };
+}
+
+// Map Square order to our format
+export function mapSquareOrder(order: any): SquareTransactionData {
+  const totalMoney = order.totalMoney || { amount: 0, currency: 'USD' };
+  return {
+    id: order.id,
+    locationId: order.locationId,
+    amount: Number(totalMoney.amount || 0) / 100,
+    currency: totalMoney.currency || 'USD',
+    date: order.createdAt,
+    description: order.lineItems?.map((item: any) => item.name).join(', ') || `Square Order ${order.id.slice(-6)}`,
+    status: order.state,
+  };
+}
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+export function isSquareError(error: unknown): error is SquareError {
+  return error instanceof SquareError;
+}
+
+export function formatSquareError(error: SquareError): string {
+  const errors = error.errors || [];
+  return errors.map((e: { category?: string; detail?: string }) => `${e.category}: ${e.detail}`).join('; ') || 'Unknown Square API error';
+}

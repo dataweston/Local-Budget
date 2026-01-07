@@ -1,0 +1,599 @@
+// Prisma Schema for Local Budget
+// A personal + small-business finance system
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// AUTHENTICATION & USERS
+// ============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  accounts      Account[]
+  sessions      Session[]
+  entities      Entity[]
+  financialAccounts FinancialAccount[]
+  categories    Category[]
+  rules         ClassificationRule[]
+  receipts      Receipt[]
+  squareConnections SquareConnection[]
+  plaidItems    PlaidItem[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================================
+// ENTITIES (People, Businesses, Projects)
+// ============================================================================
+
+enum EntityType {
+  PERSON
+  BUSINESS
+  PROJECT
+}
+
+model Entity {
+  id          String     @id @default(cuid())
+  userId      String
+  type        EntityType
+  name        String
+  description String?
+  isDefault   Boolean    @default(false)
+  metadata    Json?      // Flexible storage for entity-specific data
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  financialAccounts FinancialAccount[]
+  transactionsAsPayer    Transaction[] @relation("TransactionPayer")
+  transactionsAsIncurred Transaction[] @relation("TransactionIncurred")
+
+  @@index([userId])
+  @@map("entities")
+}
+
+// ============================================================================
+// FINANCIAL ACCOUNTS (Bank, Credit, Cash)
+// ============================================================================
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  CASH
+  INVESTMENT
+  LOAN
+  OTHER
+}
+
+model FinancialAccount {
+  id              String      @id @default(cuid())
+  userId          String
+  entityId        String?     // Optional: which entity owns this account
+  name            String
+  type            AccountType
+  institution     String?
+  accountNumber   String?     // Last 4 digits only for display
+  currentBalance  Decimal     @default(0) @db.Decimal(19, 4)
+  availableBalance Decimal?   @db.Decimal(19, 4)
+  currency        String      @default("USD")
+  isActive        Boolean     @default(true)
+  
+  // Plaid integration
+  plaidAccountId  String?     @unique
+  plaidItemId     String?
+  lastSyncedAt    DateTime?
+  
+  // Square integration
+  squareConnectionId String?
+  
+  // Generic metadata for external providers
+  providerData    Json?       // Stores provider-specific data (tokens, IDs, etc.)
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  // Relations
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity           Entity?           @relation(fields: [entityId], references: [id])
+  transactions     Transaction[]
+  plaidItem        PlaidItem?        @relation(fields: [plaidItemId], references: [itemId])
+  squareConnection SquareConnection? @relation(fields: [squareConnectionId], references: [id])
+  plaidAccount     PlaidAccount?
+
+  @@index([userId])
+  @@index([plaidItemId])
+  @@index([squareConnectionId])
+  @@map("financial_accounts")
+}
+
+model PlaidItem {
+  id              String    @id @default(cuid())
+  userId          String
+  itemId          String    @unique
+  accessToken     String    // Encrypted
+  institutionId   String?
+  institutionName String?
+  status          String    @default("active")
+  errorCode       String?
+  lastSyncedAt    DateTime?
+  cursor          String?   // For incremental sync
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts       FinancialAccount[]
+  plaidAccounts  PlaidAccount[]
+
+  @@index([userId])
+  @@map("plaid_items")
+}
+
+model PlaidAccount {
+  id                 String    @id @default(cuid())
+  plaidItemId        String
+  accountId          String    @unique  // Plaid's account_id
+  name               String
+  mask               String?
+  type               String
+  subtype            String?
+  financialAccountId String?   @unique
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Relations
+  plaidItem        PlaidItem         @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
+  financialAccount FinancialAccount? @relation(fields: [financialAccountId], references: [id])
+
+  @@index([plaidItemId])
+  @@map("plaid_accounts")
+}
+
+model SquareConnection {
+  id              String    @id @default(cuid())
+  userId          String
+  merchantId      String?
+  accessToken     String    // Should be encrypted in production
+  refreshToken    String?
+  expiresAt       DateTime?
+  locationIds     String[]  @default([])
+  status          String    @default("active")
+  lastSyncedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts FinancialAccount[]
+
+  @@unique([userId, merchantId])
+  @@index([userId])
+  @@map("square_connections")
+}
+
+// ============================================================================
+// TRANSACTIONS
+// ============================================================================
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum TransactionStatus {
+  PENDING
+  POSTED
+  CANCELLED
+}
+
+enum ClassificationType {
+  COGS           // Cost of Goods Sold
+  OPERATING      // Operating expenses
+  PERSONAL       // Personal spending
+  INCOME         // Revenue
+  TRANSFER       // Internal transfers
+  REIMBURSABLE   // To be reimbursed
+  REIMBURSEMENT  // Reimbursement payment
+}
+
+model Transaction {
+  id                String              @id @default(cuid())
+  accountId         String
+  amount            Decimal             @db.Decimal(19, 4)
+  type              TransactionType
+  status            TransactionStatus   @default(POSTED)
+  
+  // Core fields
+  date              DateTime
+  description       String
+  merchantName      String?
+  
+  // Classification
+  categoryId        String?
+  classification    ClassificationType?
+  
+  // Entity tracking (who paid vs who incurred)
+  payerId           String?             // Entity that paid
+  incurredById      String?             // Entity that incurred the expense
+  
+  // External references
+  externalId        String?             // Bank/Plaid transaction ID
+  checkNumber       String?
+  
+  // User modifications
+  userDescription   String?             // User-provided description
+  notes             String?
+  isReviewed        Boolean             @default(false)
+  isReconciled      Boolean             @default(false)
+  
+  // Metadata
+  metadata          Json?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  // Relations
+  account           FinancialAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category          Category?           @relation(fields: [categoryId], references: [id])
+  payer             Entity?             @relation("TransactionPayer", fields: [payerId], references: [id])
+  incurredBy        Entity?             @relation("TransactionIncurred", fields: [incurredById], references: [id])
+  
+  lineItems         LineItem[]
+  receiptLinks      ReceiptTransaction[]
+  linkedFrom        TransactionLink[]   @relation("LinkedFrom")
+  linkedTo          TransactionLink[]   @relation("LinkedTo")
+  splits            TransactionSplit[]
+
+  @@unique([accountId, externalId])
+  @@index([accountId])
+  @@index([date])
+  @@index([categoryId])
+  @@index([classification])
+  @@map("transactions")
+}
+
+// For splitting transactions across categories/entities
+model TransactionSplit {
+  id              String              @id @default(cuid())
+  transactionId   String
+  amount          Decimal             @db.Decimal(19, 4)
+  categoryId      String?
+  classification  ClassificationType?
+  incurredById    String?
+  description     String?
+  createdAt       DateTime            @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  category    Category?   @relation(fields: [categoryId], references: [id])
+
+  @@index([transactionId])
+  @@map("transaction_splits")
+}
+
+// Links between related transactions (e.g., payment ↔ reimbursement)
+model TransactionLink {
+  id            String   @id @default(cuid())
+  fromId        String
+  toId          String
+  linkType      String   // "reimbursement", "transfer", "refund", etc.
+  amount        Decimal? @db.Decimal(19, 4) // For partial links
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  fromTransaction Transaction @relation("LinkedFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toTransaction   Transaction @relation("LinkedTo", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId, linkType])
+  @@index([fromId])
+  @@index([toId])
+  @@map("transaction_links")
+}
+
+// ============================================================================
+// CATEGORIES
+// ============================================================================
+
+model Category {
+  id              String              @id @default(cuid())
+  userId          String
+  name            String
+  icon            String?
+  color           String?
+  parentId        String?
+  defaultClassification ClassificationType?
+  isSystem        Boolean             @default(false)
+  sortOrder       Int                 @default(0)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Relations
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent       Category?          @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children     Category[]         @relation("CategoryHierarchy")
+  transactions Transaction[]
+  splits       TransactionSplit[]
+  rules        ClassificationRule[]
+
+  @@unique([userId, name, parentId])
+  @@index([userId])
+  @@map("categories")
+}
+
+// ============================================================================
+// VENDORS & ITEMS (Normalized)
+// ============================================================================
+
+model Vendor {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  normalizedName  String   // Lowercase, trimmed
+  aliases         String[] // Other names this vendor appears as
+  defaultCategoryId String?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  lineItems LineItem[]
+
+  @@index([normalizedName])
+  @@map("vendors")
+}
+
+model Item {
+  id              String   @id @default(cuid())
+  name            String
+  normalizedName  String
+  defaultCategoryId String?
+  unitOfMeasure   String?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  lineItems LineItem[]
+
+  @@index([normalizedName])
+  @@map("items")
+}
+
+// ============================================================================
+// LINE ITEMS (Receipt-level detail)
+// ============================================================================
+
+model LineItem {
+  id              String   @id @default(cuid())
+  transactionId   String?
+  receiptId       String?
+  vendorId        String?
+  itemId          String?
+  
+  description     String
+  quantity        Decimal? @db.Decimal(10, 4)
+  unitPrice       Decimal? @db.Decimal(19, 4)
+  totalPrice      Decimal  @db.Decimal(19, 4)
+  
+  categoryId      String?
+  classification  ClassificationType?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  receipt     Receipt?     @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  vendor      Vendor?      @relation(fields: [vendorId], references: [id])
+  item        Item?        @relation(fields: [itemId], references: [id])
+
+  @@index([transactionId])
+  @@index([receiptId])
+  @@map("line_items")
+}
+
+// ============================================================================
+// RECEIPTS & EVIDENCE
+// ============================================================================
+
+enum ReceiptStatus {
+  PENDING      // Just uploaded
+  PROCESSING   // OCR in progress
+  PROCESSED    // OCR complete
+  FAILED       // OCR failed
+  REVIEWED     // User has reviewed
+}
+
+model Receipt {
+  id              String        @id @default(cuid())
+  userId          String
+  status          ReceiptStatus @default(PENDING)
+  
+  // File info
+  fileName        String
+  fileType        String
+  filePath        String
+  fileSize        Int
+  
+  // Extracted data
+  vendorName      String?
+  totalAmount     Decimal?      @db.Decimal(19, 4)
+  subtotal        Decimal?      @db.Decimal(19, 4)
+  tax             Decimal?      @db.Decimal(19, 4)
+  tip             Decimal?      @db.Decimal(19, 4)
+  receiptDate     DateTime?
+  
+  // OCR metadata
+  rawOcrText      String?       @db.Text
+  ocrConfidence   Float?
+  extractedData   Json?         // Full structured extraction
+  
+  // Source tracking
+  source          String?       // "upload", "email", "api"
+  sourceId        String?       // Email ID, etc.
+  
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lineItems       LineItem[]
+  transactionLinks ReceiptTransaction[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("receipts")
+}
+
+// Many-to-many: Receipts ↔ Transactions
+model ReceiptTransaction {
+  id            String   @id @default(cuid())
+  receiptId     String
+  transactionId String
+  matchConfidence Float?   // How confident the auto-match was
+  isManual      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  receipt     Receipt     @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([receiptId, transactionId])
+  @@index([receiptId])
+  @@index([transactionId])
+  @@map("receipt_transactions")
+}
+
+// ============================================================================
+// CLASSIFICATION RULES
+// ============================================================================
+
+enum RuleMatchType {
+  EXACT
+  CONTAINS
+  STARTS_WITH
+  REGEX
+}
+
+model ClassificationRule {
+  id              String        @id @default(cuid())
+  userId          String
+  name            String
+  isActive        Boolean       @default(true)
+  priority        Int           @default(0)
+  
+  // Match conditions
+  matchField      String        // "merchantName", "description", "amount", etc.
+  matchType       RuleMatchType
+  matchValue      String
+  
+  // Actions
+  categoryId      String?
+  classification  ClassificationType?
+  incurredById    String?
+  
+  // Stats
+  timesApplied    Int           @default(0)
+  lastAppliedAt   DateTime?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@index([userId])
+  @@index([isActive])
+  @@map("classification_rules")
+}
+
+// ============================================================================
+// BACKGROUND JOBS
+// ============================================================================
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model BackgroundJob {
+  id          String    @id @default(cuid())
+  type        String    // "plaid_sync", "ocr_receipt", "apply_rules", etc.
+  status      JobStatus @default(PENDING)
+  payload     Json?
+  result      Json?
+  error       String?
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  scheduledAt DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([type])
+  @@index([status])
+  @@index([scheduledAt])
+  @@map("background_jobs")
+}
