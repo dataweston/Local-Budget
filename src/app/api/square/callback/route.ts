@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
+import { unstable_noStore as noStore } from 'next/cache';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { exchangeSquareAuthCode, getSquareBalance, getSquareBankAccounts } from '@/lib/square';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
+  noStore(); // Ensure dynamic rendering
+  
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
