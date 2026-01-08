@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { listSquarePayments, mapSquarePayment, refreshSquareToken } from '@/lib/square';
+import {
+  listSquarePayments,
+  listSquareRefunds,
+  mapSquarePayment,
+  mapSquareRefund,
+  refreshSquareToken,
+} from '@/lib/square';
 
 function squarePaymentExternalId(paymentId: string) {
   return `square_${paymentId}`;
@@ -14,6 +20,10 @@ function squareOrderExternalId(orderId: string) {
 
 function squarePayoutExternalId(payoutId: string) {
   return `square_payout_${payoutId}`;
+}
+
+function squareRefundExternalId(refundId: string) {
+  return `square_refund_${refundId}`;
 }
 
 export async function POST(request: NextRequest) {
@@ -70,14 +80,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Calculate date range (last 90 days by default for more data)
+    // Calculate date range (last 365 days for comprehensive history)
     const endTime = new Date().toISOString();
-    const startTime = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const startTime = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
 
     let added = 0;
 
+    let feesAdded = 0;
+
     // Sync payments
-    console.log('Syncing Square payments from', startTime, 'to', endTime);
+    console.log('[Square Sync] Syncing payments from', startTime, 'to', endTime);
     const { payments } = await listSquarePayments({
       accessToken,
       beginTime: startTime,
@@ -85,7 +97,7 @@ export async function POST(request: NextRequest) {
       limit: 500, // Get up to 500 payments
     });
     
-    console.log(`Found ${payments.length} payments from Square`);
+    console.log(`[Square Sync] Found ${payments.length} payments from Square`);
 
     for (const payment of payments) {
       if (payment.status !== 'COMPLETED') continue;
@@ -154,6 +166,55 @@ export async function POST(request: NextRequest) {
       });
 
       if (isNew) added++;
+
+      // Extract and sync processing fees as separate expense transactions
+      if (payment.processingFee && Array.isArray(payment.processingFee)) {
+        for (const fee of payment.processingFee) {
+          const feeAmount = Number(fee.amountMoney?.amount || 0) / 100;
+          if (feeAmount <= 0) continue;
+
+          const feeExternalId = `square_fee_${payment.id}`;
+          const existingFee = await db.transaction.findUnique({
+            where: {
+              accountId_externalId: {
+                accountId: account.id,
+                externalId: feeExternalId,
+              },
+            },
+            select: { id: true },
+          });
+
+          await db.transaction.upsert({
+            where: {
+              accountId_externalId: {
+                accountId: account.id,
+                externalId: feeExternalId,
+              },
+            },
+            create: {
+              accountId: account.id,
+              amount: feeAmount,
+              type: 'EXPENSE',
+              status: 'POSTED',
+              date: new Date(mapped.date),
+              description: `Square Processing Fee (${fee.type || 'INITIAL'})`,
+              merchantName: 'Square Fees',
+              externalId: feeExternalId,
+              isReviewed: false,
+            },
+            update: {
+              amount: feeAmount,
+              type: 'EXPENSE',
+              status: 'POSTED',
+              date: new Date(mapped.date),
+              description: `Square Processing Fee (${fee.type || 'INITIAL'})`,
+              merchantName: 'Square Fees',
+            },
+          });
+
+          if (!existingFee) feesAdded++;
+        }
+      }
     }
 
     // Optionally sync orders for more detailed transaction info
@@ -219,6 +280,90 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Sync refunds (outflows)
+    try {
+      const { refunds } = await listSquareRefunds({
+        accessToken,
+        beginTime: startTime,
+        endTime,
+        limit: 500,
+      });
+
+      console.log(`[Square Sync] Found ${refunds.length} refunds from Square`);
+
+      for (const refund of refunds) {
+        const mapped = mapSquareRefund(refund);
+        if (!mapped.id || !mapped.date) continue;
+
+        const canonicalExternalId = squareRefundExternalId(mapped.id);
+        const legacyExternalId = `refund_${mapped.id}`;
+
+        const existingRecords = await db.transaction.findMany({
+          where: {
+            accountId: account.id,
+            OR: [
+              { externalId: canonicalExternalId },
+              { externalId: legacyExternalId },
+            ],
+          },
+          select: { id: true, externalId: true },
+        });
+
+        const canonicalExisting = existingRecords.find(
+          (t) => t.externalId === canonicalExternalId
+        );
+        const legacyExisting = existingRecords.find(
+          (t) => t.externalId === legacyExternalId
+        );
+
+        const isNew = !canonicalExisting && !legacyExisting;
+
+        if (canonicalExisting && legacyExisting) {
+          await db.transaction.delete({ where: { id: legacyExisting.id } });
+        } else if (!canonicalExisting && legacyExisting) {
+          await db.transaction.update({
+            where: { id: legacyExisting.id },
+            data: { externalId: canonicalExternalId },
+          });
+        }
+
+        const txStatus =
+          String(mapped.status).toUpperCase() === 'COMPLETED' ? 'POSTED' : 'PENDING';
+
+        await db.transaction.upsert({
+          where: {
+            accountId_externalId: {
+              accountId: account.id,
+              externalId: canonicalExternalId,
+            },
+          },
+          create: {
+            accountId: account.id,
+            amount: mapped.amount,
+            type: 'EXPENSE',
+            status: txStatus,
+            date: new Date(mapped.date),
+            description: mapped.description,
+            merchantName: 'Square Refund',
+            externalId: canonicalExternalId,
+            isReviewed: false,
+          },
+          update: {
+            amount: mapped.amount,
+            type: 'EXPENSE',
+            status: txStatus,
+            date: new Date(mapped.date),
+            description: mapped.description,
+            merchantName: 'Square Refund',
+          },
+        });
+
+        if (isNew) added++;
+      }
+    } catch (refundError) {
+      console.log('Error syncing refunds (non-fatal):', refundError);
+    }
+
     // Sync payouts (bank transfers from Square to seller's bank account)
     try {
       const { listSquarePayouts, mapSquarePayout } = await import('@/lib/square');
@@ -229,7 +374,7 @@ export async function POST(request: NextRequest) {
         limit: 200,
       });
       
-      console.log(`Found ${payouts.length} payouts from Square`);
+      console.log(`[Square Sync] Found ${payouts.length} payouts from Square`);
       
       for (const payout of payouts) {
         // Only sync completed payouts (PAID status)
@@ -258,7 +403,7 @@ export async function POST(request: NextRequest) {
           create: {
             accountId: account.id,
             amount: mapped.amount,
-            type: 'EXPENSE',
+            type: 'TRANSFER', // Payout = money moving from Square to bank, not true expense
             status: 'POSTED',
             date: new Date(mapped.date),
             description: mapped.description,
@@ -268,7 +413,7 @@ export async function POST(request: NextRequest) {
           },
           update: {
             amount: mapped.amount,
-            type: 'EXPENSE',
+            type: 'TRANSFER', // Payout = money moving from Square to bank, not true expense
             status: 'POSTED',
             date: new Date(mapped.date),
             description: mapped.description,
@@ -307,13 +452,16 @@ export async function POST(request: NextRequest) {
       data: { lastSyncedAt: new Date() },
     });
 
+    console.log(`[Square Sync] Complete: ${added} transactions added, ${feesAdded} processing fees added`);
+
     return NextResponse.json({
       success: true,
       added,
-      message: `Synced ${added} new transactions from Square`,
+      feesAdded,
+      message: `Synced ${added} new transactions and ${feesAdded} processing fees from Square`,
     });
   } catch (error) {
-    console.error('Error syncing Square transactions:', error);
+    console.error('[Square Sync] Error syncing Square transactions:', error);
     return NextResponse.json(
       { error: 'Failed to sync Square transactions' },
       { status: 500 }

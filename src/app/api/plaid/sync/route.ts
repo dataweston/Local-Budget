@@ -35,9 +35,22 @@ export async function POST(request: NextRequest) {
     let added = 0;
     let modified = 0;
     let removed = 0;
+    let skippedNoAccount = 0;
+
+    // Log available accounts for debugging
+    console.log(`[Plaid Sync] Starting sync for PlaidItem ${plaidItem.id}`);
+    console.log(`[Plaid Sync] Available FinancialAccounts:`, plaidItem.accounts.map(
+      (a: { id: string; plaidAccountId: string | null; name: string }) => 
+        ({ id: a.id, plaidAccountId: a.plaidAccountId, name: a.name })
+    ));
+    console.log(`[Plaid Sync] PlaidAccounts:`, plaidItem.plaidAccounts.map(
+      (a: { id: string; accountId: string; name: string }) => 
+        ({ id: a.id, accountId: a.accountId, name: a.name })
+    ));
 
     while (hasMore) {
       const syncResponse = await syncTransactions(plaidItem.accessToken, cursor);
+      console.log(`[Plaid Sync] Received ${syncResponse.added.length} added, ${syncResponse.modified.length} modified, ${syncResponse.removed.length} removed transactions`);
       
       // Process added transactions
       for (const transaction of syncResponse.added) {
@@ -48,7 +61,11 @@ export async function POST(request: NextRequest) {
           (a: { plaidAccountId: string | null }) => a.plaidAccountId === mappedTx.accountId
         );
         
-        if (!financialAccount) continue;
+        if (!financialAccount) {
+          console.log(`[Plaid Sync] Skipping transaction ${mappedTx.transactionId}: No matching account for plaidAccountId ${mappedTx.accountId}`);
+          skippedNoAccount++;
+          continue;
+        }
 
         // Check if transaction already exists
         const existing = await db.transaction.findFirst({
@@ -133,14 +150,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    console.log(`[Plaid Sync] Complete: ${added} added, ${modified} modified, ${removed} removed, ${skippedNoAccount} skipped (no matching account)`);
+
     return NextResponse.json({
       success: true,
       added,
       modified,
       removed,
+      skippedNoAccount,
     });
   } catch (error) {
-    console.error('Error syncing transactions:', error);
+    console.error('[Plaid Sync] Error syncing transactions:', error);
     return NextResponse.json(
       { error: 'Failed to sync transactions' },
       { status: 500 }

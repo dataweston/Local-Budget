@@ -231,6 +231,27 @@ export async function listSquarePayouts(options: {
   return { payouts };
 }
 
+// List refunds (money flowing out of Square due to refunds)
+export async function listSquareRefunds(options: {
+  accessToken?: string;
+  locationId?: string;
+  beginTime?: string;
+  endTime?: string;
+  limit?: number;
+}) {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+
+  const page = await client.refunds.list({
+    locationId: options.locationId,
+    beginTime: options.beginTime,
+    endTime: options.endTime,
+  });
+
+  const refunds = (page.data || []).slice(0, options.limit || 100);
+
+  return { refunds };
+}
+
 // ============================================================================
 // Type Mappings
 // ============================================================================
@@ -289,6 +310,27 @@ export function mapSquarePayout(payout: any): SquareTransactionData {
     date: payout.createdAt,
     description: `Payout to ${destType}${payout.arrivalDate ? ` (${payout.arrivalDate})` : ''}`,
     status: payout.status,
+  };
+}
+
+// Map Square refund to our format
+export function mapSquareRefund(refund: any): SquareTransactionData {
+  const amountMoney = refund.amountMoney || { amount: 0, currency: 'USD' };
+  const refundId = refund.id || '';
+  const paymentId = refund.paymentId || refund.payment_id;
+
+  return {
+    id: refundId,
+    locationId: refund.locationId || refund.location_id,
+    amount: Math.abs(Number(amountMoney.amount || 0)) / 100,
+    currency: amountMoney.currency || amountMoney.currencyCode || 'USD',
+    date: refund.createdAt || refund.created_at,
+    description:
+      refund.reason ||
+      (paymentId
+        ? `Square Refund for payment ${String(paymentId).slice(-6)}`
+        : `Square Refund ${String(refundId).slice(-6)}`),
+    status: refund.status || 'UNKNOWN',
   };
 }
 
