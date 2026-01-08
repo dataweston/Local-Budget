@@ -52,7 +52,7 @@ export function RecentTransactions({ transactions }: RecentTransactionsProps) {
           <div className="space-y-4">
             {transactions.slice(0, 8).map((tx) => {
               const amount = Number(tx.amount);
-              const isIncome = tx.type === 'INCOME' || amount > 0;
+              const isIncome = tx.type === 'INCOME';
 
               return (
                 <div
@@ -90,7 +90,7 @@ export function RecentTransactions({ transactions }: RecentTransactionsProps) {
                         isIncome ? 'text-green-600' : 'text-red-600'
                       )}
                     >
-                      {isIncome ? '+' : ''}
+                      {isIncome ? '+' : '-'}
                       {formatCurrency(amount)}
                     </span>
                     {isIncome ? (

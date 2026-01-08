@@ -4,6 +4,18 @@ import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { listSquarePayments, mapSquarePayment, refreshSquareToken } from '@/lib/square';
 
+function squarePaymentExternalId(paymentId: string) {
+  return `square_${paymentId}`;
+}
+
+function squareOrderExternalId(orderId: string) {
+  return `square_order_${orderId}`;
+}
+
+function squarePayoutExternalId(payoutId: string) {
+  return `square_payout_${payoutId}`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -63,7 +75,6 @@ export async function POST(request: NextRequest) {
     const startTime = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
     let added = 0;
-    let updated = 0;
 
     // Sync payments
     console.log('Syncing Square payments from', startTime, 'to', endTime);
@@ -80,32 +91,73 @@ export async function POST(request: NextRequest) {
       if (payment.status !== 'COMPLETED') continue;
 
       const mapped = mapSquarePayment(payment);
-      
-      // Check if transaction already exists
-      const existing = await db.transaction.findFirst({
-        where: { externalId: `square_${mapped.id}` },
+
+      const canonicalExternalId = squarePaymentExternalId(mapped.id);
+      const legacyExternalId = mapped.id;
+
+      // Clean up legacy IDs that were written by the webhook (payment.id)
+      const existingRecords = await db.transaction.findMany({
+        where: {
+          accountId: account.id,
+          OR: [
+            { externalId: canonicalExternalId },
+            { externalId: legacyExternalId },
+          ],
+        },
+        select: { id: true, externalId: true },
       });
 
-      if (!existing) {
-        await db.transaction.create({
-          data: {
-            accountId: account.id,
-            amount: mapped.amount,
-            type: 'INCOME', // Payments are income
-            status: 'POSTED',
-            date: new Date(mapped.date),
-            description: mapped.description,
-            merchantName: 'Square Payment',
-            externalId: `square_${mapped.id}`,
-            isReviewed: false,
-          },
+      const canonicalExisting = existingRecords.find(
+        (t) => t.externalId === canonicalExternalId
+      );
+      const legacyExisting = existingRecords.find(
+        (t) => t.externalId === legacyExternalId
+      );
+
+      const isNew = !canonicalExisting && !legacyExisting;
+
+      if (canonicalExisting && legacyExisting) {
+        await db.transaction.delete({ where: { id: legacyExisting.id } });
+      } else if (!canonicalExisting && legacyExisting) {
+        await db.transaction.update({
+          where: { id: legacyExisting.id },
+          data: { externalId: canonicalExternalId },
         });
-        added++;
       }
+      
+      await db.transaction.upsert({
+        where: {
+          accountId_externalId: {
+            accountId: account.id,
+            externalId: canonicalExternalId,
+          },
+        },
+        create: {
+          accountId: account.id,
+          amount: mapped.amount,
+          type: 'INCOME',
+          status: 'POSTED',
+          date: new Date(mapped.date),
+          description: mapped.description,
+          merchantName: 'Square Payment',
+          externalId: canonicalExternalId,
+          isReviewed: false,
+        },
+        update: {
+          amount: mapped.amount,
+          type: 'INCOME',
+          status: 'POSTED',
+          date: new Date(mapped.date),
+          description: mapped.description,
+          merchantName: 'Square Payment',
+        },
+      });
+
+      if (isNew) added++;
     }
 
     // Optionally sync orders for more detailed transaction info
-    if (connection.locationIds && connection.locationIds.length > 0) {
+    if (syncOrders && connection.locationIds && connection.locationIds.length > 0) {
       try {
         const { listSquareOrders, mapSquareOrder } = await import('@/lib/square');
         const { orders } = await listSquareOrders({
@@ -120,28 +172,47 @@ export async function POST(request: NextRequest) {
           if (order.state !== 'COMPLETED') continue;
           
           const mapped = mapSquareOrder(order);
+          const externalId = squareOrderExternalId(mapped.id);
+
+          const existing = await db.transaction.findUnique({
+            where: {
+              accountId_externalId: {
+                accountId: account.id,
+                externalId,
+              },
+            },
+            select: { id: true },
+          });
           
-          // Check if transaction already exists
-          const existing = await db.transaction.findFirst({
-            where: { externalId: `square_order_${mapped.id}` },
+          await db.transaction.upsert({
+            where: {
+              accountId_externalId: {
+                accountId: account.id,
+                externalId,
+              },
+            },
+            create: {
+              accountId: account.id,
+              amount: mapped.amount,
+              type: 'INCOME',
+              status: 'POSTED',
+              date: new Date(mapped.date),
+              description: mapped.description,
+              merchantName: 'Square Order',
+              externalId,
+              isReviewed: false,
+            },
+            update: {
+              amount: mapped.amount,
+              type: 'INCOME',
+              status: 'POSTED',
+              date: new Date(mapped.date),
+              description: mapped.description,
+              merchantName: 'Square Order',
+            },
           });
 
-          if (!existing) {
-            await db.transaction.create({
-              data: {
-                accountId: account.id,
-                amount: mapped.amount,
-                type: 'INCOME',
-                status: 'POSTED',
-                date: new Date(mapped.date),
-                description: mapped.description,
-                merchantName: 'Square Order',
-                externalId: `square_order_${mapped.id}`,
-                isReviewed: false,
-              },
-            });
-            added++;
-          }
+          if (!existing) added++;
         }
       } catch (orderError) {
         console.log('Error syncing orders (non-fatal):', orderError);
@@ -165,28 +236,47 @@ export async function POST(request: NextRequest) {
         if (payout.status !== 'PAID') continue;
         
         const mapped = mapSquarePayout(payout);
+        const externalId = squarePayoutExternalId(mapped.id);
+
+        const existing = await db.transaction.findUnique({
+          where: {
+            accountId_externalId: {
+              accountId: account.id,
+              externalId,
+            },
+          },
+          select: { id: true },
+        });
         
-        // Check if transaction already exists
-        const existing = await db.transaction.findFirst({
-          where: { externalId: `square_payout_${mapped.id}` },
+        await db.transaction.upsert({
+          where: {
+            accountId_externalId: {
+              accountId: account.id,
+              externalId,
+            },
+          },
+          create: {
+            accountId: account.id,
+            amount: mapped.amount,
+            type: 'EXPENSE',
+            status: 'POSTED',
+            date: new Date(mapped.date),
+            description: mapped.description,
+            merchantName: 'Square Payout',
+            externalId,
+            isReviewed: false,
+          },
+          update: {
+            amount: mapped.amount,
+            type: 'EXPENSE',
+            status: 'POSTED',
+            date: new Date(mapped.date),
+            description: mapped.description,
+            merchantName: 'Square Payout',
+          },
         });
 
-        if (!existing) {
-          await db.transaction.create({
-            data: {
-              accountId: account.id,
-              amount: mapped.amount,
-              type: 'EXPENSE', // Payouts are money leaving Square (to bank account)
-              status: 'POSTED',
-              date: new Date(mapped.date),
-              description: mapped.description,
-              merchantName: 'Square Payout',
-              externalId: `square_payout_${mapped.id}`,
-              isReviewed: false,
-            },
-          });
-          added++;
-        }
+        if (!existing) added++;
       }
     } catch (payoutError) {
       console.log('Error syncing payouts (non-fatal):', payoutError);

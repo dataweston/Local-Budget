@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import crypto from 'crypto';
 
+function squarePaymentExternalId(paymentId: string) {
+  return `square_${paymentId}`;
+}
+
+function squareRefundExternalId(refundId: string) {
+  return `square_refund_${refundId}`;
+}
+
 // Square webhook event types
 interface SquareWebhookEvent {
   merchant_id: string;
@@ -152,13 +160,24 @@ async function handlePaymentEvent(
   const amount = payment.amount_money?.amount ?? 0;
   const amountInDollars = amount / 100; // Square amounts are in cents
 
+  const canonicalExternalId = squarePaymentExternalId(payment.id);
+  const legacyExternalId = payment.id;
+
   // Check if transaction already exists
-  const existing = await db.transaction.findFirst({
+  const existingRecords = await db.transaction.findMany({
     where: {
       accountId: account.id,
-      externalId: payment.id,
+      OR: [{ externalId: canonicalExternalId }, { externalId: legacyExternalId }],
     },
+    select: { id: true, externalId: true },
   });
+
+  const canonicalExisting = existingRecords.find(
+    (t) => t.externalId === canonicalExternalId
+  );
+  const legacyExisting = existingRecords.find(
+    (t) => t.externalId === legacyExternalId
+  );
 
   const transactionData = {
     accountId: account.id,
@@ -168,7 +187,7 @@ async function handlePaymentEvent(
     date: new Date(payment.created_at || new Date()),
     description: payment.note || `Square Payment ${payment.receipt_number || payment.id}`,
     merchantName: 'Square',
-    externalId: payment.id,
+    externalId: canonicalExternalId,
     metadata: {
       source: 'square',
       source_type: payment.source_type,
@@ -177,18 +196,22 @@ async function handlePaymentEvent(
     },
   };
 
-  if (existing) {
-    if (eventType === 'payment.updated') {
-      await db.transaction.update({
-        where: { id: existing.id },
-        data: transactionData,
-      });
-      console.log(`Updated Square payment ${payment.id}`);
-    }
-  } else {
-    await db.transaction.create({
+  // If both legacy + canonical exist, drop legacy
+  if (canonicalExisting && legacyExisting) {
+    await db.transaction.delete({ where: { id: legacyExisting.id } });
+  }
+
+  // Prefer updating canonical; otherwise upgrade legacy to canonical; otherwise create
+  const target = canonicalExisting ?? legacyExisting;
+  if (target) {
+    // Always update on payment.created/payment.updated to keep fields current
+    await db.transaction.update({
+      where: { id: target.id },
       data: transactionData,
     });
+    console.log(`Upserted Square payment ${payment.id}`);
+  } else {
+    await db.transaction.create({ data: transactionData });
     console.log(`Created Square payment ${payment.id}`);
   }
 }
@@ -200,12 +223,15 @@ async function handlePaymentCompleted(
   const payment = data.object as { id: string } | undefined;
   if (!payment) return;
 
+  const canonicalExternalId = squarePaymentExternalId(payment.id);
+  const legacyExternalId = payment.id;
+
   // Update transaction status to POSTED
   for (const account of connection.accounts) {
     await db.transaction.updateMany({
       where: {
         accountId: account.id,
-        externalId: payment.id,
+        OR: [{ externalId: canonicalExternalId }, { externalId: legacyExternalId }],
       },
       data: {
         status: 'POSTED',
@@ -237,41 +263,70 @@ async function handleRefundEvent(
   const amount = refund.amount_money?.amount ?? 0;
   const amountInDollars = amount / 100;
 
+  const canonicalExternalId = squareRefundExternalId(refund.id);
+  const legacyExternalId = `refund_${refund.id}`;
+
   // Check if refund transaction already exists
-  const existing = await db.transaction.findFirst({
+  const existingRecords = await db.transaction.findMany({
     where: {
       accountId: account.id,
-      externalId: `refund_${refund.id}`,
+      OR: [{ externalId: canonicalExternalId }, { externalId: legacyExternalId }],
     },
+    select: { id: true, externalId: true },
   });
 
-  if (!existing && eventType === 'refund.created') {
-    await db.transaction.create({
-      data: {
-        accountId: account.id,
-        amount: amountInDollars,
-        type: 'EXPENSE', // Refunds are money going out
-        status: mapSquareStatus(refund.status),
-        date: new Date(refund.created_at || new Date()),
-        description: refund.reason || `Square Refund for payment ${refund.payment_id}`,
-        merchantName: 'Square Refund',
-        externalId: `refund_${refund.id}`,
-        metadata: {
-          source: 'square',
-          refund_id: refund.id,
-          payment_id: refund.payment_id,
+  const canonicalExisting = existingRecords.find(
+    (t) => t.externalId === canonicalExternalId
+  );
+  const legacyExisting = existingRecords.find(
+    (t) => t.externalId === legacyExternalId
+  );
+
+  if (canonicalExisting && legacyExisting) {
+    await db.transaction.delete({ where: { id: legacyExisting.id } });
+  }
+
+  const target = canonicalExisting ?? legacyExisting;
+
+  const baseData = {
+    accountId: account.id,
+    amount: amountInDollars,
+    type: 'EXPENSE' as const, // Refunds are money going out
+    status: mapSquareStatus(refund.status),
+    date: new Date(refund.created_at || new Date()),
+    description: refund.reason || `Square Refund for payment ${refund.payment_id}`,
+    merchantName: 'Square Refund',
+    externalId: canonicalExternalId,
+    metadata: {
+      source: 'square',
+      refund_id: refund.id,
+      payment_id: refund.payment_id,
+    },
+  };
+
+  if (target) {
+    if (eventType === 'refund.updated') {
+      await db.transaction.update({
+        where: { id: target.id },
+        data: {
+          status: mapSquareStatus(refund.status),
+          externalId: canonicalExternalId,
         },
-      },
-    });
+      });
+      console.log(`Updated refund ${refund.id}`);
+    } else if (eventType === 'refund.created') {
+      await db.transaction.update({
+        where: { id: target.id },
+        data: baseData,
+      });
+      console.log(`Upserted refund transaction for ${refund.id}`);
+    }
+    return;
+  }
+
+  if (eventType === 'refund.created') {
+    await db.transaction.create({ data: baseData });
     console.log(`Created refund transaction for ${refund.id}`);
-  } else if (existing && eventType === 'refund.updated') {
-    await db.transaction.update({
-      where: { id: existing.id },
-      data: {
-        status: mapSquareStatus(refund.status),
-      },
-    });
-    console.log(`Updated refund ${refund.id}`);
   }
 }
 

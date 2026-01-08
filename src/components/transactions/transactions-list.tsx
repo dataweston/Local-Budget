@@ -199,7 +199,7 @@ export function TransactionsList() {
                       typeof tx.amount === 'string'
                         ? parseFloat(tx.amount)
                         : Number(tx.amount);
-                    const isIncome = tx.type === 'INCOME' || amount > 0;
+                    const isIncome = tx.type === 'INCOME';
 
                     return (
                       <div
@@ -253,7 +253,7 @@ export function TransactionsList() {
                             isIncome ? 'text-green-600' : 'text-red-600'
                           )}
                         >
-                          {isIncome ? '+' : ''}
+                          {isIncome ? '+' : '-'}
                           {formatCurrency(amount)}
                         </div>
                         <div className="col-span-1 flex justify-center">
