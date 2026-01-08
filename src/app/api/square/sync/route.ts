@@ -148,6 +148,50 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Sync payouts (bank transfers from Square to seller's bank account)
+    try {
+      const { listSquarePayouts, mapSquarePayout } = await import('@/lib/square');
+      const { payouts } = await listSquarePayouts({
+        accessToken,
+        beginTime: startTime,
+        endTime,
+        limit: 200,
+      });
+      
+      console.log(`Found ${payouts.length} payouts from Square`);
+      
+      for (const payout of payouts) {
+        // Only sync completed payouts (PAID status)
+        if (payout.status !== 'PAID') continue;
+        
+        const mapped = mapSquarePayout(payout);
+        
+        // Check if transaction already exists
+        const existing = await db.transaction.findFirst({
+          where: { externalId: `square_payout_${mapped.id}` },
+        });
+
+        if (!existing) {
+          await db.transaction.create({
+            data: {
+              accountId: account.id,
+              amount: mapped.amount,
+              type: 'EXPENSE', // Payouts are money leaving Square (to bank account)
+              status: 'POSTED',
+              date: new Date(mapped.date),
+              description: mapped.description,
+              merchantName: 'Square Payout',
+              externalId: `square_payout_${mapped.id}`,
+              isReviewed: false,
+            },
+          });
+          added++;
+        }
+      }
+    } catch (payoutError) {
+      console.log('Error syncing payouts (non-fatal):', payoutError);
+    }
+
     // Calculate total balance from all completed transactions
     const allTransactions = await db.transaction.findMany({
       where: { accountId: account.id, status: 'POSTED' },

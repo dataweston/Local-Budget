@@ -37,6 +37,7 @@ export function getSquareOAuthUrl(state: string) {
       'PAYMENTS_WRITE',
       'ORDERS_READ',
       'ORDERS_WRITE',
+      'PAYOUTS_READ', // For bank transfers/payouts
       'MERCHANT_PROFILE_READ',
       'BANK_ACCOUNTS_READ',
       'CUSTOMERS_READ',
@@ -209,6 +210,27 @@ export async function listSquareOrders(options: {
   };
 }
 
+// List payouts (bank transfers from Square to seller's bank account)
+export async function listSquarePayouts(options: {
+  accessToken?: string;
+  locationId?: string;
+  beginTime?: string;
+  endTime?: string;
+  limit?: number;
+}) {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+
+  const page = await client.payouts.list({
+    locationId: options.locationId,
+    beginTime: options.beginTime,
+    endTime: options.endTime,
+  });
+
+  const payouts = (page.data || []).slice(0, options.limit || 100);
+
+  return { payouts };
+}
+
 // ============================================================================
 // Type Mappings
 // ============================================================================
@@ -251,6 +273,22 @@ export function mapSquareOrder(order: any): SquareTransactionData {
     date: order.createdAt,
     description: order.lineItems?.map((item: any) => item.name).join(', ') || `Square Order ${order.id.slice(-6)}`,
     status: order.state,
+  };
+}
+
+// Map Square payout (bank transfer) to our format
+export function mapSquarePayout(payout: any): SquareTransactionData {
+  const amountMoney = payout.amountMoney || { amount: 0, currency: 'USD' };
+  const destination = payout.destination;
+  const destType = destination?.type === 'CARD' ? 'Card' : 'Bank Account';
+  return {
+    id: payout.id,
+    locationId: payout.locationId,
+    amount: Math.abs(Number(amountMoney.amount || 0)) / 100, // Payouts can be negative for fees
+    currency: amountMoney.currency || amountMoney.currencyCode || 'USD',
+    date: payout.createdAt,
+    description: `Payout to ${destType}${payout.arrivalDate ? ` (${payout.arrivalDate})` : ''}`,
+    status: payout.status,
   };
 }
 
