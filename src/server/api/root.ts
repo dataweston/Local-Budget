@@ -8,6 +8,7 @@ import { dashboardRouter } from './routers/dashboard';
 import { rulesRouter } from './routers/rules';
 import { transactionLinksRouter } from './routers/transactionLinks';
 import { suggestionsRouter } from './routers/suggestions';
+import { vendorsRouter } from './routers/vendors';
 
 /**
  * This is the primary router for the Local Budget API.
@@ -24,6 +25,7 @@ export const appRouter = createTRPCRouter({
   rules: rulesRouter,
   transactionLinks: transactionLinksRouter,
   suggestions: suggestionsRouter,
+  vendors: vendorsRouter,
 });
 
 // Export type definition of API
