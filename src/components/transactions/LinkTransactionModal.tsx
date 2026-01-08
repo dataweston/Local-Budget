@@ -109,7 +109,7 @@ export function LinkTransactionModal({
             <Label htmlFor="linkType">Link Type</Label>
             <Select
               value={linkType}
-              onValueChange={(value) => setLinkType(value as typeof linkType)}
+              onValueChange={(value: string) => setLinkType(value as typeof linkType)}
             >
               <SelectTrigger id="linkType">
                 <SelectValue />

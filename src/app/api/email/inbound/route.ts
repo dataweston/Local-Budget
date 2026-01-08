@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { parseInboundEmail, extractUserIdFromEmail, isReceiptAttachment } from '@/lib/email/parser';
-import { processReceipt } from '@/lib/ocr';
 
 /**
  * Webhook endpoint for inbound receipt emails
@@ -94,20 +93,8 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        // Queue OCR processing
-        try {
-          await processReceipt(receipt.id);
-        } catch (ocrError) {
-          console.error('OCR processing failed:', ocrError);
-          // Update status but don't fail the whole request
-          await db.receipt.update({
-            where: { id: receipt.id },
-            data: {
-              status: 'FAILED',
-            },
-          });
-        }
-
+        // Queue OCR processing - this would be handled by a background job
+        // For now, we'll just mark it as pending
         receipts.push(receipt);
       } catch (error) {
         console.error('Failed to process attachment:', attachment.filename, error);

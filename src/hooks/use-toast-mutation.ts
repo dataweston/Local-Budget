@@ -27,10 +27,10 @@ export function useToastCallbacks(options: ToastCallbackOptions) {
         description: options.successDescription,
       });
     },
-    onError: (error: Error) => {
+    onError: (error: any) => {
       toast({
         title: options.errorTitle || 'Error',
-        description: error.message || 'An unexpected error occurred',
+        description: error?.message || 'An unexpected error occurred',
         variant: 'destructive',
       });
     },

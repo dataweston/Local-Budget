@@ -186,12 +186,13 @@ export function similarity(str1: string, str2: string): number {
   const bigrams2 = getBigrams(s2);
 
   // Calculate Jaccard similarity
-  const intersection = new Set(
-    [...bigrams1].filter((x) => bigrams2.has(x))
-  );
-  const union = new Set([...bigrams1, ...bigrams2]);
+  const bigrams1Array = Array.from(bigrams1);
+  const bigrams2Array = Array.from(bigrams2);
+  
+  const intersection = bigrams1Array.filter((x) => bigrams2.has(x));
+  const union = Array.from(new Set([...bigrams1Array, ...bigrams2Array]));
 
-  return intersection.size / union.size;
+  return intersection.length / union.length;
 }
 
 /**

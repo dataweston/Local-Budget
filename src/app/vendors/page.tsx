@@ -167,7 +167,7 @@ export default function VendorsPage() {
               </div>
               <Select
                 value={sortBy}
-                onValueChange={(value) => setSortBy(value as typeof sortBy)}
+                onValueChange={(value: string) => setSortBy(value as typeof sortBy)}
               >
                 <SelectTrigger>
                   <SelectValue />
