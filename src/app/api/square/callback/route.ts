@@ -87,18 +87,53 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Create Square connection record
-    const squareConnection = await db.squareConnection.create({
-      data: {
+    // Check if a Square connection already exists for this user/merchant
+    const existingConnection = await db.squareConnection.findFirst({
+      where: {
         userId: session.user.id,
         merchantId: tokenResponse.merchantId || undefined,
-        accessToken: tokenResponse.accessToken, // In production, encrypt this!
-        refreshToken: tokenResponse.refreshToken || undefined,
-        expiresAt: tokenResponse.expiresAt ? new Date(tokenResponse.expiresAt) : undefined,
-        locationIds: locations.map(l => l.locationId).filter(Boolean) as string[],
-        status: 'active',
       },
     });
+
+    let squareConnection;
+    if (existingConnection) {
+      // Update existing connection with new tokens
+      console.log('[Square Callback] Updating existing connection:', existingConnection.id);
+      squareConnection = await db.squareConnection.update({
+        where: { id: existingConnection.id },
+        data: {
+          accessToken: tokenResponse.accessToken,
+          refreshToken: tokenResponse.refreshToken || undefined,
+          expiresAt: tokenResponse.expiresAt ? new Date(tokenResponse.expiresAt) : undefined,
+          locationIds: locations.map(l => l.locationId).filter(Boolean) as string[],
+          status: 'active',
+        },
+      });
+
+      // Check if there's already a financial account linked to this connection
+      const existingAccount = await db.financialAccount.findFirst({
+        where: { squareConnectionId: squareConnection.id },
+      });
+
+      if (existingAccount) {
+        console.log('[Square Callback] Square account already exists, redirecting to accounts');
+        return NextResponse.redirect(new URL('/accounts?connected=square&updated=true', request.url));
+      }
+    } else {
+      // Create new Square connection record
+      console.log('[Square Callback] Creating new Square connection');
+      squareConnection = await db.squareConnection.create({
+        data: {
+          userId: session.user.id,
+          merchantId: tokenResponse.merchantId || undefined,
+          accessToken: tokenResponse.accessToken,
+          refreshToken: tokenResponse.refreshToken || undefined,
+          expiresAt: tokenResponse.expiresAt ? new Date(tokenResponse.expiresAt) : undefined,
+          locationIds: locations.map(l => l.locationId).filter(Boolean) as string[],
+          status: 'active',
+        },
+      });
+    }
 
     // Create a financial account for Square balance
     const squareAccount = await db.financialAccount.create({
