@@ -56,15 +56,20 @@ export function getSquareOAuthUrl(state: string, redirectUri?: string) {
 }
 
 // Exchange authorization code for access token
-export async function exchangeSquareAuthCode(code: string) {
+export async function exchangeSquareAuthCode(code: string, redirectUri?: string) {
   if (!squareAppId || !squareAppSecret) {
     throw new Error('Missing Square application credentials');
   }
+  
+  // Use provided redirectUri or construct from NEXTAUTH_URL
+  const callbackUrl = redirectUri || `${process.env.NEXTAUTH_URL}/api/square/callback`;
+  
   const response = await squareClient.oAuth.obtainToken({
     clientId: squareAppId,
     clientSecret: squareAppSecret,
     grantType: 'authorization_code',
     code,
+    redirectUri: callbackUrl,
   });
 
   return response;

@@ -46,10 +46,14 @@ export async function GET(request: NextRequest) {
     // TODO: Verify state parameter against stored value
     console.log('[Square Callback] Exchanging code for token...');
 
+    // Construct the redirect URI (must match what was used in the authorization request)
+    const redirectUri = `${request.nextUrl.origin}/api/square/callback`;
+    console.log('[Square Callback] Using redirect URI:', redirectUri);
+
     // Exchange authorization code for access token
     let tokenResponse;
     try {
-      tokenResponse = await exchangeSquareAuthCode(code);
+      tokenResponse = await exchangeSquareAuthCode(code, redirectUri);
       console.log('[Square Callback] Token exchange successful, merchantId:', tokenResponse.merchantId);
     } catch (tokenError) {
       console.error('[Square Callback] Token exchange failed:', tokenError);
