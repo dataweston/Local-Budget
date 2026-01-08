@@ -1,6 +1,7 @@
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { updateReceiptSchema, linkReceiptSchema } from '@/lib/schemas';
+import { generateReceiptEmail } from '@/lib/email/parser';
 
 export const receiptsRouter = createTRPCRouter({
   // List receipts
@@ -240,4 +241,13 @@ export const receiptsRouter = createTRPCRouter({
 
       return potentialMatches;
     }),
+
+  // Get user's unique inbound receipt email
+  getInboundEmail: protectedProcedure.query(async ({ ctx }) => {
+    const domain = process.env.RECEIPT_EMAIL_DOMAIN || 'localhost';
+    return {
+      email: generateReceiptEmail(ctx.session.user.id, domain),
+      instructions: 'Forward your receipts to this email address to automatically import them.',
+    };
+  }),
 });
