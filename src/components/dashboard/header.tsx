@@ -22,6 +22,7 @@ import {
   CreditCard,
   FileText,
   DollarSign,
+  Home,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -33,10 +34,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet';
+import { Separator } from '@/components/ui/separator';
 
 export function Header() {
   const { data: session } = useSession();
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const router = useRouter();
 
   return (
@@ -216,9 +226,119 @@ export function Header() {
           </div>
 
           {/* Mobile Menu */}
-          <Button variant="ghost" size="icon" className="md:hidden">
-            <Menu className="h-5 w-5" />
-          </Button>
+          <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" className="md:hidden">
+                <Menu className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left">
+              <SheetHeader>
+                <SheetTitle className="flex items-center gap-2">
+                  <Wallet className="h-5 w-5 text-primary" />
+                  Local Budget
+                </SheetTitle>
+              </SheetHeader>
+              <div className="flex flex-col gap-4 mt-6">
+                {/* Navigation Links */}
+                <div className="flex flex-col gap-2">
+                  <Link
+                    href="/"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <Home className="h-5 w-5" />
+                    <span>Dashboard</span>
+                  </Link>
+                  <Link
+                    href="/transactions"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <DollarSign className="h-5 w-5" />
+                    <span>Transactions</span>
+                  </Link>
+                  <Link
+                    href="/accounts"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <CreditCard className="h-5 w-5" />
+                    <span>Accounts</span>
+                  </Link>
+                  <Link
+                    href="/receipts"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <Receipt className="h-5 w-5" />
+                    <span>Receipts</span>
+                  </Link>
+                  <Link
+                    href="/reports"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <BarChart3 className="h-5 w-5" />
+                    <span>Reports</span>
+                  </Link>
+                </div>
+
+                <Separator />
+
+                {/* Settings Links */}
+                <div className="flex flex-col gap-2">
+                  <Link
+                    href="/entities"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <Building2 className="h-5 w-5" />
+                    <span>Entities</span>
+                  </Link>
+                  <Link
+                    href="/categories"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <Tags className="h-5 w-5" />
+                    <span>Categories</span>
+                  </Link>
+                  <Link
+                    href="/rules"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <Wand2 className="h-5 w-5" />
+                    <span>Rules</span>
+                  </Link>
+                </div>
+
+                <Separator />
+
+                {/* User Info and Sign Out */}
+                <div className="flex flex-col gap-2 mt-auto">
+                  <div className="px-3 py-2 text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">
+                      {session?.user?.name || 'User'}
+                    </div>
+                    <div className="text-xs">{session?.user?.email}</div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      signOut({ callbackUrl: '/login' });
+                    }}
+                    className="justify-start text-destructive hover:text-destructive"
+                  >
+                    <LogOut className="h-5 w-5 mr-3" />
+                    Sign Out
+                  </Button>
+                </div>
+              </div>
+            </SheetContent>
+          </Sheet>
         </div>
       </div>
     </header>
