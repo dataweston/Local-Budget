@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { AlertCircle, Receipt, CheckCircle2 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,6 +23,7 @@ export function AlertsPanel({
       title: `${pendingReceipts} pending receipt${pendingReceipts > 1 ? 's' : ''}`,
       description: 'Waiting to be processed or matched',
       action: 'Review',
+      href: '/receipts',
       variant: 'warning' as const,
     },
     {
@@ -31,6 +33,7 @@ export function AlertsPanel({
       title: `${unreviewedTransactions} unreviewed transaction${unreviewedTransactions > 1 ? 's' : ''}`,
       description: 'Need categorization or review',
       action: 'Review',
+      href: '/transactions',
       variant: 'info' as const,
     },
   ].filter((alert) => alert.show);
@@ -65,8 +68,8 @@ export function AlertsPanel({
                   {alert.description}
                 </p>
               </div>
-              <Button variant="outline" size="sm">
-                {alert.action}
+              <Button variant="outline" size="sm" asChild>
+                <Link href={alert.href}>{alert.action}</Link>
               </Button>
             </div>
           ))}

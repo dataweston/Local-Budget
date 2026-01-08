@@ -58,20 +58,23 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Calculate date range (last 30 days by default)
+    // Calculate date range (last 90 days by default for more data)
     const endTime = new Date().toISOString();
-    const startTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const startTime = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
     let added = 0;
-    let totalBalance = 0;
+    let updated = 0;
 
     // Sync payments
+    console.log('Syncing Square payments from', startTime, 'to', endTime);
     const { payments } = await listSquarePayments({
       accessToken,
       beginTime: startTime,
       endTime,
       limit: 500, // Get up to 500 payments
     });
+    
+    console.log(`Found ${payments.length} payments from Square`);
 
     for (const payment of payments) {
       if (payment.status !== 'COMPLETED') continue;
@@ -92,20 +95,57 @@ export async function POST(request: NextRequest) {
             status: 'POSTED',
             date: new Date(mapped.date),
             description: mapped.description,
+            merchantName: 'Square Payment',
             externalId: `square_${mapped.id}`,
             isReviewed: false,
           },
         });
         added++;
-        totalBalance += mapped.amount;
       }
     }
 
     // Optionally sync orders for more detailed transaction info
-    if (syncOrders && connection.merchantId) {
-      // Get locations for this merchant
-      // Orders require location IDs
-      // This would need additional implementation
+    if (connection.locationIds && connection.locationIds.length > 0) {
+      try {
+        const { listSquareOrders, mapSquareOrder } = await import('@/lib/square');
+        const { orders } = await listSquareOrders({
+          accessToken,
+          locationIds: connection.locationIds,
+          limit: 200,
+        });
+        
+        console.log(`Found ${orders.length} orders from Square`);
+        
+        for (const order of orders) {
+          if (order.state !== 'COMPLETED') continue;
+          
+          const mapped = mapSquareOrder(order);
+          
+          // Check if transaction already exists
+          const existing = await db.transaction.findFirst({
+            where: { externalId: `square_order_${mapped.id}` },
+          });
+
+          if (!existing) {
+            await db.transaction.create({
+              data: {
+                accountId: account.id,
+                amount: mapped.amount,
+                type: 'INCOME',
+                status: 'POSTED',
+                date: new Date(mapped.date),
+                description: mapped.description,
+                merchantName: 'Square Order',
+                externalId: `square_order_${mapped.id}`,
+                isReviewed: false,
+              },
+            });
+            added++;
+          }
+        }
+      } catch (orderError) {
+        console.log('Error syncing orders (non-fatal):', orderError);
+      }
     }
 
     // Calculate total balance from all completed transactions

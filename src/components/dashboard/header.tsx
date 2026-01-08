@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { signOut, useSession } from 'next-auth/react';
 import {
   Wallet,
@@ -18,13 +19,25 @@ import {
   Building2,
   ChevronDown,
   Wand2,
+  CreditCard,
+  FileText,
+  DollarSign,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 export function Header() {
   const { data: session } = useSession();
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const router = useRouter();
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -88,18 +101,62 @@ export function Header() {
           </div>
 
           {/* Quick Add */}
-          <Button size="sm" className="gap-1">
-            <Plus className="h-4 w-4" />
-            <span className="hidden sm:inline">Add</span>
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" className="gap-1">
+                <Plus className="h-4 w-4" />
+                <span className="hidden sm:inline">Add</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Quick Add</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => router.push('/transactions')}>
+                <DollarSign className="h-4 w-4 mr-2" />
+                Transaction
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push('/accounts')}>
+                <CreditCard className="h-4 w-4 mr-2" />
+                Account
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push('/receipts')}>
+                <FileText className="h-4 w-4 mr-2" />
+                Receipt
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* Notifications */}
-          <Button variant="ghost" size="icon" className="relative">
-            <Bell className="h-5 w-5" />
-            <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-[10px] font-medium text-destructive-foreground flex items-center justify-center">
-              3
-            </span>
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="relative">
+                <Bell className="h-5 w-5" />
+                <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-[10px] font-medium text-destructive-foreground flex items-center justify-center">
+                  3
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => router.push('/transactions')}>
+                <div className="flex flex-col gap-1">
+                  <span className="font-medium">Unreviewed Transactions</span>
+                  <span className="text-xs text-muted-foreground">You have transactions that need review</span>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push('/receipts')}>
+                <div className="flex flex-col gap-1">
+                  <span className="font-medium">Pending Receipts</span>
+                  <span className="text-xs text-muted-foreground">Receipts waiting to be processed</span>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => router.push('/accounts')}>
+                <span className="text-sm text-muted-foreground">Sync your accounts for latest data</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* Settings Dropdown */}
           <div className="relative">
