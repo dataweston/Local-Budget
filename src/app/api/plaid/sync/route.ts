@@ -13,10 +13,13 @@ export async function POST(request: NextRequest) {
 
     const { plaidItemId } = await request.json();
 
+    console.log(`[Plaid Sync] Received request for plaidItemId: ${plaidItemId}`);
+
     // Get the Plaid item with its accounts
+    // Note: plaidItemId from UI is PlaidItem.itemId (Plaid's ID), not PlaidItem.id (our DB cuid)
     const plaidItem = await db.plaidItem.findFirst({
       where: {
-        id: plaidItemId,
+        itemId: plaidItemId, // Query by itemId, not id
         userId: session.user.id,
       },
       include: {

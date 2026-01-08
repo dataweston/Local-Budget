@@ -365,6 +365,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Sync payouts (bank transfers from Square to seller's bank account)
+    let payoutsAdded = 0;
     try {
       const { listSquarePayouts, mapSquarePayout } = await import('@/lib/square');
       const { payouts } = await listSquarePayouts({
@@ -376,9 +377,21 @@ export async function POST(request: NextRequest) {
       
       console.log(`[Square Sync] Found ${payouts.length} payouts from Square`);
       
+      // Log all payout statuses for debugging
+      const statusCounts: Record<string, number> = {};
       for (const payout of payouts) {
-        // Only sync completed payouts (PAID status)
-        if (payout.status !== 'PAID') continue;
+        const status = payout.status || 'UNKNOWN';
+        statusCounts[status] = (statusCounts[status] || 0) + 1;
+      }
+      console.log(`[Square Sync] Payout statuses:`, statusCounts);
+      
+      for (const payout of payouts) {
+        // Sync completed payouts (PAID or COMPLETED status)
+        const status = (payout.status || '').toUpperCase();
+        if (status !== 'PAID' && status !== 'COMPLETED' && status !== 'SENT') {
+          console.log(`[Square Sync] Skipping payout ${payout.id} with status: ${payout.status}`);
+          continue;
+        }
         
         const mapped = mapSquarePayout(payout);
         const externalId = squarePayoutExternalId(mapped.id);
@@ -421,10 +434,11 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        if (!existing) added++;
+        if (!existing) payoutsAdded++;
       }
+      console.log(`[Square Sync] Added ${payoutsAdded} new payouts`);
     } catch (payoutError) {
-      console.log('Error syncing payouts (non-fatal):', payoutError);
+      console.log('[Square Sync] Error syncing payouts (non-fatal):', payoutError);
     }
 
     // Calculate total balance from all completed transactions
@@ -452,13 +466,14 @@ export async function POST(request: NextRequest) {
       data: { lastSyncedAt: new Date() },
     });
 
-    console.log(`[Square Sync] Complete: ${added} transactions added, ${feesAdded} processing fees added`);
+    console.log(`[Square Sync] Complete: ${added} transactions added, ${feesAdded} processing fees added, ${payoutsAdded} payouts added`);
 
     return NextResponse.json({
       success: true,
       added,
       feesAdded,
-      message: `Synced ${added} new transactions and ${feesAdded} processing fees from Square`,
+      payoutsAdded,
+      message: `Synced ${added} new transactions, ${feesAdded} processing fees, and ${payoutsAdded} payouts from Square`,
     });
   } catch (error) {
     console.error('[Square Sync] Error syncing Square transactions:', error);
