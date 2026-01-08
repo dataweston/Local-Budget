@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { exchangePublicToken, getAccountBalances, getInstitution, syncTransactions, mapPlaidTransaction } from '@/lib/plaid';
+import { exchangePublicToken, getAccountBalances, getInstitution, getAllTransactions, syncTransactions, mapPlaidTransaction } from '@/lib/plaid';
 
 export async function POST(request: NextRequest) {
   try {
@@ -103,11 +103,9 @@ export async function POST(request: NextRequest) {
       createdAccounts.push(financialAccount);
     }
 
-    // Trigger initial transaction sync
+    // Trigger initial transaction sync - fetch 1 year of history
     try {
-      console.log('Starting initial Plaid transaction sync...');
-      let cursor: string | undefined = undefined;
-      let hasMore = true;
+      console.log('[Plaid Initial Sync] Starting 365-day historical sync...');
       let totalAdded = 0;
 
       // Build a map of plaidAccountId -> financialAccountId for quick lookup
@@ -118,57 +116,63 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      while (hasMore) {
-        const syncResponse = await syncTransactions(access_token, cursor);
-        console.log(`Sync response: ${syncResponse.added.length} added, hasMore: ${syncResponse.has_more}`);
+      // Calculate date range (last 365 days)
+      const endDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      
+      console.log(`[Plaid Initial Sync] Fetching transactions from ${startDate} to ${endDate}`);
+      
+      // Use getAllTransactions for full historical data
+      const allTransactions = await getAllTransactions(access_token, startDate, endDate);
+      console.log(`[Plaid Initial Sync] Retrieved ${allTransactions.length} total transactions from Plaid`);
+
+      for (const transaction of allTransactions) {
+        const mappedTx = mapPlaidTransaction(transaction);
+        const financialAccountId = accountMap.get(mappedTx.accountId);
         
-        // Process added transactions
-        for (const transaction of syncResponse.added) {
-          const mappedTx = mapPlaidTransaction(transaction);
-          const financialAccountId = accountMap.get(mappedTx.accountId);
-          
-          if (!financialAccountId) continue;
+        if (!financialAccountId) continue;
 
-          // Check if transaction already exists
-          const existing = await db.transaction.findFirst({
-            where: { externalId: mappedTx.transactionId },
+        // Check if transaction already exists
+        const existing = await db.transaction.findFirst({
+          where: { externalId: mappedTx.transactionId },
+        });
+
+        if (!existing) {
+          // Plaid convention: positive = money OUT (expense), negative = money IN (income)
+          await db.transaction.create({
+            data: {
+              accountId: financialAccountId,
+              amount: Math.abs(mappedTx.amount),
+              type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+              status: mappedTx.pending ? 'PENDING' : 'POSTED',
+              date: new Date(mappedTx.date),
+              description: mappedTx.name,
+              merchantName: mappedTx.merchantName,
+              externalId: mappedTx.transactionId,
+              isReviewed: false,
+            },
           });
-
-          if (!existing) {
-            // Plaid convention: positive = money OUT (expense), negative = money IN (income)
-            await db.transaction.create({
-              data: {
-                accountId: financialAccountId,
-                amount: Math.abs(mappedTx.amount),
-                type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
-                status: mappedTx.pending ? 'PENDING' : 'POSTED',
-                date: new Date(mappedTx.date),
-                description: mappedTx.name,
-                merchantName: mappedTx.merchantName,
-                externalId: mappedTx.transactionId,
-                isReviewed: false,
-              },
-            });
-            totalAdded++;
-          }
+          totalAdded++;
         }
-
-        cursor = syncResponse.next_cursor;
-        hasMore = syncResponse.has_more;
       }
 
-      // Save the cursor for future incremental syncs
-      await db.plaidItem.update({
-        where: { id: plaidItem.id },
-        data: { 
-          cursor: cursor,
-          lastSyncedAt: new Date(),
-        },
-      });
+      // Do a cursor sync to set the cursor for future incremental syncs
+      try {
+        const syncResponse = await syncTransactions(access_token);
+        await db.plaidItem.update({
+          where: { id: plaidItem.id },
+          data: { 
+            cursor: syncResponse.next_cursor,
+            lastSyncedAt: new Date(),
+          },
+        });
+      } catch (cursorError) {
+        console.log('[Plaid Initial Sync] Could not set cursor:', cursorError);
+      }
 
-      console.log(`Initial sync complete: ${totalAdded} transactions added`);
+      console.log(`[Plaid Initial Sync] Complete: ${totalAdded} transactions added`);
     } catch (syncError) {
-      console.error('Error during initial sync (non-fatal):', syncError);
+      console.error('[Plaid Initial Sync] Error during initial sync (non-fatal):', syncError);
       // Don't fail the whole request if sync fails - account is still connected
     }
 
