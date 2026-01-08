@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import {
   Card,
   CardContent,
@@ -35,9 +36,11 @@ export function RecentTransactions({ transactions }: RecentTransactionsProps) {
           <CardTitle>Recent Transactions</CardTitle>
           <CardDescription>Your latest financial activity</CardDescription>
         </div>
-        <Button variant="ghost" size="sm" className="gap-1">
-          View all
-          <ArrowRight className="h-4 w-4" />
+        <Button variant="ghost" size="sm" className="gap-1" asChild>
+          <Link href="/transactions">
+            View all
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </Button>
       </CardHeader>
       <CardContent>

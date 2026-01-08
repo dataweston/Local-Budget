@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
 import {
@@ -37,6 +38,8 @@ import {
   Link2,
   ChevronDown,
   Loader2,
+  Edit,
+  Trash2,
 } from 'lucide-react';
 
 const accountTypeIcons: Record<string, any> = {
@@ -60,11 +63,46 @@ const accountTypeColors: Record<string, string> = {
 export function AccountsList() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null);
+  const router = useRouter();
   const { data: accounts, isLoading, refetch } = api.accounts.list.useQuery();
   const { data: balances } = api.accounts.balances.useQuery();
+  const deleteAccount = api.accounts.delete.useMutation({
+    onSuccess: () => refetch(),
+  });
 
   const handleAccountLinked = () => {
     refetch();
+  };
+
+  const handleSyncAccount = async (accountId: string, squareConnectionId?: string | null, plaidItemId?: string | null) => {
+    setSyncingAccountId(accountId);
+    try {
+      if (squareConnectionId) {
+        await fetch('/api/square/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId }),
+        });
+      } else if (plaidItemId) {
+        await fetch('/api/plaid/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plaidItemId }),
+        });
+      }
+      refetch();
+    } catch (error) {
+      console.error('Error syncing account:', error);
+    } finally {
+      setSyncingAccountId(null);
+    }
+  };
+
+  const handleDeleteAccount = async (accountId: string) => {
+    if (confirm('Are you sure you want to delete this account? This will also delete all associated transactions.')) {
+      deleteAccount.mutate({ id: accountId });
+    }
   };
 
   const handleSyncAll = async () => {
@@ -308,9 +346,48 @@ export function AccountsList() {
                             {account._count.transactions} transactions
                           </p>
                         </div>
-                        <Button variant="ghost" size="icon">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem 
+                              onClick={() => router.push(`/transactions?accountId=${account.id}`)}
+                            >
+                              View Transactions
+                            </DropdownMenuItem>
+                            {(account.squareConnectionId || account.plaidItemId) && (
+                              <DropdownMenuItem 
+                                onClick={() => handleSyncAccount(account.id, account.squareConnectionId, account.plaidItemId)}
+                                disabled={syncingAccountId === account.id}
+                              >
+                                {syncingAccountId === account.id ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                    Syncing...
+                                  </>
+                                ) : (
+                                  <>
+                                    <RefreshCw className="h-4 w-4 mr-2" />
+                                    Sync Now
+                                  </>
+                                )}
+                              </DropdownMenuItem>
+                            )}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem 
+                              className="text-red-600"
+                              onClick={() => handleDeleteAccount(account.id)}
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Delete Account
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </div>
                   );

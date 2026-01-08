@@ -14,6 +14,14 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import { UploadReceiptModal } from './UploadReceiptModal';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import {
   Upload,
@@ -26,6 +34,20 @@ import {
   Image,
 } from 'lucide-react';
 
+interface ReceiptData {
+  id: string;
+  fileName: string;
+  fileUrl?: string | null;
+  fileType: string;
+  vendorName?: string | null;
+  totalAmount?: any;
+  receiptDate?: Date | string | null;
+  status: string;
+  createdAt: Date | string;
+  transactionLinks: any[];
+  _count: { lineItems: number };
+}
+
 const statusConfig = {
   PENDING: { icon: Clock, color: 'text-yellow-600', bg: 'bg-yellow-50' },
   PROCESSING: { icon: Clock, color: 'text-blue-600', bg: 'bg-blue-50' },
@@ -36,8 +58,9 @@ const statusConfig = {
 
 export function ReceiptsList() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [selectedReceipt, setSelectedReceipt] = useState<ReceiptData | null>(null);
 
-  const { data, isLoading } = api.receipts.list.useQuery({
+  const { data, isLoading, refetch } = api.receipts.list.useQuery({
     status: statusFilter as any,
   });
 
@@ -86,10 +109,15 @@ export function ReceiptsList() {
             </CardContent>
           </Card>
           <Card className="flex items-center justify-center">
-            <Button size="lg" className="gap-2">
-              <Upload className="h-5 w-5" />
-              Upload Receipt
-            </Button>
+            <UploadReceiptModal
+              onSuccess={() => refetch()}
+              trigger={
+                <Button size="lg" className="gap-2">
+                  <Upload className="h-5 w-5" />
+                  Upload Receipt
+                </Button>
+              }
+            />
           </Card>
         </div>
 
@@ -125,9 +153,16 @@ export function ReceiptsList() {
                 <FileText className="h-12 w-12 mb-4" />
                 <p className="text-lg font-medium">No receipts yet</p>
                 <p className="text-sm">Upload your first receipt to get started</p>
-                <Button className="mt-4 gap-2">
-                  <Upload className="h-4 w-4" />
-                  Upload Receipt
+                <Button className="mt-4 gap-2" asChild>
+                  <UploadReceiptModal
+                    onSuccess={() => refetch()}
+                    trigger={
+                      <span className="flex items-center gap-2">
+                        <Upload className="h-4 w-4" />
+                        Upload Receipt
+                      </span>
+                    }
+                  />
                 </Button>
               </div>
             ) : (
@@ -140,6 +175,7 @@ export function ReceiptsList() {
                     <Card
                       key={receipt.id}
                       className="hover:shadow-md transition-shadow cursor-pointer"
+                      onClick={() => setSelectedReceipt(receipt as ReceiptData)}
                     >
                       <CardContent className="p-4">
                         <div className="flex items-start gap-3">
@@ -205,6 +241,59 @@ export function ReceiptsList() {
             )}
           </CardContent>
         </Card>
+        
+        {/* Receipt Detail Dialog */}
+        <Dialog open={!!selectedReceipt} onOpenChange={(open) => !open && setSelectedReceipt(null)}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{selectedReceipt?.vendorName || selectedReceipt?.fileName}</DialogTitle>
+              <DialogDescription>Receipt Details</DialogDescription>
+            </DialogHeader>
+            {selectedReceipt && (
+              <div className="space-y-4">
+                {selectedReceipt.fileUrl && selectedReceipt.fileType.includes('image') && (
+                  <div className="rounded-lg overflow-hidden border">
+                    <img 
+                      src={selectedReceipt.fileUrl} 
+                      alt="Receipt" 
+                      className="w-full h-auto max-h-64 object-contain"
+                    />
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-4">
+                  {selectedReceipt.totalAmount && (
+                    <div>
+                      <p className="text-sm text-muted-foreground">Total Amount</p>
+                      <p className="text-lg font-bold">{formatCurrency(Number(selectedReceipt.totalAmount))}</p>
+                    </div>
+                  )}
+                  {selectedReceipt.receiptDate && (
+                    <div>
+                      <p className="text-sm text-muted-foreground">Receipt Date</p>
+                      <p className="font-medium">{formatDate(selectedReceipt.receiptDate)}</p>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-sm text-muted-foreground">Status</p>
+                    <Badge variant="outline">{selectedReceipt.status}</Badge>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Uploaded</p>
+                    <p className="font-medium">{formatDate(selectedReceipt.createdAt)}</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Linked Transactions</p>
+                  <p className="font-medium">
+                    {selectedReceipt.transactionLinks.length > 0 
+                      ? `${selectedReceipt.transactionLinks.length} transaction(s)` 
+                      : 'Not linked to any transactions'}
+                  </p>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

@@ -12,6 +12,10 @@ export async function POST(request: NextRequest) {
     }
 
     const { accountId, syncOrders = false } = await request.json();
+    
+    if (!accountId) {
+      return NextResponse.json({ error: 'Account ID is required' }, { status: 400 });
+    }
 
     // Get the Square account with its connection
     const account = await db.financialAccount.findFirst({
@@ -104,10 +108,24 @@ export async function POST(request: NextRequest) {
       // This would need additional implementation
     }
 
-    // Update account and connection last synced time
+    // Calculate total balance from all completed transactions
+    const allTransactions = await db.transaction.findMany({
+      where: { accountId: account.id, status: 'POSTED' },
+      select: { amount: true, type: true },
+    });
+    
+    const calculatedBalance = allTransactions.reduce((sum, tx) => {
+      const amount = Number(tx.amount);
+      return tx.type === 'INCOME' ? sum + amount : sum - amount;
+    }, 0);
+
+    // Update account balance and sync time
     await db.financialAccount.update({
       where: { id: account.id },
-      data: { lastSyncedAt: new Date() },
+      data: { 
+        lastSyncedAt: new Date(),
+        currentBalance: calculatedBalance,
+      },
     });
 
     await db.squareConnection.update({

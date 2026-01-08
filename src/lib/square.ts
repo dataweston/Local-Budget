@@ -104,7 +104,7 @@ export async function getSquareBankAccounts(accessToken?: string) {
   return bankAccounts;
 }
 
-// Get Square balance (from locations)
+// Get Square balance (from locations and calculate from payments)
 export async function getSquareBalance(accessToken?: string) {
   const client = accessToken ? createUserClient(accessToken) : squareClient;
   
@@ -112,13 +112,39 @@ export async function getSquareBalance(accessToken?: string) {
   const locationsResponse = await client.locations.list();
   const locations = locationsResponse.locations || [];
   
-  // Each location has its own balance info
-  return locations.map((location) => ({
-    locationId: location.id,
-    name: location.name,
-    currency: location.currency,
-    // Note: Actual balance comes from cash drawer or bank deposits
-  }));
+  // Calculate balance from recent payments per location
+  const balances = await Promise.all(
+    locations.map(async (location) => {
+      try {
+        // Get payments for this location (last 30 days)
+        const paymentsPage = await client.payments.list({
+          locationId: location.id,
+          beginTime: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+        
+        const payments = paymentsPage.data || [];
+        const totalAmount = payments
+          .filter((p: any) => p.status === 'COMPLETED')
+          .reduce((sum: number, p: any) => sum + Number(p.amountMoney?.amount || 0), 0);
+        
+        return {
+          locationId: location.id,
+          name: location.name,
+          currency: location.currency || 'USD',
+          balance: totalAmount / 100, // Convert from cents
+        };
+      } catch {
+        return {
+          locationId: location.id,
+          name: location.name,
+          currency: location.currency || 'USD',
+          balance: 0,
+        };
+      }
+    })
+  );
+  
+  return balances;
 }
 
 // ============================================================================

@@ -14,6 +14,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
 import { formatCurrency, formatDate, cn, classificationColor } from '@/lib/utils';
 import { AddTransactionModal } from './AddTransactionModal';
 import { UploadReceiptModal } from '@/components/receipts/UploadReceiptModal';
@@ -32,10 +39,24 @@ import {
   Upload,
 } from 'lucide-react';
 
+interface SelectedTransaction {
+  id: string;
+  description: string;
+  merchantName?: string | null;
+  amount: any;
+  type: string;
+  date: any;
+  account?: { name: string } | null;
+  category?: { name: string; icon: string | null } | null;
+  classification?: string | null;
+  isReviewed: boolean;
+}
+
 export function TransactionsList() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedTx, setSelectedTx] = useState<SelectedTransaction | null>(null);
 
   const { data, isLoading } = api.transactions.list.useQuery({
     page,
@@ -47,6 +68,69 @@ export function TransactionsList() {
     <div className="flex min-h-screen flex-col">
       <Header />
       <AddTransactionModal open={showAddModal} onOpenChange={setShowAddModal} />
+      
+      {/* Transaction Detail Dialog */}
+      <Dialog open={!!selectedTx} onOpenChange={(open) => !open && setSelectedTx(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{selectedTx?.merchantName || selectedTx?.description}</DialogTitle>
+            <DialogDescription>Transaction Details</DialogDescription>
+          </DialogHeader>
+          {selectedTx && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Amount</p>
+                  <p className={cn(
+                    "text-lg font-bold",
+                    selectedTx.type === 'INCOME' ? 'text-green-600' : 'text-red-600'
+                  )}>
+                    {formatCurrency(Number(selectedTx.amount))}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Date</p>
+                  <p className="font-medium">{formatDate(selectedTx.date)}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Account</p>
+                  <p className="font-medium">{selectedTx.account?.name || 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Category</p>
+                  <p className="font-medium">
+                    {selectedTx.category ? `${selectedTx.category.icon || ''} ${selectedTx.category.name}` : 'Uncategorized'}
+                  </p>
+                </div>
+                {selectedTx.classification && (
+                  <div>
+                    <p className="text-sm text-muted-foreground">Classification</p>
+                    <Badge className={classificationColor(selectedTx.classification)}>
+                      {selectedTx.classification}
+                    </Badge>
+                  </div>
+                )}
+                <div>
+                  <p className="text-sm text-muted-foreground">Status</p>
+                  <p className="font-medium flex items-center gap-1">
+                    {selectedTx.isReviewed ? (
+                      <><Check className="h-4 w-4 text-green-600" /> Reviewed</>
+                    ) : (
+                      <><X className="h-4 w-4 text-muted-foreground" /> Not Reviewed</>
+                    )}
+                  </p>
+                </div>
+              </div>
+              {selectedTx.description && selectedTx.description !== selectedTx.merchantName && (
+                <div>
+                  <p className="text-sm text-muted-foreground">Description</p>
+                  <p className="font-medium">{selectedTx.description}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <main className="flex-1 container mx-auto px-4 py-6">
         <Card>
@@ -121,6 +205,7 @@ export function TransactionsList() {
                       <div
                         key={tx.id}
                         className="grid grid-cols-12 gap-4 px-4 py-3 items-center hover:bg-accent/50 cursor-pointer"
+                        onClick={() => setSelectedTx(tx as SelectedTransaction)}
                       >
                         <div className="col-span-1 text-sm">
                           {formatDate(tx.date, { month: 'short', day: 'numeric' })}

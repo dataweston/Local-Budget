@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Card,
   CardContent,
@@ -37,6 +39,8 @@ const accountTypeIcons: Record<string, any> = {
 };
 
 export function AccountsOverview({ accounts }: AccountsOverviewProps) {
+  const router = useRouter();
+  
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -46,7 +50,7 @@ export function AccountsOverview({ accounts }: AccountsOverviewProps) {
             Total: {formatCurrency(accounts.totalBalance)}
           </CardDescription>
         </div>
-        <Button variant="ghost" size="icon">
+        <Button variant="ghost" size="icon" onClick={() => router.push('/accounts')}>
           <Plus className="h-4 w-4" />
         </Button>
       </CardHeader>
@@ -55,8 +59,8 @@ export function AccountsOverview({ accounts }: AccountsOverviewProps) {
           <div className="flex flex-col items-center justify-center h-48 text-muted-foreground gap-2">
             <Wallet className="h-8 w-8" />
             <p className="text-sm">No accounts yet</p>
-            <Button variant="outline" size="sm">
-              Add Account
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/accounts">Add Account</Link>
             </Button>
           </div>
         ) : (
