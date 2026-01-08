@@ -26,10 +26,14 @@ const SQUARE_OAUTH_URL = isSquareProduction
   : 'https://connect.squareupsandbox.com/oauth2/authorize';
 
 // Generate OAuth authorization URL
-export function getSquareOAuthUrl(state: string) {
+export function getSquareOAuthUrl(state: string, redirectUri?: string) {
   if (!squareAppId) {
     throw new Error('Missing Square application id');
   }
+  
+  // Use provided redirectUri or construct from NEXTAUTH_URL
+  const callbackUrl = redirectUri || `${process.env.NEXTAUTH_URL}/api/square/callback`;
+  
   const params = new URLSearchParams({
     client_id: squareAppId,
     scope: [
@@ -45,6 +49,7 @@ export function getSquareOAuthUrl(state: string) {
     ].join(' '),
     state,
     session: 'false',
+    redirect_uri: callbackUrl,
   });
 
   return `${SQUARE_OAUTH_URL}?${params.toString()}`;
