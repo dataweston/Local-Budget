@@ -32,6 +32,11 @@ export async function createLinkToken(userId: string, accessToken?: string) {
     products: accessToken ? undefined : PLAID_PRODUCTS,
     country_codes: PLAID_COUNTRY_CODES,
     language: 'en',
+    // Request 730 days (2 years) of transaction history on initial connect
+    // This MUST be set during link token creation - cannot be changed after connection
+    transactions: {
+      days_requested: 730,
+    },
     ...(accessToken && { access_token: accessToken }), // For update mode
   };
 

@@ -105,6 +105,25 @@ export function AccountsList() {
     }
   };
 
+  const handleDisconnectPlaid = async (plaidItemId: string) => {
+    if (confirm('Disconnect this bank account? This will remove the account and all its transactions. You can reconnect to get up to 2 years of transaction history.')) {
+      try {
+        const response = await fetch('/api/plaid/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plaidItemId }),
+        });
+        if (response.ok) {
+          refetch();
+        } else {
+          console.error('Failed to disconnect Plaid account');
+        }
+      } catch (error) {
+        console.error('Error disconnecting Plaid account:', error);
+      }
+    }
+  };
+
   const handleSyncAll = async (fullSync = false) => {
     setIsSyncing(true);
     try {
@@ -391,6 +410,15 @@ export function AccountsList() {
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuSeparator />
+                            {account.plaidItemId && (
+                              <DropdownMenuItem 
+                                className="text-orange-600"
+                                onClick={() => handleDisconnectPlaid(account.plaidItemId!)}
+                              >
+                                <Link2 className="h-4 w-4 mr-2" />
+                                Disconnect & Reconnect (for 2yr history)
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem 
                               className="text-red-600"
                               onClick={() => handleDeleteAccount(account.id)}
