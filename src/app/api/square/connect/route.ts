@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { db } from '@/lib/db';
 import { getSquareOAuthUrl } from '@/lib/square';
 import crypto from 'crypto';
 
@@ -15,25 +14,24 @@ export async function POST(request: NextRequest) {
     // Generate a secure state parameter to prevent CSRF
     const state = crypto.randomBytes(32).toString('hex');
 
-    // Store state in database for verification during callback
-    await db.user.update({
-      where: { id: session.user.id },
-      data: {
-        // Store in metadata or a dedicated field
-        // Using updatedAt as a workaround - in production use a proper state storage
-      },
-    });
+    // Get the redirect URI from request origin or env
+    const origin = request.headers.get('origin') || process.env.NEXTAUTH_URL || '';
+    const redirectUri = `${origin}/api/square/callback`;
+    
+    console.log('[Square Connect] Origin:', origin);
+    console.log('[Square Connect] Redirect URI:', redirectUri);
 
-    // For now, store state in a cookie or return it to client
-    // The client should store this and verify it in the callback
-    const authUrl = getSquareOAuthUrl(state);
+    // Generate OAuth URL with explicit redirect URI
+    const authUrl = getSquareOAuthUrl(state, redirectUri);
+    
+    console.log('[Square Connect] Generated auth URL:', authUrl);
 
     return NextResponse.json({
       authUrl,
       state, // Client should store this securely
     });
   } catch (error) {
-    console.error('Error initiating Square OAuth:', error);
+    console.error('[Square Connect] Error initiating Square OAuth:', error);
     return NextResponse.json(
       { error: 'Failed to initiate Square connection' },
       { status: 500 }

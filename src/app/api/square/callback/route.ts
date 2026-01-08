@@ -11,10 +11,16 @@ export const runtime = 'nodejs';
 export async function GET(request: NextRequest) {
   noStore(); // Ensure dynamic rendering
   
+  console.log('[Square Callback] Received callback request');
+  console.log('[Square Callback] URL:', request.url);
+  
   try {
     const session = await getServerSession(authOptions);
+    console.log('[Square Callback] Session:', session?.user?.id ? 'authenticated' : 'not authenticated');
+    
     if (!session?.user?.id) {
       // Redirect to login with return URL
+      console.log('[Square Callback] No session, redirecting to login');
       return NextResponse.redirect(new URL('/login?callbackUrl=/api/square/callback', request.url));
     }
 
@@ -22,27 +28,43 @@ export async function GET(request: NextRequest) {
     const code = searchParams.get('code');
     const state = searchParams.get('state');
     const error = searchParams.get('error');
+    
+    console.log('[Square Callback] Code:', code ? 'present' : 'missing');
+    console.log('[Square Callback] State:', state ? 'present' : 'missing');
+    console.log('[Square Callback] Error:', error || 'none');
 
     if (error) {
-      console.error('Square OAuth error:', error);
+      console.error('[Square Callback] OAuth error:', error);
       return NextResponse.redirect(new URL('/accounts?error=square_denied', request.url));
     }
 
     if (!code) {
+      console.error('[Square Callback] No authorization code received');
       return NextResponse.redirect(new URL('/accounts?error=no_code', request.url));
     }
 
     // TODO: Verify state parameter against stored value
+    console.log('[Square Callback] Exchanging code for token...');
 
     // Exchange authorization code for access token
-    const tokenResponse = await exchangeSquareAuthCode(code);
+    let tokenResponse;
+    try {
+      tokenResponse = await exchangeSquareAuthCode(code);
+      console.log('[Square Callback] Token exchange successful, merchantId:', tokenResponse.merchantId);
+    } catch (tokenError) {
+      console.error('[Square Callback] Token exchange failed:', tokenError);
+      return NextResponse.redirect(new URL('/accounts?error=token_exchange_failed', request.url));
+    }
 
     if (!tokenResponse.accessToken) {
+      console.error('[Square Callback] No access token in response');
       return NextResponse.redirect(new URL('/accounts?error=token_failed', request.url));
     }
 
+    console.log('[Square Callback] Getting merchant locations...');
     // Get merchant info from locations
     const locations = await getSquareBalance(tokenResponse.accessToken);
+    console.log('[Square Callback] Found', locations.length, 'locations');
     const merchantName = locations[0]?.name || 'Square Account';
 
     // Get or create default entity for the user
