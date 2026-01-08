@@ -56,11 +56,12 @@ export async function POST(request: NextRequest) {
         });
 
         if (!existing) {
+          // Plaid convention: positive = money OUT (expense), negative = money IN (income)
           await db.transaction.create({
             data: {
               accountId: financialAccount.id,
-              amount: Math.abs(mappedTx.amount), // Plaid uses negative for expenses
-              type: mappedTx.amount < 0 ? 'EXPENSE' : 'INCOME',
+              amount: Math.abs(mappedTx.amount), // Plaid uses negative for income
+              type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
               status: mappedTx.pending ? 'PENDING' : 'POSTED',
               date: new Date(mappedTx.date),
               description: mappedTx.name,
@@ -77,11 +78,12 @@ export async function POST(request: NextRequest) {
       for (const transaction of syncResponse.modified) {
         const mappedTx = mapPlaidTransaction(transaction);
         
+        // Plaid convention: positive = money OUT (expense), negative = money IN (income)
         await db.transaction.updateMany({
           where: { externalId: mappedTx.transactionId },
           data: {
             amount: Math.abs(mappedTx.amount),
-            type: mappedTx.amount < 0 ? 'EXPENSE' : 'INCOME',
+            type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
             status: mappedTx.pending ? 'PENDING' : 'POSTED',
             description: mappedTx.name,
             merchantName: mappedTx.merchantName,

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { exchangePublicToken, getAccountBalances, getInstitution } from '@/lib/plaid';
+import { exchangePublicToken, getAccountBalances, getInstitution, syncTransactions, mapPlaidTransaction } from '@/lib/plaid';
 
 export async function POST(request: NextRequest) {
   try {
@@ -101,6 +101,75 @@ export async function POST(request: NextRequest) {
       });
 
       createdAccounts.push(financialAccount);
+    }
+
+    // Trigger initial transaction sync
+    try {
+      console.log('Starting initial Plaid transaction sync...');
+      let cursor: string | undefined = undefined;
+      let hasMore = true;
+      let totalAdded = 0;
+
+      // Build a map of plaidAccountId -> financialAccountId for quick lookup
+      const accountMap = new Map<string, string>();
+      for (const acc of createdAccounts) {
+        if (acc.plaidAccountId) {
+          accountMap.set(acc.plaidAccountId, acc.id);
+        }
+      }
+
+      while (hasMore) {
+        const syncResponse = await syncTransactions(access_token, cursor);
+        console.log(`Sync response: ${syncResponse.added.length} added, hasMore: ${syncResponse.has_more}`);
+        
+        // Process added transactions
+        for (const transaction of syncResponse.added) {
+          const mappedTx = mapPlaidTransaction(transaction);
+          const financialAccountId = accountMap.get(mappedTx.accountId);
+          
+          if (!financialAccountId) continue;
+
+          // Check if transaction already exists
+          const existing = await db.transaction.findFirst({
+            where: { externalId: mappedTx.transactionId },
+          });
+
+          if (!existing) {
+            // Plaid convention: positive = money OUT (expense), negative = money IN (income)
+            await db.transaction.create({
+              data: {
+                accountId: financialAccountId,
+                amount: Math.abs(mappedTx.amount),
+                type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+                status: mappedTx.pending ? 'PENDING' : 'POSTED',
+                date: new Date(mappedTx.date),
+                description: mappedTx.name,
+                merchantName: mappedTx.merchantName,
+                externalId: mappedTx.transactionId,
+                isReviewed: false,
+              },
+            });
+            totalAdded++;
+          }
+        }
+
+        cursor = syncResponse.next_cursor;
+        hasMore = syncResponse.has_more;
+      }
+
+      // Save the cursor for future incremental syncs
+      await db.plaidItem.update({
+        where: { id: plaidItem.id },
+        data: { 
+          cursor: cursor,
+          lastSyncedAt: new Date(),
+        },
+      });
+
+      console.log(`Initial sync complete: ${totalAdded} transactions added`);
+    } catch (syncError) {
+      console.error('Error during initial sync (non-fatal):', syncError);
+      // Don't fail the whole request if sync fails - account is still connected
     }
 
     return NextResponse.json({
