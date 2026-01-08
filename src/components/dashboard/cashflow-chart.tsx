@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -29,6 +30,8 @@ interface CashflowChartProps {
 }
 
 export function CashflowChart({ data }: CashflowChartProps) {
+  const [view, setView] = useState<'all' | 'income' | 'expenses'>('all');
+
   // Format data for display
   const chartData = data.map((item) => ({
     ...item,
@@ -42,7 +45,7 @@ export function CashflowChart({ data }: CashflowChartProps) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Cashflow</CardTitle>
-        <Tabs defaultValue="all" className="w-auto">
+        <Tabs value={view} onValueChange={(value) => setView(value as 'all' | 'income' | 'expenses')} className="w-auto">
           <TabsList className="h-8">
             <TabsTrigger value="all" className="text-xs px-2">
               All
@@ -111,24 +114,28 @@ export function CashflowChart({ data }: CashflowChartProps) {
                 }}
               />
               <Legend />
-              <Area
-                type="monotone"
-                dataKey="income"
-                name="Income"
-                stroke="#22c55e"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#colorIncome)"
-              />
-              <Area
-                type="monotone"
-                dataKey="expenses"
-                name="Expenses"
-                stroke="#ef4444"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#colorExpenses)"
-              />
+              {(view === 'all' || view === 'income') && (
+                <Area
+                  type="monotone"
+                  dataKey="income"
+                  name="Income"
+                  stroke="#22c55e"
+                  strokeWidth={2}
+                  fillOpacity={1}
+                  fill="url(#colorIncome)"
+                />
+              )}
+              {(view === 'all' || view === 'expenses') && (
+                <Area
+                  type="monotone"
+                  dataKey="expenses"
+                  name="Expenses"
+                  stroke="#ef4444"
+                  strokeWidth={2}
+                  fillOpacity={1}
+                  fill="url(#colorExpenses)"
+                />
+              )}
             </AreaChart>
           </ResponsiveContainer>
         )}

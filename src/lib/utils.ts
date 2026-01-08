@@ -1,16 +1,28 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { Decimal } from '@prisma/client/runtime/library';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Convert Prisma Decimal, number, or string to a plain number
+ */
+export function toNumber(value: Decimal | number | string | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return parseFloat(value) || 0;
+  // Prisma Decimal type
+  return Number(value);
+}
+
 export function formatCurrency(
-  amount: number | string,
+  amount: Decimal | number | string | null | undefined,
   currency: string = 'USD',
   locale: string = 'en-US'
 ): string {
-  const numAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
+  const numAmount = toNumber(amount);
   return new Intl.NumberFormat(locale, {
     style: 'currency',
     currency,
