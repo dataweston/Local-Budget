@@ -64,6 +64,45 @@ export async function syncTransactions(accessToken: string, cursor?: string) {
   return response.data;
 }
 
+// Get transactions with explicit date range (for full historical fetch)
+export async function getTransactions(
+  accessToken: string, 
+  startDate: string, 
+  endDate: string,
+  offset: number = 0
+) {
+  const response = await plaidClient.transactionsGet({
+    access_token: accessToken,
+    start_date: startDate,
+    end_date: endDate,
+    options: {
+      count: 500, // Max per request
+      offset: offset,
+    },
+  });
+  return response.data;
+}
+
+// Get all transactions for a date range (handles pagination)
+export async function getAllTransactions(
+  accessToken: string,
+  startDate: string,
+  endDate: string
+): Promise<any[]> {
+  const allTransactions: any[] = [];
+  let offset = 0;
+  let totalTransactions = 0;
+
+  do {
+    const response = await getTransactions(accessToken, startDate, endDate, offset);
+    allTransactions.push(...response.transactions);
+    totalTransactions = response.total_transactions;
+    offset += response.transactions.length;
+  } while (offset < totalTransactions);
+
+  return allTransactions;
+}
+
 // Get institution info
 export async function getInstitution(institutionId: string) {
   const response = await plaidClient.institutionsGetById({

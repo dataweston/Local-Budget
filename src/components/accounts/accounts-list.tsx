@@ -75,7 +75,7 @@ export function AccountsList() {
     refetch();
   };
 
-  const handleSyncAccount = async (accountId: string, squareConnectionId?: string | null, plaidItemId?: string | null) => {
+  const handleSyncAccount = async (accountId: string, squareConnectionId?: string | null, plaidItemId?: string | null, fullSync = false) => {
     setSyncingAccountId(accountId);
     try {
       if (squareConnectionId) {
@@ -88,7 +88,7 @@ export function AccountsList() {
         await fetch('/api/plaid/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ plaidItemId }),
+          body: JSON.stringify({ plaidItemId, fullSync }),
         });
       }
       refetch();
@@ -105,7 +105,7 @@ export function AccountsList() {
     }
   };
 
-  const handleSyncAll = async () => {
+  const handleSyncAll = async (fullSync = false) => {
     setIsSyncing(true);
     try {
       // Get all linked accounts and sync them
@@ -120,13 +120,13 @@ export function AccountsList() {
           .map((a) => a.plaidItemId)
       )).filter(Boolean) as string[];
 
-      // Sync Plaid accounts
+      // Sync Plaid accounts (with fullSync for 1 year history)
       for (const plaidItemId of plaidItemIds) {
         try {
           await fetch('/api/plaid/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ plaidItemId }),
+            body: JSON.stringify({ plaidItemId, fullSync }),
           });
         } catch (error) {
           console.error('Error syncing Plaid item:', plaidItemId, error);
@@ -229,15 +229,27 @@ export function AccountsList() {
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={handleSyncAll}
-                disabled={isSyncing}
-              >
-                <RefreshCw className={cn("h-4 w-4 mr-2", isSyncing && "animate-spin")} />
-                {isSyncing ? 'Syncing...' : 'Sync All'}
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    disabled={isSyncing}
+                  >
+                    <RefreshCw className={cn("h-4 w-4 mr-2", isSyncing && "animate-spin")} />
+                    {isSyncing ? 'Syncing...' : 'Sync All'}
+                    <ChevronDown className="h-4 w-4 ml-2" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleSyncAll(false)}>
+                    Quick Sync (new transactions)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSyncAll(true)}>
+                    Full Sync (1 year history)
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               
               {/* Connect External Account Dropdown */}
               <DropdownMenu>
