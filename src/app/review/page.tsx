@@ -1,18 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -20,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { formatCurrency, formatDate, cn, classificationColor } from '@/lib/utils';
+import { formatCurrency, formatDate, cn, transactionTypeColor } from '@/lib/utils';
 import { useToastCallbacks } from '@/hooks/use-toast-mutation';
 import {
   CheckCircle2,
@@ -30,26 +28,30 @@ import {
   Check,
   SkipForward,
   Wand2,
+  Search,
+  Filter,
 } from 'lucide-react';
+
+type TransactionTypeFilter = '_all' | 'INCOME' | 'EXPENSE' | 'TRANSFER';
+type SuggestionFilter = '_all' | 'high' | 'with' | 'none';
 
 export default function ReviewPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [manualCategory, setManualCategory] = useState<Record<string, string>>({});
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
+  const [bulkCategoryId, setBulkCategoryId] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<TransactionTypeFilter>('_all');
+  const [suggestionFilter, setSuggestionFilter] = useState<SuggestionFilter>('_all');
 
   const utils = api.useContext();
 
-  // Fetch uncategorized transactions with suggestions
   const { data: suggestionsData, isLoading } = api.suggestions.forUncategorized.useQuery(
     { limit: 50 }
   );
-
-  // Fetch unreviewed count
   const { data: unreviewedCount } = api.transactions.unreviewedCount.useQuery();
-
-  // Fetch categories for manual assignment
   const { data: categories } = api.categories.list.useQuery();
 
-  // Apply single suggestion
   const applySuggestion = api.suggestions.applySuggestion.useMutation(
     useToastCallbacks({
       successTitle: 'Category Applied',
@@ -58,7 +60,6 @@ export default function ReviewPage() {
     })
   );
 
-  // Apply bulk suggestions
   const applyBulk = api.suggestions.applyBulk.useMutation(
     useToastCallbacks({
       successTitle: 'Bulk Categorization Applied',
@@ -67,7 +68,6 @@ export default function ReviewPage() {
     })
   );
 
-  // Mark reviewed
   const markReviewed = api.transactions.markReviewed.useMutation(
     useToastCallbacks({
       successTitle: 'Marked as Reviewed',
@@ -76,11 +76,84 @@ export default function ReviewPage() {
     })
   );
 
-  const handleApplySuggestion = async (transactionId: string, categoryId: string) => {
-    await applySuggestion.mutateAsync({ transactionId, categoryId });
+  const bulkCategorize = api.transactions.bulkCategorize.useMutation(
+    useToastCallbacks({
+      successTitle: 'Bulk Category Applied',
+      successDescription: 'Selected transactions have been categorized',
+      errorTitle: 'Failed to apply bulk category',
+    })
+  );
+
+  const filteredSuggestions = useMemo(() => {
+    if (!suggestionsData) return [];
+
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+
+    return suggestionsData.filter((item) => {
+      const tx = item.transaction;
+      const topSuggestion = item.suggestions[0];
+
+      if (typeFilter !== '_all' && tx.type !== typeFilter) {
+        return false;
+      }
+
+      if (suggestionFilter === 'high' && (!topSuggestion || topSuggestion.confidence < 0.9)) {
+        return false;
+      }
+      if (suggestionFilter === 'with' && item.suggestions.length === 0) {
+        return false;
+      }
+      if (suggestionFilter === 'none' && item.suggestions.length > 0) {
+        return false;
+      }
+
+      if (!normalizedSearch) {
+        return true;
+      }
+
+      const haystack = `${tx.merchantName ?? ''} ${tx.description}`.toLowerCase();
+      return haystack.includes(normalizedSearch);
+    });
+  }, [suggestionsData, searchQuery, typeFilter, suggestionFilter]);
+
+  const visibleTransactionIds = useMemo(
+    () => filteredSuggestions.map((item) => item.transactionId),
+    [filteredSuggestions]
+  );
+
+  const selectedIdSet = useMemo(
+    () => new Set(selectedTransactionIds),
+    [selectedTransactionIds]
+  );
+
+  const allVisibleSelected =
+    visibleTransactionIds.length > 0 &&
+    visibleTransactionIds.every((id) => selectedIdSet.has(id));
+
+  const highConfidenceCount = suggestionsData?.filter(
+    (s) => s.suggestions.length > 0 && s.suggestions[0].confidence >= 0.9
+  ).length ?? 0;
+
+  useEffect(() => {
+    if (!suggestionsData) {
+      setSelectedTransactionIds([]);
+      return;
+    }
+
+    const validIds = new Set(suggestionsData.map((item) => item.transactionId));
+    setSelectedTransactionIds((prev) => prev.filter((id) => validIds.has(id)));
+  }, [suggestionsData]);
+
+  const refreshReviewData = async () => {
     await utils.suggestions.forUncategorized.invalidate();
     await utils.transactions.unreviewedCount.invalidate();
     await utils.dashboard.invalidate();
+  };
+
+  const handleApplySuggestion = async (transactionId: string, categoryId: string) => {
+    await applySuggestion.mutateAsync({ transactionId, categoryId });
+    setSelectedTransactionIds((prev) => prev.filter((id) => id !== transactionId));
+    await refreshReviewData();
   };
 
   const handleSkip = async (transactionId: string) => {
@@ -88,9 +161,8 @@ export default function ReviewPage() {
       transactionIds: [transactionId],
       isReviewed: true,
     });
-    await utils.suggestions.forUncategorized.invalidate();
-    await utils.transactions.unreviewedCount.invalidate();
-    await utils.dashboard.invalidate();
+    setSelectedTransactionIds((prev) => prev.filter((id) => id !== transactionId));
+    await refreshReviewData();
   };
 
   const handleManualCategorize = async (transactionId: string) => {
@@ -104,7 +176,6 @@ export default function ReviewPage() {
     });
   };
 
-  // Auto-apply: apply all high-confidence suggestions at once
   const handleApplyAll = async () => {
     if (!suggestionsData) return;
     const autoApplyable = suggestionsData
@@ -117,14 +188,51 @@ export default function ReviewPage() {
     if (autoApplyable.length === 0) return;
 
     await applyBulk.mutateAsync({ suggestions: autoApplyable });
-    await utils.suggestions.forUncategorized.invalidate();
-    await utils.transactions.unreviewedCount.invalidate();
-    await utils.dashboard.invalidate();
+    const autoAppliedIds = new Set(autoApplyable.map((item) => item.transactionId));
+    setSelectedTransactionIds((prev) => prev.filter((id) => !autoAppliedIds.has(id)));
+    await refreshReviewData();
   };
 
-  const highConfidenceCount = suggestionsData?.filter(
-    (s) => s.suggestions.length > 0 && s.suggestions[0].confidence >= 0.9
-  ).length ?? 0;
+  const toggleSelected = (transactionId: string, checked: boolean) => {
+    setSelectedTransactionIds((prev) => {
+      if (checked) {
+        if (prev.includes(transactionId)) return prev;
+        return [...prev, transactionId];
+      }
+      return prev.filter((id) => id !== transactionId);
+    });
+  };
+
+  const toggleSelectAllVisible = (checked: boolean) => {
+    setSelectedTransactionIds((prev) => {
+      const next = new Set(prev);
+
+      if (checked) {
+        for (const id of visibleTransactionIds) {
+          next.add(id);
+        }
+      } else {
+        for (const id of visibleTransactionIds) {
+          next.delete(id);
+        }
+      }
+
+      return Array.from(next);
+    });
+  };
+
+  const handleBulkAssignSelected = async () => {
+    if (!bulkCategoryId || selectedTransactionIds.length === 0) return;
+
+    await bulkCategorize.mutateAsync({
+      transactionIds: selectedTransactionIds,
+      categoryId: bulkCategoryId,
+    });
+
+    setSelectedTransactionIds([]);
+    setBulkCategoryId('');
+    await refreshReviewData();
+  };
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -138,15 +246,66 @@ export default function ReviewPage() {
             </p>
           </div>
           {highConfidenceCount > 0 && (
-            <Button
-              onClick={handleApplyAll}
-              disabled={applyBulk.isLoading}
-            >
+            <Button onClick={handleApplyAll} disabled={applyBulk.isLoading}>
               <Wand2 className="h-4 w-4 mr-2" />
               Auto-apply {highConfidenceCount} high-confidence suggestion{highConfidenceCount !== 1 ? 's' : ''}
             </Button>
           )}
         </div>
+
+        <Card className="mb-4">
+          <CardContent className="p-4 space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search merchant or description"
+                  className="pl-8"
+                />
+              </div>
+              <Select
+                value={typeFilter}
+                onValueChange={(v) => setTypeFilter(v as TransactionTypeFilter)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All types" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_all">All types</SelectItem>
+                  <SelectItem value="INCOME">Income</SelectItem>
+                  <SelectItem value="EXPENSE">Expense</SelectItem>
+                  <SelectItem value="TRANSFER">Transfer</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={suggestionFilter}
+                onValueChange={(v) => setSuggestionFilter(v as SuggestionFilter)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All suggestions" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_all">All suggestion states</SelectItem>
+                  <SelectItem value="high">High confidence only</SelectItem>
+                  <SelectItem value="with">With suggestions</SelectItem>
+                  <SelectItem value="none">No suggestions</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
+              <p>
+                Showing {filteredSuggestions.length} of {suggestionsData?.length ?? 0} transaction
+                {(filteredSuggestions.length === 1 ? '' : 's')}
+              </p>
+              <p className="flex items-center gap-1">
+                <Filter className="h-3.5 w-3.5" />
+                Active filters: {(searchQuery ? 1 : 0) + (typeFilter !== '_all' ? 1 : 0) + (suggestionFilter !== '_all' ? 1 : 0)}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
 
         {isLoading ? (
           <div className="space-y-4">
@@ -164,19 +323,96 @@ export default function ReviewPage() {
               </p>
             </CardContent>
           </Card>
+        ) : filteredSuggestions.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-16">
+              <h2 className="text-xl font-semibold mb-2">No matches</h2>
+              <p className="text-muted-foreground text-center max-w-md">
+                No transactions matched the current review filters.
+              </p>
+            </CardContent>
+          </Card>
         ) : (
           <div className="space-y-3">
-            {suggestionsData.map((item) => {
+            <Card>
+              <CardContent className="p-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={(e) => toggleSelectAllVisible(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    {selectedTransactionIds.length} selected
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => toggleSelectAllVisible(!allVisibleSelected)}
+                  >
+                    {allVisibleSelected ? 'Deselect visible' : 'Select visible'}
+                  </Button>
+                  {selectedTransactionIds.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedTransactionIds([])}
+                    >
+                      Clear selection
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 w-full lg:w-auto">
+                  <Select
+                    value={bulkCategoryId || '_none'}
+                    onValueChange={(v) => setBulkCategoryId(v === '_none' ? '' : v)}
+                  >
+                    <SelectTrigger className="w-full lg:w-72">
+                      <SelectValue placeholder="Select category for selected..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="_none">Select category...</SelectItem>
+                      {categories?.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.icon} {c.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    onClick={handleBulkAssignSelected}
+                    disabled={
+                      !bulkCategoryId ||
+                      selectedTransactionIds.length === 0 ||
+                      bulkCategorize.isLoading
+                    }
+                  >
+                    Apply to Selected
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {filteredSuggestions.map((item) => {
               const tx = item.transaction;
               const topSuggestion = item.suggestions[0];
               const isExpanded = expandedId === item.transactionId;
+              const isIncome = tx.type === 'INCOME';
+              const isExpense = tx.type === 'EXPENSE';
 
               return (
                 <Card key={item.transactionId}>
                   <CardContent className="p-4">
-                    {/* Main Row */}
                     <div className="flex items-center gap-4">
-                      {/* Transaction Info */}
+                      <input
+                        type="checkbox"
+                        checked={selectedIdSet.has(item.transactionId)}
+                        onChange={(e) => toggleSelected(item.transactionId, e.target.checked)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-4 w-4 rounded border-gray-300 shrink-0"
+                      />
+
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="font-medium truncate">
@@ -185,6 +421,9 @@ export default function ReviewPage() {
                           <span className="text-sm text-muted-foreground shrink-0">
                             {formatDate(tx.date, { month: 'short', day: 'numeric' })}
                           </span>
+                          <Badge variant="outline" className="text-xs shrink-0">
+                            {tx.type}
+                          </Badge>
                         </div>
                         {tx.merchantName && tx.description !== tx.merchantName && (
                           <p className="text-sm text-muted-foreground truncate">
@@ -193,14 +432,12 @@ export default function ReviewPage() {
                         )}
                       </div>
 
-                      {/* Amount */}
                       <div className="text-right shrink-0">
-                        <p className="font-semibold text-red-600">
-                          {formatCurrency(tx.amount)}
+                        <p className={cn('font-semibold', transactionTypeColor(tx.type))}>
+                          {isIncome ? '+' : isExpense ? '-' : ''}{formatCurrency(tx.amount)}
                         </p>
                       </div>
 
-                      {/* Top Suggestion - Quick Apply */}
                       {topSuggestion ? (
                         <div className="flex items-center gap-2 shrink-0">
                           <div className="text-right">
@@ -224,7 +461,6 @@ export default function ReviewPage() {
                         </Badge>
                       )}
 
-                      {/* Expand / Skip */}
                       <Button
                         variant="ghost"
                         size="icon"
@@ -239,10 +475,8 @@ export default function ReviewPage() {
                       </Button>
                     </div>
 
-                    {/* Expanded Details */}
                     {isExpanded && (
                       <div className="mt-4 pt-4 border-t space-y-3">
-                        {/* All suggestions */}
                         {item.suggestions.length > 0 && (
                           <div>
                             <p className="text-sm font-medium text-muted-foreground mb-2">
@@ -266,10 +500,7 @@ export default function ReviewPage() {
                                     size="sm"
                                     variant="outline"
                                     onClick={() =>
-                                      handleApplySuggestion(
-                                        item.transactionId,
-                                        suggestion.categoryId
-                                      )
+                                      handleApplySuggestion(item.transactionId, suggestion.categoryId)
                                     }
                                     disabled={applySuggestion.isLoading}
                                   >
@@ -281,7 +512,6 @@ export default function ReviewPage() {
                           </div>
                         )}
 
-                        {/* Manual assignment */}
                         <div>
                           <p className="text-sm font-medium text-muted-foreground mb-2">
                             Manual Assignment
@@ -320,7 +550,6 @@ export default function ReviewPage() {
                           </div>
                         </div>
 
-                        {/* Skip button */}
                         <div className="flex justify-end">
                           <Button
                             variant="ghost"

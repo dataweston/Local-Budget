@@ -297,6 +297,8 @@ export async function suggestCategoriesForUncategorized(
           description: tx.description,
           merchantName: tx.merchantName,
           amount: tx.amount,
+          type: tx.type,
+          classification: tx.classification,
         },
         suggestions: categorySuggestions,
       };
