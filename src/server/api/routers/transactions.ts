@@ -135,6 +135,19 @@ export const transactionsRouter = createTRPCRouter({
       });
       if (!account) throw new Error('Account not found');
 
+      let categoryDefaultClassification: string | null = null;
+      if (input.categoryId) {
+        const category = await ctx.db.category.findFirst({
+          where: {
+            id: input.categoryId,
+            userId: ctx.session.user.id,
+          },
+          select: { defaultClassification: true },
+        });
+        if (!category) throw new Error('Category not found');
+        categoryDefaultClassification = category.defaultClassification;
+      }
+
       const transaction = await ctx.db.transaction.create({
         data: {
           accountId: input.accountId,
@@ -145,7 +158,8 @@ export const transactionsRouter = createTRPCRouter({
           description: input.description,
           merchantName: input.merchantName,
           categoryId: input.categoryId,
-          classification: input.classification,
+          classification:
+            input.classification ?? (categoryDefaultClassification as any) ?? undefined,
           payerId: input.payerId,
           incurredById: input.incurredById,
           notes: input.notes,
@@ -247,11 +261,31 @@ export const transactionsRouter = createTRPCRouter({
         throw new Error('Some transactions not found');
       }
 
+      let categoryDefaultClassification: string | null = null;
+      if (input.categoryId) {
+        const category = await ctx.db.category.findFirst({
+          where: {
+            id: input.categoryId,
+            userId: ctx.session.user.id,
+          },
+          select: { defaultClassification: true },
+        });
+        if (!category) {
+          throw new Error('Category not found');
+        }
+        categoryDefaultClassification = category.defaultClassification;
+      }
+
+      const classificationToApply =
+        input.classification ?? categoryDefaultClassification ?? undefined;
+
       await ctx.db.transaction.updateMany({
         where: { id: { in: input.transactionIds } },
         data: {
           ...(input.categoryId && { categoryId: input.categoryId }),
-          ...(input.classification && { classification: input.classification as any }),
+          ...(classificationToApply && {
+            classification: classificationToApply as any,
+          }),
           isReviewed: true,
         },
       });

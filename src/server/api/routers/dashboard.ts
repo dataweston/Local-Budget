@@ -1,6 +1,11 @@
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
-import { isExpenseForSpending } from '@/lib/transaction-filters';
+import {
+  getEffectiveClassification,
+  isIncomeForReporting,
+  isExpenseForSpending,
+  isTransferLikeTransaction,
+} from '@/lib/transaction-filters';
 
 export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
@@ -71,7 +76,7 @@ export const dashboardRouter = createTRPCRouter({
       const calcIncomeTotal = (txs: typeof currentTransactions) =>
         Math.abs(
           txs
-            .filter((t) => t.type === 'INCOME')
+            .filter((t) => isIncomeForReporting(t))
             .reduce((sum, t) => sum + Number(t.amount), 0)
         );
 
@@ -191,13 +196,14 @@ export const dashboardRouter = createTRPCRouter({
 
         const day = grouped.get(dateKey)!;
         const amount = Number(tx.amount);
+        const classification = getEffectiveClassification(tx);
 
-        if (tx.type === 'INCOME') {
+        if (tx.type === 'INCOME' && !isTransferLikeTransaction(tx)) {
           day.income += amount;
         } else if (isExpenseForSpending(tx)) {
           day.expenses += Math.abs(amount);
           
-          switch (tx.classification) {
+          switch (classification) {
             case 'COGS':
               day.cogs += Math.abs(amount);
               break;
@@ -235,7 +241,7 @@ export const dashboardRouter = createTRPCRouter({
           date: { gte: startDate, lte: endDate },
         },
         include: {
-          category: { select: { id: true, name: true } },
+          category: { select: { id: true, name: true, defaultClassification: true } },
         },
       });
 
@@ -248,19 +254,20 @@ export const dashboardRouter = createTRPCRouter({
         const amount = Number(tx.amount);
         const categoryKey = tx.categoryId ?? 'uncategorized';
         const categoryName = tx.category?.name ?? 'Uncategorized';
+        const classification = getEffectiveClassification(tx);
 
-        if (tx.classification === 'INCOME') {
+        if (classification === 'INCOME') {
           revenue += amount;
-        } else if (tx.classification === 'COGS') {
+        } else if (classification === 'COGS') {
           cogs += Math.abs(amount);
-        } else if (tx.classification === 'OPERATING') {
+        } else if (classification === 'OPERATING') {
           operatingExpenses += Math.abs(amount);
         }
 
         if (!byCategory.has(categoryKey)) {
           byCategory.set(categoryKey, {
             name: categoryName,
-            classification: tx.classification ?? 'PERSONAL',
+            classification,
             amount: 0,
           });
         }

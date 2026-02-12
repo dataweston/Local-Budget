@@ -69,6 +69,22 @@ export function ReportsView() {
     limit: 10,
   });
 
+  const cashflowTotals = useMemo(() => {
+    if (!cashflow || cashflow.length === 0) {
+      return { income: 0, expenses: 0, net: 0 };
+    }
+
+    return cashflow.reduce(
+      (totals, row) => {
+        totals.income += row.income;
+        totals.expenses += row.expenses;
+        totals.net += row.net;
+        return totals;
+      },
+      { income: 0, expenses: 0, net: 0 }
+    );
+  }, [cashflow]);
+
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
@@ -266,6 +282,32 @@ export function ReportsView() {
                     </BarChart>
                   </ResponsiveContainer>
 
+                  <div className="mt-6 grid gap-4 md:grid-cols-3">
+                    <div className="rounded-lg border p-4">
+                      <p className="text-xs text-muted-foreground">Total Income</p>
+                      <p className="text-xl font-bold text-green-600">
+                        {formatCurrency(cashflowTotals.income)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border p-4">
+                      <p className="text-xs text-muted-foreground">Total Expenses</p>
+                      <p className="text-xl font-bold text-red-600">
+                        {formatCurrency(cashflowTotals.expenses)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border p-4">
+                      <p className="text-xs text-muted-foreground">Net Total</p>
+                      <p
+                        className={cn(
+                          'text-xl font-bold',
+                          cashflowTotals.net >= 0 ? 'text-green-600' : 'text-red-600'
+                        )}
+                      >
+                        {formatCurrency(cashflowTotals.net)}
+                      </p>
+                    </div>
+                  </div>
+
                   {/* Summary table below chart */}
                   <div className="mt-6 border rounded-lg overflow-hidden">
                     <table className="w-full text-sm">
@@ -298,6 +340,25 @@ export function ReportsView() {
                           </tr>
                         ))}
                       </tbody>
+                      <tfoot>
+                        <tr className="border-t bg-muted/50 font-semibold">
+                          <td className="p-3">Total</td>
+                          <td className="p-3 text-right text-green-600">
+                            {formatCurrency(cashflowTotals.income)}
+                          </td>
+                          <td className="p-3 text-right text-red-600">
+                            {formatCurrency(cashflowTotals.expenses)}
+                          </td>
+                          <td
+                            className={cn(
+                              'p-3 text-right',
+                              cashflowTotals.net >= 0 ? 'text-green-600' : 'text-red-600'
+                            )}
+                          >
+                            {formatCurrency(cashflowTotals.net)}
+                          </td>
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                 </CardContent>

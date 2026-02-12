@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { normalizeVendorName, findSimilarVendors } from '@/lib/normalization/vendors';
 import { Prisma } from '@prisma/client';
-import { isExpenseForSpending } from '@/lib/transaction-filters';
+import { isExpenseForSpending, isIncomeForReporting } from '@/lib/transaction-filters';
 
 export const vendorsRouter = createTRPCRouter({
   // List all unique vendors with spending data
@@ -195,7 +195,7 @@ export const vendorsRouter = createTRPCRouter({
 
         if (isExpenseForSpending(tx)) {
           stats.totalSpending += Math.abs(amount);
-        } else if (tx.type === 'INCOME') {
+        } else if (isIncomeForReporting(tx)) {
           stats.totalIncome += amount;
         }
 

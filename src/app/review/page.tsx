@@ -34,6 +34,8 @@ import {
 
 type TransactionTypeFilter = '_all' | 'INCOME' | 'EXPENSE' | 'TRANSFER';
 type SuggestionFilter = '_all' | 'high' | 'with' | 'none';
+type AccountFilter = '_all' | string;
+const AUTO_APPLY_THRESHOLD = 0.8;
 
 export default function ReviewPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -42,6 +44,7 @@ export default function ReviewPage() {
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [accountFilter, setAccountFilter] = useState<AccountFilter>('_all');
   const [typeFilter, setTypeFilter] = useState<TransactionTypeFilter>('_all');
   const [suggestionFilter, setSuggestionFilter] = useState<SuggestionFilter>('_all');
 
@@ -50,8 +53,10 @@ export default function ReviewPage() {
   const { data: suggestionsData, isLoading } = api.suggestions.forUncategorized.useQuery({
     limit: 50,
     search: debouncedSearch || undefined,
+    accountId: accountFilter === '_all' ? undefined : accountFilter,
   });
   const { data: unreviewedCount } = api.transactions.unreviewedCount.useQuery();
+  const { data: accounts } = api.accounts.list.useQuery();
   const { data: categories } = api.categories.list.useQuery();
   const suggestionsItems = useMemo(
     () => suggestionsData?.items ?? [],
@@ -108,7 +113,10 @@ export default function ReviewPage() {
         return false;
       }
 
-      if (suggestionFilter === 'high' && (!topSuggestion || topSuggestion.confidence < 0.9)) {
+      if (
+        suggestionFilter === 'high' &&
+        (!topSuggestion || topSuggestion.confidence < AUTO_APPLY_THRESHOLD)
+      ) {
         return false;
       }
       if (suggestionFilter === 'with' && item.suggestions.length === 0) {
@@ -137,7 +145,9 @@ export default function ReviewPage() {
     visibleTransactionIds.every((id) => selectedIdSet.has(id));
 
   const highConfidenceCount = suggestionsItems.filter(
-    (s) => s.suggestions.length > 0 && s.suggestions[0].confidence >= 0.9
+    (s) =>
+      s.suggestions.length > 0 &&
+      s.suggestions[0].confidence >= AUTO_APPLY_THRESHOLD
   ).length ?? 0;
 
   useEffect(() => {
@@ -185,7 +195,11 @@ export default function ReviewPage() {
   const handleApplyAll = async () => {
     if (!suggestionsItems.length) return;
     const autoApplyable = suggestionsItems
-      .filter((s) => s.suggestions.length > 0 && s.suggestions[0].confidence >= 0.9)
+      .filter(
+        (s) =>
+          s.suggestions.length > 0 &&
+          s.suggestions[0].confidence >= AUTO_APPLY_THRESHOLD
+      )
       .map((s) => ({
         transactionId: s.transactionId,
         categoryId: s.suggestions[0].categoryId,
@@ -261,7 +275,7 @@ export default function ReviewPage() {
 
         <Card className="mb-4">
           <CardContent className="p-4 space-y-3">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -271,6 +285,22 @@ export default function ReviewPage() {
                   className="pl-8"
                 />
               </div>
+              <Select
+                value={accountFilter}
+                onValueChange={(v) => setAccountFilter(v as AccountFilter)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All accounts" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_all">All accounts</SelectItem>
+                  {accounts?.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Select
                 value={typeFilter}
                 onValueChange={(v) => setTypeFilter(v as TransactionTypeFilter)}
@@ -312,7 +342,7 @@ export default function ReviewPage() {
               </p>
               <p className="flex items-center gap-1">
                 <Filter className="h-3.5 w-3.5" />
-                Active filters: {(searchQuery ? 1 : 0) + (typeFilter !== '_all' ? 1 : 0) + (suggestionFilter !== '_all' ? 1 : 0)}
+                Active filters: {(searchQuery ? 1 : 0) + (accountFilter !== '_all' ? 1 : 0) + (typeFilter !== '_all' ? 1 : 0) + (suggestionFilter !== '_all' ? 1 : 0)}
               </p>
             </div>
           </CardContent>
@@ -329,11 +359,11 @@ export default function ReviewPage() {
             <CardContent className="flex flex-col items-center justify-center py-16">
               <CheckCircle2 className="h-12 w-12 text-green-500 mb-4" />
               <h2 className="text-xl font-semibold mb-2">
-                {debouncedSearch ? 'No matches' : 'All caught up!'}
+                {debouncedSearch || accountFilter !== '_all' ? 'No matches' : 'All caught up!'}
               </h2>
               <p className="text-muted-foreground text-center max-w-md">
-                {debouncedSearch
-                  ? 'No uncategorized transactions match your search.'
+                {debouncedSearch || accountFilter !== '_all'
+                  ? 'No uncategorized transactions match your current filters.'
                   : 'No uncategorized transactions to review. New transactions from synced accounts will appear here.'}
               </p>
             </CardContent>
@@ -435,6 +465,9 @@ export default function ReviewPage() {
                           </p>
                           <span className="text-sm text-muted-foreground shrink-0">
                             {formatDate(tx.date, { month: 'short', day: 'numeric' })}
+                          </span>
+                          <span className="text-sm text-muted-foreground shrink-0">
+                            {tx.accountName}
                           </span>
                           <Badge variant="outline" className="text-xs shrink-0">
                             {tx.type}

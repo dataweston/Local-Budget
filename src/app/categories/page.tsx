@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import Link from 'next/link';
+import { useMemo, useState } from 'react';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
 import {
@@ -24,15 +25,34 @@ import {
   DialogFooter,
   DialogClose,
 } from '@/components/ui/dialog';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { ArrowRight, Pencil, Plus, Trash2 } from 'lucide-react';
 
-type ClassificationType = 'INCOME' | 'COGS' | 'OPERATING' | 'PERSONAL' | 'TRANSFER' | 'REIMBURSABLE' | 'REIMBURSEMENT';
+type ClassificationType =
+  | 'INCOME'
+  | 'COGS'
+  | 'OPERATING'
+  | 'PERSONAL'
+  | 'TRANSFER'
+  | 'REIMBURSABLE'
+  | 'REIMBURSEMENT';
+
+type CategoryNode = {
+  id: string;
+  name: string;
+  color: string | null;
+  icon: string | null;
+  parentId: string | null;
+  defaultClassification: ClassificationType | null;
+  _count?: { transactions: number };
+  children?: CategoryNode[];
+};
 
 interface CategoryFormData {
   name: string;
   color: string;
   icon: string;
   defaultClassification: ClassificationType | '';
+  parentId: string;
 }
 
 const colorOptions = [
@@ -68,70 +88,78 @@ const classificationColors: Record<string, string> = {
   REIMBURSEMENT: 'bg-teal-100 text-teal-800',
 };
 
+const EMPTY_FORM: CategoryFormData = {
+  name: '',
+  color: '#3b82f6',
+  icon: '',
+  defaultClassification: '',
+  parentId: '',
+};
+
 export default function CategoriesPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingCategory, setEditingCategory] = useState<{ id: string } & CategoryFormData | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [formData, setFormData] = useState<CategoryFormData>({
-    name: '',
-    color: '#3b82f6',
-    icon: '',
-    defaultClassification: '',
-  });
+  const [formData, setFormData] = useState<CategoryFormData>(EMPTY_FORM);
 
   const utils = api.useUtils();
-  const { data: categories, isLoading } = api.categories.list.useQuery();
+  const { data: categories, isLoading: listLoading } = api.categories.list.useQuery();
+  const { data: categoryTree, isLoading: treeLoading } = api.categories.tree.useQuery();
+
+  const invalidateCategoryData = async () => {
+    await Promise.all([
+      utils.categories.list.invalidate(),
+      utils.categories.tree.invalidate(),
+      utils.categories.getById.invalidate(),
+    ]);
+  };
 
   const createMutation = api.categories.create.useMutation({
-    onSuccess: () => {
-      utils.categories.list.invalidate();
-      setShowAddModal(false);
-      setFormData({ name: '', color: '#3b82f6', icon: '', defaultClassification: '' });
+    onSuccess: async () => {
+      await invalidateCategoryData();
+      closeModal();
     },
   });
 
   const updateMutation = api.categories.update.useMutation({
-    onSuccess: () => {
-      utils.categories.list.invalidate();
-      setEditingCategory(null);
-      setFormData({ name: '', color: '#3b82f6', icon: '', defaultClassification: '' });
+    onSuccess: async () => {
+      await invalidateCategoryData();
+      closeModal();
     },
   });
 
   const deleteMutation = api.categories.delete.useMutation({
-    onSuccess: () => {
-      utils.categories.list.invalidate();
+    onSuccess: async () => {
+      await invalidateCategoryData();
       setDeleteConfirm(null);
     },
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const data = {
-      name: formData.name,
-      color: formData.color,
-      icon: formData.icon || undefined,
-      defaultClassification: formData.defaultClassification || undefined,
-    };
-    if (editingCategory) {
-      updateMutation.mutate({ id: editingCategory.id, data });
-    } else {
-      createMutation.mutate(data);
-    }
+  const selectableParents = useMemo(() => {
+    if (!categories) return [];
+    if (!editingCategory) return categories;
+    return categories.filter((c) => c.id !== editingCategory.id);
+  }, [categories, editingCategory]);
+
+  const openAddModal = (parent?: CategoryNode) => {
+    setEditingCategory(null);
+    setFormData({
+      ...EMPTY_FORM,
+      parentId: parent?.id ?? '',
+      defaultClassification: parent?.defaultClassification ?? '',
+      color: parent?.color ?? '#3b82f6',
+    });
+    setShowAddModal(true);
   };
 
-  const openEditModal = (category: { 
-    id: string; 
-    name: string; 
-    color: string | null; 
-    icon: string | null;
-    defaultClassification: ClassificationType | null;
-  }) => {
+  const openEditModal = (category: CategoryNode) => {
+    setShowAddModal(false);
     setFormData({
       name: category.name,
       color: category.color || '#3b82f6',
       icon: category.icon || '',
       defaultClassification: category.defaultClassification || '',
+      parentId: category.parentId || '',
     });
     setEditingCategory({
       id: category.id,
@@ -139,14 +167,103 @@ export default function CategoriesPage() {
       color: category.color || '#3b82f6',
       icon: category.icon || '',
       defaultClassification: category.defaultClassification || '',
+      parentId: category.parentId || '',
     });
   };
 
   const closeModal = () => {
     setShowAddModal(false);
     setEditingCategory(null);
-    setFormData({ name: '', color: '#3b82f6', icon: '', defaultClassification: '' });
+    setFormData(EMPTY_FORM);
   };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const data = {
+      name: formData.name.trim(),
+      color: formData.color,
+      icon: formData.icon || undefined,
+      defaultClassification: formData.defaultClassification || undefined,
+      parentId: formData.parentId || null,
+    };
+
+    if (editingCategory) {
+      updateMutation.mutate({ id: editingCategory.id, data });
+      return;
+    }
+
+    createMutation.mutate(data);
+  };
+
+  const renderCategoryRows = (nodes: CategoryNode[], depth = 0): React.ReactNode => {
+    return nodes.map((category) => (
+      <div key={category.id} className="space-y-2">
+        <div
+          className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/40 transition-colors"
+          style={{ marginLeft: `${depth * 16}px` }}
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div
+              className="w-3 h-3 rounded-full shrink-0"
+              style={{ backgroundColor: category.color || '#3b82f6' }}
+            />
+            <span className="font-medium truncate">{category.name}</span>
+            {category.icon && <span className="text-lg shrink-0">{category.icon}</span>}
+            {category.defaultClassification && (
+              <Badge className={classificationColors[category.defaultClassification] || 'bg-gray-100'}>
+                {category.defaultClassification}
+              </Badge>
+            )}
+            <span className="text-sm text-muted-foreground shrink-0">
+              ({category._count?.transactions ?? 0} transactions)
+            </span>
+            {(category.children?.length ?? 0) > 0 && (
+              <span className="text-xs text-muted-foreground shrink-0">
+                {(category.children?.length ?? 0)} subcategories
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/categories/${category.id}`}>
+                Organize
+                <ArrowRight className="h-3.5 w-3.5 ml-1" />
+              </Link>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => openAddModal(category)}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              Subcategory
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => openEditModal(category)}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setDeleteConfirm(category.id)}
+            >
+              <Trash2 className="h-3.5 w-3.5 text-destructive" />
+            </Button>
+          </div>
+        </div>
+
+        {(category.children?.length ?? 0) > 0 && renderCategoryRows(category.children ?? [], depth + 1)}
+      </div>
+    ));
+  };
+
+  const isLoading = listLoading || treeLoading;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -157,10 +274,10 @@ export default function CategoriesPage() {
           <div>
             <h1 className="text-2xl font-bold">Categories</h1>
             <p className="text-muted-foreground">
-              Organize your transactions with custom categories
+              Create top-level categories and subcategories, then organize transactions into them.
             </p>
           </div>
-          <Button onClick={() => setShowAddModal(true)}>
+          <Button onClick={() => openAddModal()}>
             <Plus className="h-4 w-4 mr-2" />
             Add Category
           </Button>
@@ -168,9 +285,9 @@ export default function CategoriesPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>All Categories</CardTitle>
+            <CardTitle>Category Tree</CardTitle>
             <CardDescription>
-              {categories?.length ?? 0} categories defined
+              {(categories?.length ?? 0)} total categories
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -180,67 +297,27 @@ export default function CategoriesPage() {
                   <Skeleton key={i} className="h-12" />
                 ))}
               </div>
-            ) : (
+            ) : (categoryTree?.length ?? 0) > 0 ? (
               <div className="space-y-2">
-                {categories?.map((category) => (
-                  <div
-                    key={category.id}
-                    className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: category.color || '#3b82f6' }}
-                      />
-                      <span className="font-medium">{category.name}</span>
-                      {category.icon && <span className="text-lg">{category.icon}</span>}
-                      {category.defaultClassification && (
-                        <Badge className={classificationColors[category.defaultClassification] || 'bg-gray-100'}>
-                          {category.defaultClassification}
-                        </Badge>
-                      )}
-                      <span className="text-sm text-muted-foreground">
-                        ({category._count.transactions} transactions)
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => openEditModal(category as any)}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => setDeleteConfirm(category.id)}
-                      >
-                        <Trash2 className="h-3 w-3 text-destructive" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-                {categories?.length === 0 && (
-                  <p className="text-center py-4 text-muted-foreground text-sm">
-                    No categories yet. Add your first category to organize transactions.
-                  </p>
-                )}
+                {renderCategoryRows((categoryTree ?? []) as CategoryNode[])}
               </div>
+            ) : (
+              <p className="text-center py-4 text-muted-foreground text-sm">
+                No categories yet. Add your first category to get started.
+              </p>
             )}
           </CardContent>
         </Card>
       </main>
 
-      {/* Add/Edit Modal */}
       <Dialog open={showAddModal || !!editingCategory} onOpenChange={(open) => !open && closeModal()}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editingCategory ? 'Edit Category' : 'Add Category'}</DialogTitle>
             <DialogDescription>
-              {editingCategory ? 'Update this category.' : 'Create a new category for organizing transactions.'}
+              {editingCategory
+                ? 'Update this category and its hierarchy settings.'
+                : 'Create a new category or subcategory for organizing transactions.'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit}>
@@ -256,11 +333,26 @@ export default function CategoriesPage() {
               </div>
 
               <div className="space-y-2">
+                <label className="text-sm font-medium">Parent Category</label>
+                <Select
+                  value={formData.parentId}
+                  onChange={(e) => setFormData({ ...formData, parentId: e.target.value })}
+                >
+                  <option value="">Top-level category</option>
+                  {selectableParents.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="space-y-2">
                 <label className="text-sm font-medium">Icon (emoji)</label>
                 <Input
                   value={formData.icon}
                   onChange={(e) => setFormData({ ...formData, icon: e.target.value })}
-                  placeholder="e.g., 🛒, 🍽️, 🚗"
+                  placeholder="e.g., cart, food, car emoji"
                   maxLength={10}
                 />
               </div>
@@ -269,7 +361,12 @@ export default function CategoriesPage() {
                 <label className="text-sm font-medium">Default Classification</label>
                 <Select
                   value={formData.defaultClassification}
-                  onChange={(e) => setFormData({ ...formData, defaultClassification: e.target.value as ClassificationType | '' })}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      defaultClassification: e.target.value as ClassificationType | '',
+                    })
+                  }
                 >
                   {classificationOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>
@@ -278,7 +375,7 @@ export default function CategoriesPage() {
                   ))}
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  When a transaction uses this category, this classification will be auto-applied
+                  Transactions assigned to this category can inherit this classification automatically.
                 </p>
               </div>
 
@@ -314,7 +411,6 @@ export default function CategoriesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Modal */}
       <Dialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
         <DialogContent>
           <DialogHeader>

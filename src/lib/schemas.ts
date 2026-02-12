@@ -114,7 +114,7 @@ export const createCategorySchema = z.object({
   name: z.string().min(1).max(100),
   icon: z.string().max(10).optional(),
   color: z.string().max(20).optional(),
-  parentId: z.string().optional(),
+  parentId: z.string().nullable().optional(),
   defaultClassification: classificationTypeEnum.optional(),
 });
 

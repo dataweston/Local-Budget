@@ -66,6 +66,16 @@ export const categoriesRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createCategorySchema)
     .mutation(async ({ ctx, input }) => {
+      if (input.parentId) {
+        const parent = await ctx.db.category.findFirst({
+          where: { id: input.parentId, userId: ctx.session.user.id },
+          select: { id: true },
+        });
+        if (!parent) {
+          throw new Error('Parent category not found');
+        }
+      }
+
       const category = await ctx.db.category.create({
         data: {
           userId: ctx.session.user.id,
@@ -93,6 +103,20 @@ export const categoriesRouter = createTRPCRouter({
         where: { id: input.id, userId: ctx.session.user.id },
       });
       if (!existing) throw new Error('Category not found');
+
+      if (input.data.parentId === input.id) {
+        throw new Error('Category cannot be its own parent');
+      }
+
+      if (input.data.parentId) {
+        const parent = await ctx.db.category.findFirst({
+          where: { id: input.data.parentId, userId: ctx.session.user.id },
+          select: { id: true },
+        });
+        if (!parent) {
+          throw new Error('Parent category not found');
+        }
+      }
 
       const category = await ctx.db.category.update({
         where: { id: input.id },
@@ -137,6 +161,18 @@ export const categoriesRouter = createTRPCRouter({
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
       const targetType = input?.type ?? 'EXPENSE';
+      const transferExclusion = {
+        NOT: [
+          { classification: 'TRANSFER' as const },
+          {
+            category: {
+              is: {
+                defaultClassification: 'TRANSFER' as const,
+              },
+            },
+          },
+        ],
+      };
 
       const result = await ctx.db.transaction.groupBy({
         by: ['categoryId'],
@@ -147,18 +183,7 @@ export const categoriesRouter = createTRPCRouter({
             gte: input?.startDate ?? startOfMonth,
             lte: input?.endDate ?? endOfMonth,
           },
-          ...(targetType === 'EXPENSE' && {
-            NOT: [
-              { classification: 'TRANSFER' },
-              {
-                category: {
-                  is: {
-                    defaultClassification: 'TRANSFER',
-                  },
-                },
-              },
-            ],
-          }),
+          ...transferExclusion,
         },
         _sum: {
           amount: true,

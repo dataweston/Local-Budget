@@ -1,8 +1,9 @@
 import { db } from '@/lib/db';
+import { normalizeVendorName } from '@/lib/normalization/vendors';
 
 /**
- * ML-based category suggestion engine
- * Uses historical data, fuzzy matching, and keyword rules to suggest categories
+ * Category suggestion engine
+ * Uses historical behavior + rule matches with multi-signal scoring.
  */
 
 interface CategorySuggestion {
@@ -12,219 +13,448 @@ interface CategorySuggestion {
   reason: string;
 }
 
+type TransactionType = 'INCOME' | 'EXPENSE' | 'TRANSFER';
+
+type CategorizedReference = {
+  categoryId: string;
+  categoryName: string;
+  type: TransactionType;
+  merchantKey: string | null;
+  merchantTokens: Set<string>;
+  descriptionKey: string;
+  descriptionTokens: Set<string>;
+};
+
+type RuleReference = {
+  id: string;
+  name: string;
+  priority: number;
+  matchField: string;
+  matchType: 'EXACT' | 'CONTAINS' | 'STARTS_WITH' | 'REGEX';
+  matchValue: string;
+  categoryId: string;
+  categoryName: string;
+};
+
+type SuggestionContext = {
+  references: CategorizedReference[];
+  rules: RuleReference[];
+};
+
+const STOPWORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'from',
+  'card',
+  'debit',
+  'credit',
+  'payment',
+  'purchase',
+  'online',
+  'bank',
+  'transfer',
+  'ach',
+  'pos',
+]);
+
+const MERCHANT_SIMILARITY_THRESHOLD = 0.56;
+const DESCRIPTION_SIMILARITY_THRESHOLD = 0.55;
+
 /**
  * Main category suggestion function
  */
 export async function suggestCategory(
   userId: string,
   merchantName: string | null,
-  description: string
+  description: string,
+  type?: string
 ): Promise<CategorySuggestion[]> {
-  const suggestions: CategorySuggestion[] = [];
+  const context = await buildSuggestionContext(userId);
+  return suggestCategoryWithContext(context, merchantName, description, type);
+}
 
-  // Try exact merchant match first
-  const exactMatch = await findExactMerchantMatch(userId, merchantName);
-  if (exactMatch) {
-    suggestions.push({
-      categoryId: exactMatch.id,
-      categoryName: exactMatch.name,
-      confidence: 0.95,
-      reason: 'Exact merchant match',
+function suggestCategoryWithContext(
+  context: SuggestionContext,
+  merchantName: string | null,
+  description: string,
+  type?: string
+): CategorySuggestion[] {
+  const candidateMap = new Map<
+    string,
+    { categoryName: string; confidence: number; reasons: Set<string> }
+  >();
+
+  const merchantCandidates = findMerchantCandidates(context, merchantName, type);
+  for (const candidate of merchantCandidates) {
+    addCandidate(candidateMap, candidate);
+  }
+
+  const descriptionCandidates = findDescriptionCandidates(context, description, type);
+  for (const candidate of descriptionCandidates) {
+    addCandidate(candidateMap, candidate);
+  }
+
+  const ruleCandidates = matchKeywordRules(context, merchantName, description);
+  for (const candidate of ruleCandidates) {
+    addCandidate(candidateMap, candidate);
+  }
+
+  const suggestions = Array.from(candidateMap.entries())
+    .map(([categoryId, data]) => {
+      let confidence = data.confidence;
+      if (data.reasons.size > 1) {
+        // Boost confidence when multiple independent signals agree.
+        confidence = clamp(confidence + 0.05, 0, 0.99);
+      }
+
+      return {
+        categoryId,
+        categoryName: data.categoryName,
+        confidence,
+        reason: Array.from(data.reasons).slice(0, 2).join(' + '),
+      };
+    })
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 3);
+
+  return suggestions;
+}
+
+function addCandidate(
+  map: Map<string, { categoryName: string; confidence: number; reasons: Set<string> }>,
+  candidate: CategorySuggestion
+) {
+  const existing = map.get(candidate.categoryId);
+  if (!existing) {
+    map.set(candidate.categoryId, {
+      categoryName: candidate.categoryName,
+      confidence: candidate.confidence,
+      reasons: new Set([candidate.reason]),
+    });
+    return;
+  }
+
+  existing.confidence = Math.max(existing.confidence, candidate.confidence);
+  existing.reasons.add(candidate.reason);
+}
+
+function findMerchantCandidates(
+  context: SuggestionContext,
+  merchantName: string | null,
+  type?: string
+): CategorySuggestion[] {
+  const targetMerchant = normalizeMerchantKey(merchantName);
+  if (!targetMerchant) return [];
+
+  const targetTokens = tokenize(targetMerchant);
+  const refs = getComparableReferences(context.references, type).filter(
+    (r) => !!r.merchantKey
+  );
+
+  const scoreByCategory = new Map<
+    string,
+    {
+      categoryName: string;
+      score: number;
+      count: number;
+      bestSimilarity: number;
+      exactHits: number;
+    }
+  >();
+
+  for (const ref of refs) {
+    if (!ref.merchantKey) continue;
+
+    const simText = calculateSimilarity(targetMerchant, ref.merchantKey);
+    const simTokens = tokenSimilarity(targetTokens, ref.merchantTokens);
+    const similarity = Math.max(simText, simTokens);
+
+    if (similarity < MERCHANT_SIMILARITY_THRESHOLD) continue;
+
+    const exactMatch = ref.merchantKey === targetMerchant;
+    const containedMatch =
+      targetMerchant.includes(ref.merchantKey) ||
+      ref.merchantKey.includes(targetMerchant);
+
+    const weighted =
+      similarity + (exactMatch ? 0.35 : 0) + (containedMatch ? 0.08 : 0);
+
+    const current = scoreByCategory.get(ref.categoryId) ?? {
+      categoryName: ref.categoryName,
+      score: 0,
+      count: 0,
+      bestSimilarity: 0,
+      exactHits: 0,
+    };
+    current.score += weighted;
+    current.count += 1;
+    current.bestSimilarity = Math.max(current.bestSimilarity, similarity);
+    if (exactMatch) current.exactHits += 1;
+    scoreByCategory.set(ref.categoryId, current);
+  }
+
+  return Array.from(scoreByCategory.entries())
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 3)
+    .map(([categoryId, data]) => {
+      const confidence = clamp(
+        0.5 +
+          data.bestSimilarity * 0.32 +
+          Math.min(0.12, data.count * 0.02) +
+          Math.min(0.1, data.exactHits * 0.05),
+        0.55,
+        0.97
+      );
+
+      return {
+        categoryId,
+        categoryName: data.categoryName,
+        confidence,
+        reason:
+          data.exactHits > 0
+            ? 'Merchant history match'
+            : 'Similar merchant pattern',
+      };
+    });
+}
+
+function findDescriptionCandidates(
+  context: SuggestionContext,
+  description: string,
+  type?: string
+): CategorySuggestion[] {
+  const descKey = normalizeDescription(description);
+  const descTokens = tokenize(descKey);
+  if (!descKey || descTokens.size === 0) return [];
+
+  const refs = getComparableReferences(context.references, type);
+
+  const scoreByCategory = new Map<
+    string,
+    { categoryName: string; score: number; count: number; bestSimilarity: number }
+  >();
+
+  for (const ref of refs) {
+    const simText = calculateSimilarity(descKey, ref.descriptionKey);
+    const simTokens = tokenSimilarity(descTokens, ref.descriptionTokens);
+    const similarity = Math.max(simText * 0.85, simTokens);
+
+    if (similarity < DESCRIPTION_SIMILARITY_THRESHOLD) continue;
+
+    const current = scoreByCategory.get(ref.categoryId) ?? {
+      categoryName: ref.categoryName,
+      score: 0,
+      count: 0,
+      bestSimilarity: 0,
+    };
+    current.score += similarity;
+    current.count += 1;
+    current.bestSimilarity = Math.max(current.bestSimilarity, similarity);
+    scoreByCategory.set(ref.categoryId, current);
+  }
+
+  return Array.from(scoreByCategory.entries())
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 2)
+    .map(([categoryId, data]) => ({
+      categoryId,
+      categoryName: data.categoryName,
+      confidence: clamp(
+        0.43 + data.bestSimilarity * 0.3 + Math.min(0.08, data.count * 0.015),
+        0.5,
+        0.84
+      ),
+      reason: 'Description pattern match',
+    }));
+}
+
+function matchKeywordRules(
+  context: SuggestionContext,
+  merchantName: string | null,
+  description: string
+): CategorySuggestion[] {
+  const merchantRaw = merchantName || '';
+  const descriptionRaw = description;
+  const merchantText = normalizeText(merchantName || '');
+  const descriptionText = normalizeText(description);
+  const results: CategorySuggestion[] = [];
+
+  for (const rule of context.rules) {
+    const normalizedText =
+      rule.matchField === 'merchantName' ? merchantText : descriptionText;
+    const rawText = rule.matchField === 'merchantName' ? merchantRaw : descriptionRaw;
+    const searchText = rule.matchType === 'REGEX' ? rawText : normalizedText;
+    const matched = matchRule(searchText, rule.matchType, rule.matchValue);
+    if (!matched) continue;
+
+    const confidence = clamp(
+      0.68 + Math.min(0.18, rule.priority * 0.02),
+      0.68,
+      0.92
+    );
+
+    results.push({
+      categoryId: rule.categoryId,
+      categoryName: rule.categoryName,
+      confidence,
+      reason: `Rule: ${rule.name}`,
     });
   }
 
-  // Try fuzzy merchant match
-  if (merchantName && suggestions.length === 0) {
-    const fuzzyMatch = await findFuzzyMerchantMatch(userId, merchantName);
-    if (fuzzyMatch) {
-      suggestions.push({
-        categoryId: fuzzyMatch.id,
-        categoryName: fuzzyMatch.name,
-        confidence: 0.75,
-        reason: 'Similar merchant match',
-      });
-    }
-  }
-
-  // Try keyword rules
-  const ruleMatches = await matchKeywordRules(userId, merchantName, description);
-  for (const match of ruleMatches) {
-    // Don't add duplicate suggestions
-    if (!suggestions.find((s) => s.categoryId === match.categoryId)) {
-      suggestions.push({
-        categoryId: match.categoryId,
-        categoryName: match.categoryName,
-        confidence: 0.65,
-        reason: `Rule match: "${match.ruleName}"`,
-      });
-    }
-  }
-
-  // Sort by confidence descending
-  suggestions.sort((a, b) => b.confidence - a.confidence);
-
-  // Return top 3 suggestions
-  return suggestions.slice(0, 3);
+  return results;
 }
 
-/**
- * Find exact merchant match from historical transactions
- */
-async function findExactMerchantMatch(
-  userId: string,
-  merchantName: string | null
-): Promise<{ id: string; name: string } | null> {
-  if (!merchantName) return null;
+function matchRule(value: string, matchType: string, pattern: string): boolean {
+  const lowerValue = value.toLowerCase();
+  const lowerPattern = pattern.toLowerCase();
 
-  // Find most common category for this exact merchant
-  const result = await db.transaction.groupBy({
-    by: ['categoryId'],
-    where: {
-      account: { userId },
-      merchantName: merchantName,
-      categoryId: { not: null },
-    },
-    _count: {
-      categoryId: true,
-    },
-    orderBy: {
-      _count: {
-        categoryId: 'desc',
-      },
-    },
-    take: 1,
-  });
-
-  if (result.length === 0 || !result[0].categoryId) return null;
-
-  const category = await db.category.findUnique({
-    where: { id: result[0].categoryId },
-    select: { id: true, name: true },
-  });
-
-  return category;
-}
-
-/**
- * Find fuzzy merchant match using Levenshtein distance
- */
-async function findFuzzyMerchantMatch(
-  userId: string,
-  merchantName: string
-): Promise<{ id: string; name: string } | null> {
-  // Get all unique merchants for the user with their most common category
-  const transactions = await db.transaction.findMany({
-    where: {
-      account: { userId },
-      merchantName: { not: null },
-      categoryId: { not: null },
-    },
-    select: {
-      merchantName: true,
-      categoryId: true,
-    },
-    distinct: ['merchantName'],
-  });
-
-  // Find best fuzzy match
-  let bestMatch: { merchant: string; categoryId: string; distance: number } | null = null;
-  const threshold = 0.7; // 70% similarity threshold
-
-  for (const tx of transactions) {
-    if (!tx.merchantName || !tx.categoryId) continue;
-    const similarity = calculateSimilarity(merchantName, tx.merchantName);
-    
-    if (similarity >= threshold) {
-      if (!bestMatch || similarity > (1 - bestMatch.distance)) {
-        bestMatch = {
-          merchant: tx.merchantName,
-          categoryId: tx.categoryId,
-          distance: 1 - similarity,
-        };
+  switch (matchType) {
+    case 'EXACT':
+      return lowerValue === lowerPattern;
+    case 'CONTAINS':
+      return lowerValue.includes(lowerPattern);
+    case 'STARTS_WITH':
+      return lowerValue.startsWith(lowerPattern);
+    case 'REGEX':
+      try {
+        return new RegExp(pattern, 'i').test(value);
+      } catch {
+        return false;
       }
-    }
+    default:
+      return false;
   }
-
-  if (!bestMatch) return null;
-
-  const category = await db.category.findUnique({
-    where: { id: bestMatch.categoryId },
-    select: { id: true, name: true },
-  });
-
-  return category;
 }
 
-/**
- * Match against active classification rules
- */
-async function matchKeywordRules(
-  userId: string,
-  merchantName: string | null,
-  description: string
-): Promise<Array<{ categoryId: string; categoryName: string; ruleName: string }>> {
-  const rules = await db.classificationRule.findMany({
-    where: {
-      userId,
-      isActive: true,
-      categoryId: { not: null },
-    },
-    include: {
-      category: {
-        select: { id: true, name: true },
+function getComparableReferences(
+  references: CategorizedReference[],
+  type?: string
+): CategorizedReference[] {
+  if (!type) return references;
+  const matchingType = references.filter((r) => r.type === type);
+  return matchingType.length > 0 ? matchingType : references;
+}
+
+async function buildSuggestionContext(userId: string): Promise<SuggestionContext> {
+  const [transactions, rules] = await Promise.all([
+    db.transaction.findMany({
+      where: {
+        account: { userId },
+        categoryId: { not: null },
       },
-    },
-    orderBy: {
-      priority: 'desc',
-    },
-  });
+      select: {
+        merchantName: true,
+        description: true,
+        type: true,
+        category: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: { date: 'desc' },
+      take: 4000,
+    }),
+    db.classificationRule.findMany({
+      where: {
+        userId,
+        isActive: true,
+        categoryId: { not: null },
+      },
+      select: {
+        id: true,
+        name: true,
+        priority: true,
+        matchField: true,
+        matchType: true,
+        matchValue: true,
+        category: {
+          select: { id: true, name: true },
+        },
+      },
+      orderBy: { priority: 'desc' },
+    }),
+  ]);
 
-  const matches: Array<{ categoryId: string; categoryName: string; ruleName: string }> = [];
+  const references: CategorizedReference[] = transactions
+    .filter((tx) => !!tx.category)
+    .map((tx) => {
+      const merchantKey = normalizeMerchantKey(tx.merchantName);
+      const descriptionKey = normalizeDescription(tx.description);
+      return {
+        categoryId: tx.category!.id,
+        categoryName: tx.category!.name,
+        type: tx.type,
+        merchantKey,
+        merchantTokens: tokenize(merchantKey || ''),
+        descriptionKey,
+        descriptionTokens: tokenize(descriptionKey),
+      };
+    });
 
-  for (const rule of rules) {
-    if (!rule.category) continue;
+  const ruleRefs: RuleReference[] = rules
+    .filter((rule) => !!rule.category)
+    .map((rule) => ({
+      id: rule.id,
+      name: rule.name,
+      priority: rule.priority,
+      matchField: rule.matchField,
+      matchType: rule.matchType,
+      matchValue: rule.matchValue,
+      categoryId: rule.category!.id,
+      categoryName: rule.category!.name,
+    }));
 
-    const searchText = rule.matchField === 'merchantName' 
-      ? (merchantName || '').toLowerCase()
-      : description.toLowerCase();
+  return { references, rules: ruleRefs };
+}
 
-    const matchValue = rule.matchValue.toLowerCase();
-    let isMatch = false;
+function normalizeMerchantKey(value: string | null): string | null {
+  if (!value) return null;
+  const canonical = normalizeVendorName(value);
+  const normalized = normalizeText(canonical)
+    .replace(/\b(inc|llc|corp|company|store|online)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || null;
+}
 
-    switch (rule.matchType) {
-      case 'EXACT':
-        isMatch = searchText === matchValue;
-        break;
-      case 'CONTAINS':
-        isMatch = searchText.includes(matchValue);
-        break;
-      case 'STARTS_WITH':
-        isMatch = searchText.startsWith(matchValue);
-        break;
-      case 'REGEX':
-        try {
-          const regex = new RegExp(rule.matchValue, 'i');
-          isMatch = regex.test(searchText);
-        } catch (e) {
-          // Invalid regex, skip
-        }
-        break;
-    }
+function normalizeDescription(value: string): string {
+  return normalizeText(value)
+    .replace(/\b\d{3,}\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-    if (isMatch) {
-      matches.push({
-        categoryId: rule.category.id,
-        categoryName: rule.category.name,
-        ruleName: rule.name,
-      });
-    }
-  }
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-  return matches;
+function tokenize(value: string): Set<string> {
+  if (!value) return new Set();
+  return new Set(
+    value
+      .split(' ')
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 3 && !STOPWORDS.has(t))
+  );
+}
+
+function tokenSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  const aList = Array.from(a);
+  const intersectionCount = aList.filter((token) => b.has(token)).length;
+  return intersectionCount / Math.max(a.size, b.size);
 }
 
 /**
- * Calculate string similarity using Levenshtein distance
+ * Calculate string similarity using Levenshtein distance.
  */
 function calculateSimilarity(str1: string, str2: string): number {
   const s1 = str1.toLowerCase();
@@ -236,83 +466,86 @@ function calculateSimilarity(str1: string, str2: string): number {
   if (len1 === 0) return len2 === 0 ? 1 : 0;
   if (len2 === 0) return 0;
 
-  // Create matrix
   const matrix: number[][] = [];
-  for (let i = 0; i <= len1; i++) {
-    matrix[i] = [i];
-  }
-  for (let j = 0; j <= len2; j++) {
-    matrix[0][j] = j;
-  }
+  for (let i = 0; i <= len1; i++) matrix[i] = [i];
+  for (let j = 0; j <= len2; j++) matrix[0][j] = j;
 
-  // Fill matrix
   for (let i = 1; i <= len1; i++) {
     for (let j = 1; j <= len2; j++) {
       const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
       matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1, // deletion
-        matrix[i][j - 1] + 1, // insertion
-        matrix[i - 1][j - 1] + cost // substitution
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
       );
     }
   }
 
   const distance = matrix[len1][len2];
   const maxLen = Math.max(len1, len2);
-  
   return 1 - distance / maxLen;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 /**
- * Suggest categories for all uncategorized transactions
+ * Suggest categories for uncategorized transactions.
  */
 export async function suggestCategoriesForUncategorized(
   userId: string,
   limit: number = 50,
-  search?: string
+  search?: string,
+  accountId?: string
 ) {
   const normalizedSearch = search?.trim();
 
-  const uncategorized = await db.transaction.findMany({
-    where: {
-      account: { userId },
-      categoryId: null,
-      ...(normalizedSearch && {
-        OR: [
-          { description: { contains: normalizedSearch, mode: 'insensitive' } },
-          { merchantName: { contains: normalizedSearch, mode: 'insensitive' } },
-        ],
-      }),
-    },
-    orderBy: {
-      date: 'desc',
-    },
-    take: limit,
-  });
-
-  const suggestions = await Promise.all(
-    uncategorized.map(async (tx) => {
-      const categorySuggestions = await suggestCategory(
-        userId,
-        tx.merchantName,
-        tx.description
-      );
-
-      return {
-        transactionId: tx.id,
-        transaction: {
-          id: tx.id,
-          date: tx.date,
-          description: tx.description,
-          merchantName: tx.merchantName,
-          amount: tx.amount,
-          type: tx.type,
-          classification: tx.classification,
+  const [context, uncategorized] = await Promise.all([
+    buildSuggestionContext(userId),
+    db.transaction.findMany({
+      where: {
+        account: { userId },
+        ...(accountId && { accountId }),
+        categoryId: null,
+        ...(normalizedSearch && {
+          OR: [
+            { description: { contains: normalizedSearch, mode: 'insensitive' } },
+            { merchantName: { contains: normalizedSearch, mode: 'insensitive' } },
+          ],
+        }),
+      },
+      include: {
+        account: {
+          select: {
+            id: true,
+            name: true,
+          },
         },
-        suggestions: categorySuggestions,
-      };
-    })
-  );
+      },
+      orderBy: { date: 'desc' },
+      take: limit,
+    }),
+  ]);
 
-  return suggestions;
+  return uncategorized.map((tx) => ({
+    transactionId: tx.id,
+    transaction: {
+      id: tx.id,
+      date: tx.date,
+      description: tx.description,
+      merchantName: tx.merchantName,
+      amount: tx.amount,
+      type: tx.type,
+      classification: tx.classification,
+      accountId: tx.accountId,
+      accountName: tx.account.name,
+    },
+    suggestions: suggestCategoryWithContext(
+      context,
+      tx.merchantName,
+      tx.description,
+      tx.type
+    ),
+  }));
 }

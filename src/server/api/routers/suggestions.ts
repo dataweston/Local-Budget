@@ -25,7 +25,8 @@ export const suggestionsRouter = createTRPCRouter({
       const suggestions = await suggestCategory(
         ctx.session.user.id,
         transaction.merchantName,
-        transaction.description
+        transaction.description,
+        transaction.type
       );
 
       return {
@@ -40,20 +41,24 @@ export const suggestionsRouter = createTRPCRouter({
       z.object({
         limit: z.number().optional().default(50),
         search: z.string().optional(),
+        accountId: z.string().optional(),
       }).optional()
     )
     .query(async ({ ctx, input }) => {
       const limit = input?.limit ?? 50;
       const search = input?.search?.trim();
+      const accountId = input?.accountId;
       const suggestions = await suggestCategoriesForUncategorized(
         ctx.session.user.id,
         limit,
-        search
+        search,
+        accountId
       );
 
       const totalMatches = await ctx.db.transaction.count({
         where: {
           account: { userId: ctx.session.user.id },
+          ...(accountId && { accountId }),
           categoryId: null,
           ...(search && {
             OR: [
@@ -100,6 +105,10 @@ export const suggestionsRouter = createTRPCRouter({
           id: input.categoryId,
           userId: ctx.session.user.id,
         },
+        select: {
+          id: true,
+          defaultClassification: true,
+        },
       });
 
       if (!category) {
@@ -114,6 +123,10 @@ export const suggestionsRouter = createTRPCRouter({
         where: { id: input.transactionId },
         data: {
           categoryId: input.categoryId,
+          ...(transaction.classification == null &&
+            category.defaultClassification && {
+              classification: category.defaultClassification,
+            }),
           isReviewed: true,
         },
         include: {
@@ -164,9 +177,15 @@ export const suggestionsRouter = createTRPCRouter({
           id: { in: input.suggestions.map((s) => s.categoryId) },
           userId: ctx.session.user.id,
         },
+        select: {
+          id: true,
+          defaultClassification: true,
+        },
       });
 
       const categoryIds = new Set(categories.map((c) => c.id));
+      const categoryMap = new Map(categories.map((c) => [c.id, c]));
+      const transactionMap = new Map(transactions.map((t) => [t.id, t]));
       const invalidCategories = input.suggestions.filter(
         (s) => !categoryIds.has(s.categoryId)
       );
@@ -181,13 +200,21 @@ export const suggestionsRouter = createTRPCRouter({
       // Apply all suggestions
       const updates = await Promise.all(
         input.suggestions.map((suggestion) =>
-          ctx.db.transaction.update({
-            where: { id: suggestion.transactionId },
-            data: {
-              categoryId: suggestion.categoryId,
-              isReviewed: true,
-            },
-          })
+          {
+            const tx = transactionMap.get(suggestion.transactionId);
+            const category = categoryMap.get(suggestion.categoryId);
+            return ctx.db.transaction.update({
+              where: { id: suggestion.transactionId },
+              data: {
+                categoryId: suggestion.categoryId,
+                ...(tx?.classification == null &&
+                  category?.defaultClassification && {
+                    classification: category.defaultClassification,
+                  }),
+                isReviewed: true,
+              },
+            });
+          }
         )
       );
 
