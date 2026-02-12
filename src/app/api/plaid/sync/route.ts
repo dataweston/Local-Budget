@@ -124,88 +124,148 @@ export async function POST(request: NextRequest) {
         console.log('[Plaid Sync] Could not set cursor after full sync:', cursorError);
       }
     } else {
-      // Use cursor-based incremental sync
-      console.log(`[Plaid Sync] Performing incremental sync from cursor`);
-      let cursor = plaidItem.cursor || undefined;
-      let hasMore = true;
+      // Use cursor-based incremental sync with retry on stale cursor
+      const MAX_RETRIES = 3;
+      let retryCount = 0;
+      let syncComplete = false;
 
-      while (hasMore) {
-        const syncResponse = await syncTransactions(plaidItem.accessToken, cursor);
-        console.log(`[Plaid Sync] Received ${syncResponse.added.length} added, ${syncResponse.modified.length} modified, ${syncResponse.removed.length} removed transactions`);
-        
-        // Process added transactions
-        for (const transaction of syncResponse.added) {
-          const mappedTx = mapPlaidTransaction(transaction);
-          
-          const financialAccount = plaidItem.accounts.find(
-            (a: { plaidAccountId: string | null }) => a.plaidAccountId === mappedTx.accountId
-          );
-          
-          if (!financialAccount) {
-            console.log(`[Plaid Sync] Skipping transaction ${mappedTx.transactionId}: No matching account for plaidAccountId ${mappedTx.accountId}`);
-            skippedNoAccount++;
-            continue;
-          }
-
-          const existing = await db.transaction.findFirst({
-            where: { externalId: mappedTx.transactionId },
-          });
-
-          if (!existing) {
-            await db.transaction.create({
-              data: {
-                accountId: financialAccount.id,
-                amount: Math.abs(mappedTx.amount),
-                type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
-                status: mappedTx.pending ? 'PENDING' : 'POSTED',
-                date: new Date(mappedTx.date),
-                description: mappedTx.name,
-                merchantName: mappedTx.merchantName,
-                externalId: mappedTx.transactionId,
-                isReviewed: false,
-              },
+      while (!syncComplete && retryCount < MAX_RETRIES) {
+        try {
+          console.log(`[Plaid Sync] Performing incremental sync from cursor (attempt ${retryCount + 1})`);
+          // On retry, re-read the cursor from DB in case a previous partial run updated it
+          let cursor: string | undefined;
+          if (retryCount > 0) {
+            const refreshed = await db.plaidItem.findUnique({
+              where: { id: plaidItem.id },
+              select: { cursor: true },
             });
-            added++;
+            cursor = refreshed?.cursor || undefined;
+            // Reset counters for the fresh attempt
+            added = 0;
+            modified = 0;
+            removed = 0;
+            skippedNoAccount = 0;
+          } else {
+            cursor = plaidItem.cursor || undefined;
           }
-        }
 
-        // Process modified transactions
-        for (const transaction of syncResponse.modified) {
-          const mappedTx = mapPlaidTransaction(transaction);
-          
-          await db.transaction.updateMany({
-            where: { externalId: mappedTx.transactionId },
+          let hasMore = true;
+
+          while (hasMore) {
+            const syncResponse = await syncTransactions(plaidItem.accessToken, cursor);
+            console.log(`[Plaid Sync] Received ${syncResponse.added.length} added, ${syncResponse.modified.length} modified, ${syncResponse.removed.length} removed transactions`);
+
+            // Process added transactions
+            for (const transaction of syncResponse.added) {
+              const mappedTx = mapPlaidTransaction(transaction);
+
+              const financialAccount = plaidItem.accounts.find(
+                (a: { plaidAccountId: string | null }) => a.plaidAccountId === mappedTx.accountId
+              );
+
+              if (!financialAccount) {
+                console.log(`[Plaid Sync] Skipping transaction ${mappedTx.transactionId}: No matching account for plaidAccountId ${mappedTx.accountId}`);
+                skippedNoAccount++;
+                continue;
+              }
+
+              const existing = await db.transaction.findFirst({
+                where: { externalId: mappedTx.transactionId },
+              });
+
+              if (!existing) {
+                await db.transaction.create({
+                  data: {
+                    accountId: financialAccount.id,
+                    amount: Math.abs(mappedTx.amount),
+                    type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+                    status: mappedTx.pending ? 'PENDING' : 'POSTED',
+                    date: new Date(mappedTx.date),
+                    description: mappedTx.name,
+                    merchantName: mappedTx.merchantName,
+                    externalId: mappedTx.transactionId,
+                    isReviewed: false,
+                  },
+                });
+                added++;
+              }
+            }
+
+            // Process modified transactions
+            for (const transaction of syncResponse.modified) {
+              const mappedTx = mapPlaidTransaction(transaction);
+
+              await db.transaction.updateMany({
+                where: { externalId: mappedTx.transactionId },
+                data: {
+                  amount: Math.abs(mappedTx.amount),
+                  type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+                  status: mappedTx.pending ? 'PENDING' : 'POSTED',
+                  description: mappedTx.name,
+                  merchantName: mappedTx.merchantName,
+                },
+              });
+              modified++;
+            }
+
+            // Process removed transactions
+            for (const removedTx of syncResponse.removed) {
+              await db.transaction.deleteMany({
+                where: { externalId: removedTx.transaction_id },
+              });
+              removed++;
+            }
+
+            cursor = syncResponse.next_cursor;
+            hasMore = syncResponse.has_more;
+          }
+
+          // Update the cursor in the database
+          await db.plaidItem.update({
+            where: { id: plaidItem.id },
             data: {
-              amount: Math.abs(mappedTx.amount),
-              type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
-              status: mappedTx.pending ? 'PENDING' : 'POSTED',
-              description: mappedTx.name,
-              merchantName: mappedTx.merchantName,
+              cursor: cursor,
+              lastSyncedAt: new Date(),
             },
           });
-          modified++;
-        }
 
-        // Process removed transactions
-        for (const removedTx of syncResponse.removed) {
-          await db.transaction.deleteMany({
-            where: { externalId: removedTx.transaction_id },
-          });
-          removed++;
-        }
+          syncComplete = true;
+        } catch (syncError: any) {
+          const plaidErrorCode = syncError?.response?.data?.error_code;
+          if (plaidErrorCode === 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION') {
+            retryCount++;
+            console.log(`[Plaid Sync] Cursor stale (mutation during pagination), attempt ${retryCount}/${MAX_RETRIES}`);
 
-        cursor = syncResponse.next_cursor;
-        hasMore = syncResponse.has_more;
+            if (retryCount >= MAX_RETRIES) {
+              // All retries exhausted — reset cursor and fall back to fresh sync
+              console.log(`[Plaid Sync] Retries exhausted. Resetting cursor to force fresh sync next time.`);
+              await db.plaidItem.update({
+                where: { id: plaidItem.id },
+                data: { cursor: null },
+              });
+
+              // Try one final empty-cursor sync to get a fresh cursor
+              try {
+                const freshSync = await syncTransactions(plaidItem.accessToken);
+                await db.plaidItem.update({
+                  where: { id: plaidItem.id },
+                  data: {
+                    cursor: freshSync.next_cursor,
+                    lastSyncedAt: new Date(),
+                  },
+                });
+                console.log(`[Plaid Sync] Fresh cursor obtained after reset. Sync will complete fully on next attempt.`);
+                syncComplete = true;
+              } catch (resetError) {
+                console.error(`[Plaid Sync] Failed to obtain fresh cursor after reset:`, resetError);
+                throw syncError;
+              }
+            }
+          } else {
+            throw syncError;
+          }
+        }
       }
-
-      // Update the cursor in the database
-      await db.plaidItem.update({
-        where: { id: plaidItem.id },
-        data: { 
-          cursor: cursor,
-          lastSyncedAt: new Date(),
-        },
-      });
     }
 
     // Also update account balances
@@ -236,10 +296,15 @@ export async function POST(request: NextRequest) {
       removed,
       skippedNoAccount,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Plaid Sync] Error syncing transactions:', error);
+    const plaidError = error?.response?.data;
     return NextResponse.json(
-      { error: 'Failed to sync transactions' },
+      {
+        error: 'Failed to sync transactions',
+        plaidErrorCode: plaidError?.error_code || null,
+        plaidErrorMessage: plaidError?.error_message || null,
+      },
       { status: 500 }
     );
   }
