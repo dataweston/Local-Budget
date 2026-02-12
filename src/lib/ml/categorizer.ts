@@ -268,12 +268,21 @@ function calculateSimilarity(str1: string, str2: string): number {
  */
 export async function suggestCategoriesForUncategorized(
   userId: string,
-  limit: number = 50
+  limit: number = 50,
+  search?: string
 ) {
+  const normalizedSearch = search?.trim();
+
   const uncategorized = await db.transaction.findMany({
     where: {
       account: { userId },
       categoryId: null,
+      ...(normalizedSearch && {
+        OR: [
+          { description: { contains: normalizedSearch, mode: 'insensitive' } },
+          { merchantName: { contains: normalizedSearch, mode: 'insensitive' } },
+        ],
+      }),
     },
     orderBy: {
       date: 'desc',

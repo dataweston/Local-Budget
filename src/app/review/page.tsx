@@ -41,16 +41,23 @@ export default function ReviewPage() {
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<TransactionTypeFilter>('_all');
   const [suggestionFilter, setSuggestionFilter] = useState<SuggestionFilter>('_all');
 
   const utils = api.useContext();
 
-  const { data: suggestionsData, isLoading } = api.suggestions.forUncategorized.useQuery(
-    { limit: 50 }
-  );
+  const { data: suggestionsData, isLoading } = api.suggestions.forUncategorized.useQuery({
+    limit: 50,
+    search: debouncedSearch || undefined,
+  });
   const { data: unreviewedCount } = api.transactions.unreviewedCount.useQuery();
   const { data: categories } = api.categories.list.useQuery();
+  const suggestionsItems = useMemo(
+    () => suggestionsData?.items ?? [],
+    [suggestionsData?.items]
+  );
+  const totalMatches = suggestionsData?.totalMatches ?? 0;
 
   const applySuggestion = api.suggestions.applySuggestion.useMutation(
     useToastCallbacks({
@@ -84,12 +91,16 @@ export default function ReviewPage() {
     })
   );
 
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedSearch(searchQuery.trim());
+    }, 250);
+
+    return () => clearTimeout(handle);
+  }, [searchQuery]);
+
   const filteredSuggestions = useMemo(() => {
-    if (!suggestionsData) return [];
-
-    const normalizedSearch = searchQuery.trim().toLowerCase();
-
-    return suggestionsData.filter((item) => {
+    return suggestionsItems.filter((item) => {
       const tx = item.transaction;
       const topSuggestion = item.suggestions[0];
 
@@ -107,14 +118,9 @@ export default function ReviewPage() {
         return false;
       }
 
-      if (!normalizedSearch) {
-        return true;
-      }
-
-      const haystack = `${tx.merchantName ?? ''} ${tx.description}`.toLowerCase();
-      return haystack.includes(normalizedSearch);
+      return true;
     });
-  }, [suggestionsData, searchQuery, typeFilter, suggestionFilter]);
+  }, [suggestionsItems, typeFilter, suggestionFilter]);
 
   const visibleTransactionIds = useMemo(
     () => filteredSuggestions.map((item) => item.transactionId),
@@ -130,19 +136,19 @@ export default function ReviewPage() {
     visibleTransactionIds.length > 0 &&
     visibleTransactionIds.every((id) => selectedIdSet.has(id));
 
-  const highConfidenceCount = suggestionsData?.filter(
+  const highConfidenceCount = suggestionsItems.filter(
     (s) => s.suggestions.length > 0 && s.suggestions[0].confidence >= 0.9
   ).length ?? 0;
 
   useEffect(() => {
-    if (!suggestionsData) {
+    if (!suggestionsItems.length) {
       setSelectedTransactionIds([]);
       return;
     }
 
-    const validIds = new Set(suggestionsData.map((item) => item.transactionId));
+    const validIds = new Set(suggestionsItems.map((item) => item.transactionId));
     setSelectedTransactionIds((prev) => prev.filter((id) => validIds.has(id)));
-  }, [suggestionsData]);
+  }, [suggestionsItems]);
 
   const refreshReviewData = async () => {
     await utils.suggestions.forUncategorized.invalidate();
@@ -177,8 +183,8 @@ export default function ReviewPage() {
   };
 
   const handleApplyAll = async () => {
-    if (!suggestionsData) return;
-    const autoApplyable = suggestionsData
+    if (!suggestionsItems.length) return;
+    const autoApplyable = suggestionsItems
       .filter((s) => s.suggestions.length > 0 && s.suggestions[0].confidence >= 0.9)
       .map((s) => ({
         transactionId: s.transactionId,
@@ -296,8 +302,13 @@ export default function ReviewPage() {
             </div>
             <div className="flex items-center justify-between text-sm text-muted-foreground">
               <p>
-                Showing {filteredSuggestions.length} of {suggestionsData?.length ?? 0} transaction
+                Showing {filteredSuggestions.length} of {suggestionsItems.length} loaded transaction
                 {(filteredSuggestions.length === 1 ? '' : 's')}
+                {totalMatches > suggestionsItems.length
+                  ? ` (${totalMatches} matches total, first 50 shown)`
+                  : totalMatches > 0
+                  ? ` (${totalMatches} matches total)`
+                  : ''}
               </p>
               <p className="flex items-center gap-1">
                 <Filter className="h-3.5 w-3.5" />
@@ -313,13 +324,17 @@ export default function ReviewPage() {
               <Skeleton key={i} className="h-24 w-full" />
             ))}
           </div>
-        ) : !suggestionsData || suggestionsData.length === 0 ? (
+        ) : totalMatches === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-16">
               <CheckCircle2 className="h-12 w-12 text-green-500 mb-4" />
-              <h2 className="text-xl font-semibold mb-2">All caught up!</h2>
+              <h2 className="text-xl font-semibold mb-2">
+                {debouncedSearch ? 'No matches' : 'All caught up!'}
+              </h2>
               <p className="text-muted-foreground text-center max-w-md">
-                No uncategorized transactions to review. New transactions from synced accounts will appear here.
+                {debouncedSearch
+                  ? 'No uncategorized transactions match your search.'
+                  : 'No uncategorized transactions to review. New transactions from synced accounts will appear here.'}
               </p>
             </CardContent>
           </Card>

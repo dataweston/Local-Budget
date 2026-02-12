@@ -36,15 +36,38 @@ export const suggestionsRouter = createTRPCRouter({
 
   // Get suggestions for all uncategorized transactions
   forUncategorized: protectedProcedure
-    .input(z.object({ limit: z.number().optional().default(50) }).optional())
+    .input(
+      z.object({
+        limit: z.number().optional().default(50),
+        search: z.string().optional(),
+      }).optional()
+    )
     .query(async ({ ctx, input }) => {
       const limit = input?.limit ?? 50;
+      const search = input?.search?.trim();
       const suggestions = await suggestCategoriesForUncategorized(
         ctx.session.user.id,
-        limit
+        limit,
+        search
       );
 
-      return suggestions;
+      const totalMatches = await ctx.db.transaction.count({
+        where: {
+          account: { userId: ctx.session.user.id },
+          categoryId: null,
+          ...(search && {
+            OR: [
+              { description: { contains: search, mode: 'insensitive' } },
+              { merchantName: { contains: search, mode: 'insensitive' } },
+            ],
+          }),
+        },
+      });
+
+      return {
+        items: suggestions,
+        totalMatches,
+      };
     }),
 
   // Apply a single suggestion
