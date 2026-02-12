@@ -35,11 +35,11 @@ export async function POST(request: NextRequest) {
     // Log available accounts for debugging
     console.log(`[Plaid Sync] Starting sync for PlaidItem ${plaidItem.id}`);
     console.log(`[Plaid Sync] Available FinancialAccounts:`, plaidItem.accounts.map(
-      (a: { id: string; plaidAccountId: string | null; name: string }) => 
+      (a: { id: string; plaidAccountId: string | null; name: string }) =>
         ({ id: a.id, plaidAccountId: a.plaidAccountId, name: a.name })
     ));
     console.log(`[Plaid Sync] PlaidAccounts:`, plaidItem.plaidAccounts.map(
-      (a: { id: string; accountId: string; name: string }) => 
+      (a: { id: string; accountId: string; name: string }) =>
         ({ id: a.id, accountId: a.accountId, name: a.name })
     ));
 
@@ -51,63 +51,92 @@ export async function POST(request: NextRequest) {
     // If fullSync is requested OR no cursor exists, use transactionsGet for full year history
     if (fullSync || !plaidItem.cursor) {
       console.log(`[Plaid Sync] Performing full historical sync (365 days)`);
-      
+
       // Calculate date range (last 365 days)
       const endDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
       const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      
+
       console.log(`[Plaid Sync] Fetching transactions from ${startDate} to ${endDate}`);
-      
+
       const allTransactions = await getAllTransactions(plaidItem.accessToken, startDate, endDate);
       console.log(`[Plaid Sync] Retrieved ${allTransactions.length} total transactions from Plaid`);
 
-      for (const transaction of allTransactions) {
-        const mappedTx = mapPlaidTransaction(transaction);
-        
-        // Find the matching financial account by plaidAccountId
+      // Map all transactions and resolve accounts upfront
+      const mapped = allTransactions.map((tx) => {
+        const m = mapPlaidTransaction(tx);
         const financialAccount = plaidItem.accounts.find(
-          (a: { plaidAccountId: string | null }) => a.plaidAccountId === mappedTx.accountId
+          (a: { plaidAccountId: string | null }) => a.plaidAccountId === m.accountId
         );
-        
-        if (!financialAccount) {
-          skippedNoAccount++;
-          continue;
-        }
+        return { ...m, financialAccountId: financialAccount?.id ?? null };
+      });
 
-        // Upsert transaction (insert or update if exists)
-        const existing = await db.transaction.findFirst({
-          where: { externalId: mappedTx.transactionId },
-        });
+      const validMapped = mapped.filter((m) => m.financialAccountId !== null);
+      skippedNoAccount = mapped.length - validMapped.length;
 
+      // Batch lookup: find all existing transactions by externalId in one query
+      const externalIds = validMapped.map((m) => m.transactionId);
+      const existingTxs = await db.transaction.findMany({
+        where: { externalId: { in: externalIds } },
+        select: { id: true, externalId: true, merchantName: true },
+      });
+      const existingMap = new Map(existingTxs.map((t) => [t.externalId, t]));
+
+      console.log(`[Plaid Sync] Found ${existingMap.size} existing transactions, ${validMapped.length - existingMap.size} new`);
+
+      // Separate into new and existing
+      const toCreate = [];
+      const toUpdate = [];
+
+      for (const m of validMapped) {
+        const existing = existingMap.get(m.transactionId);
         if (!existing) {
-          await db.transaction.create({
-            data: {
-              accountId: financialAccount.id,
-              amount: Math.abs(mappedTx.amount),
-              type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
-              status: mappedTx.pending ? 'PENDING' : 'POSTED',
-              date: new Date(mappedTx.date),
-              description: mappedTx.name,
-              merchantName: mappedTx.merchantName,
-              externalId: mappedTx.transactionId,
-              isReviewed: false,
-            },
+          toCreate.push({
+            accountId: m.financialAccountId!,
+            amount: Math.abs(m.amount),
+            type: (m.amount > 0 ? 'EXPENSE' : 'INCOME') as 'EXPENSE' | 'INCOME',
+            status: (m.pending ? 'PENDING' : 'POSTED') as 'PENDING' | 'POSTED',
+            date: new Date(m.date),
+            description: m.name,
+            merchantName: m.merchantName,
+            externalId: m.transactionId,
+            isReviewed: false,
           });
-          added++;
         } else {
-          await db.transaction.update({
-            where: { id: existing.id },
-            data: {
-              amount: Math.abs(mappedTx.amount),
-              type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
-              status: mappedTx.pending ? 'PENDING' : 'POSTED',
-              description: mappedTx.name,
-              merchantName: mappedTx.merchantName,
-            },
-          });
-          modified++;
+          toUpdate.push({ existing, mapped: m });
         }
       }
+
+      // Batch create new transactions
+      if (toCreate.length > 0) {
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < toCreate.length; i += BATCH_SIZE) {
+          const batch = toCreate.slice(i, i + BATCH_SIZE);
+          await db.transaction.createMany({ data: batch, skipDuplicates: true });
+          console.log(`[Plaid Sync] Created batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(toCreate.length / BATCH_SIZE)} (${batch.length} transactions)`);
+        }
+        added = toCreate.length;
+      }
+
+      // Update existing transactions — preserve user-modified merchantName
+      for (const { existing, mapped: m } of toUpdate) {
+        // Only update merchantName if user hasn't changed it (i.e. it still matches what Plaid had)
+        // If merchantName differs from Plaid's value, the user has merged/renamed it — don't overwrite
+        const shouldUpdateMerchant = !existing.merchantName || existing.merchantName === m.merchantName;
+
+        await db.transaction.update({
+          where: { id: existing.id },
+          data: {
+            amount: Math.abs(m.amount),
+            type: m.amount > 0 ? 'EXPENSE' : 'INCOME',
+            status: m.pending ? 'PENDING' : 'POSTED',
+            description: m.name,
+            ...(shouldUpdateMerchant && { merchantName: m.merchantName }),
+          },
+        });
+        modified++;
+      }
+
+      console.log(`[Plaid Sync] Full sync processed: ${added} added, ${modified} modified, ${skippedNoAccount} skipped`);
 
       // After full sync, do a cursor sync to set the cursor for future incremental syncs
       try {
@@ -115,7 +144,7 @@ export async function POST(request: NextRequest) {
         // Update cursor for future incremental syncs
         await db.plaidItem.update({
           where: { id: plaidItem.id },
-          data: { 
+          data: {
             cursor: syncResponse.next_cursor,
             lastSyncedAt: new Date(),
           },
@@ -191,9 +220,17 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            // Process modified transactions
+            // Process modified transactions — preserve user-modified merchantName
             for (const transaction of syncResponse.modified) {
               const mappedTx = mapPlaidTransaction(transaction);
+
+              // Check if user has renamed this merchant
+              const existing = await db.transaction.findFirst({
+                where: { externalId: mappedTx.transactionId },
+                select: { merchantName: true },
+              });
+
+              const shouldUpdateMerchant = !existing?.merchantName || existing.merchantName === mappedTx.merchantName;
 
               await db.transaction.updateMany({
                 where: { externalId: mappedTx.transactionId },
@@ -202,7 +239,7 @@ export async function POST(request: NextRequest) {
                   type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
                   status: mappedTx.pending ? 'PENDING' : 'POSTED',
                   description: mappedTx.name,
-                  merchantName: mappedTx.merchantName,
+                  ...(shouldUpdateMerchant && { merchantName: mappedTx.merchantName }),
                 },
               });
               modified++;
@@ -274,7 +311,7 @@ export async function POST(request: NextRequest) {
       const financialAccount = plaidItem.accounts.find(
         (a: { plaidAccountId: string | null }) => a.plaidAccountId === account.account_id
       );
-      
+
       if (financialAccount) {
         await db.financialAccount.update({
           where: { id: financialAccount.id },

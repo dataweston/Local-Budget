@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { formatCurrency } from '@/lib/utils';
-import { Search, Store, TrendingUp, AlertTriangle, Merge } from 'lucide-react';
+import { Search, Store, TrendingUp, AlertTriangle, Merge, Tag, Check } from 'lucide-react';
 import { useToastCallbacks } from '@/hooks/use-toast-mutation';
 import {
   AreaChart,
@@ -46,6 +46,11 @@ export default function VendorsPage() {
   const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
 
+  // Category assignment state
+  const [assignCategoryId, setAssignCategoryId] = useState<string>('');
+  const [createRule, setCreateRule] = useState(true);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+
   const utils = api.useContext();
 
   // Fetch vendors list
@@ -66,12 +71,33 @@ export default function VendorsPage() {
     { enabled: !!selectedVendor }
   );
 
+  // Fetch categories for assignment
+  const { data: categories } = api.categories.list.useQuery();
+
   // Merge mutation
   const mergeMutation = api.vendors.merge.useMutation(
     useToastCallbacks({
       successTitle: 'Vendors Merged',
       successDescription: 'Vendor names have been consolidated',
       errorTitle: 'Failed to merge vendors',
+    })
+  );
+
+  // Bulk categorize mutation
+  const bulkCategorizeMutation = api.transactions.bulkCategorize.useMutation(
+    useToastCallbacks({
+      successTitle: 'Category Assigned',
+      successDescription: 'Transactions have been categorized',
+      errorTitle: 'Failed to assign category',
+    })
+  );
+
+  // Create rule mutation
+  const createRuleMutation = api.rules.create.useMutation(
+    useToastCallbacks({
+      successTitle: 'Rule Created',
+      successDescription: 'Future transactions will be auto-categorized',
+      errorTitle: 'Failed to create rule',
     })
   );
 
@@ -98,6 +124,46 @@ export default function VendorsPage() {
     }
   };
 
+  const handleAssignCategory = async () => {
+    if (!assignCategoryId || !vendorDetails) return;
+
+    try {
+      // Get all uncategorized transaction IDs for this vendor
+      const uncategorizedIds = vendorDetails.transactions
+        .filter((tx) => !tx.categoryId)
+        .map((tx) => tx.id);
+
+      // Bulk categorize uncategorized transactions
+      if (uncategorizedIds.length > 0) {
+        await bulkCategorizeMutation.mutateAsync({
+          transactionIds: uncategorizedIds,
+          categoryId: assignCategoryId,
+        });
+      }
+
+      // Create an auto-categorization rule for future transactions
+      if (createRule && selectedVendor) {
+        const category = categories?.find((c) => c.id === assignCategoryId);
+        await createRuleMutation.mutateAsync({
+          name: `Auto: ${selectedVendor} → ${category?.name ?? 'Category'}`,
+          matchField: 'merchantName',
+          matchType: 'CONTAINS',
+          matchValue: selectedVendor,
+          categoryId: assignCategoryId,
+          priority: 10,
+        });
+      }
+    } finally {
+      setAssignModalOpen(false);
+      setAssignCategoryId('');
+
+      // Refresh data
+      await utils.vendors.getByName.invalidate();
+      await utils.vendors.list.invalidate();
+      await utils.transactions.invalidate();
+    }
+  };
+
   const toggleMergeSelect = (name: string) => {
     setMergeSelection((prev) => {
       const next = new Set(prev);
@@ -117,6 +183,9 @@ export default function VendorsPage() {
     setTargetName(names[0]);
     setMergeModalOpen(true);
   };
+
+  // Count uncategorized transactions for the selected vendor
+  const uncategorizedCount = vendorDetails?.transactions.filter((tx) => !tx.categoryId).length ?? 0;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -319,10 +388,25 @@ export default function VendorsPage() {
               {/* Vendor Stats */}
               <Card>
                 <CardHeader>
-                  <CardTitle>{vendorDetails.name}</CardTitle>
-                  <CardDescription>
-                    {vendorDetails.stats.transactionCount} transactions
-                  </CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle>{vendorDetails.name}</CardTitle>
+                      <CardDescription>
+                        {vendorDetails.stats.transactionCount} transactions
+                      </CardDescription>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setAssignCategoryId('');
+                        setCreateRule(true);
+                        setAssignModalOpen(true);
+                      }}
+                    >
+                      <Tag className="h-4 w-4 mr-2" />
+                      Set Category
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4">
@@ -341,6 +425,11 @@ export default function VendorsPage() {
                       </div>
                     )}
                   </div>
+                  {uncategorizedCount > 0 && (
+                    <p className="text-sm text-orange-600 mt-3">
+                      {uncategorizedCount} uncategorized transaction{uncategorizedCount !== 1 ? 's' : ''}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
 
@@ -427,9 +516,13 @@ export default function VendorsPage() {
                           >
                             {formatCurrency(tx.amount)}
                           </div>
-                          {tx.category && (
+                          {tx.category ? (
                             <div className="text-xs text-muted-foreground">
                               {tx.category.name}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-orange-500">
+                              Uncategorized
                             </div>
                           )}
                         </div>
@@ -493,6 +586,77 @@ export default function VendorsPage() {
             >
               <Merge className="h-4 w-4 mr-2" />
               Merge Vendors
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Assign Category Modal */}
+      <Dialog open={assignModalOpen} onOpenChange={setAssignModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign Category to {selectedVendor}</DialogTitle>
+            <DialogDescription>
+              {uncategorizedCount > 0
+                ? `Set a category for ${uncategorizedCount} uncategorized transaction${uncategorizedCount !== 1 ? 's' : ''}`
+                : 'All transactions are already categorized. You can still create a rule for future transactions.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Category</Label>
+              <Select value={assignCategoryId} onValueChange={setAssignCategoryId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories?.map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setCreateRule(!createRule)}
+                className={`h-5 w-5 rounded border flex items-center justify-center shrink-0 ${
+                  createRule
+                    ? 'bg-primary border-primary text-primary-foreground'
+                    : 'border-muted-foreground'
+                }`}
+              >
+                {createRule && <Check className="h-3 w-3" />}
+              </button>
+              <div>
+                <Label className="cursor-pointer" onClick={() => setCreateRule(!createRule)}>
+                  Auto-categorize future transactions
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Creates a rule to automatically assign this category to new transactions from {selectedVendor}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setAssignModalOpen(false)}
+              disabled={bulkCategorizeMutation.isLoading || createRuleMutation.isLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignCategory}
+              disabled={!assignCategoryId || bulkCategorizeMutation.isLoading || createRuleMutation.isLoading}
+            >
+              <Tag className="h-4 w-4 mr-2" />
+              {uncategorizedCount > 0 ? `Assign to ${uncategorizedCount} Transaction${uncategorizedCount !== 1 ? 's' : ''}` : 'Create Rule'}
             </Button>
           </DialogFooter>
         </DialogContent>
