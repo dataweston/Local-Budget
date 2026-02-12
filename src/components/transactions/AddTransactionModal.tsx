@@ -9,7 +9,6 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-  DialogClose,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -112,13 +111,12 @@ export function AddTransactionModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
-        <DialogClose onClick={() => onOpenChange(false)} />
         <DialogHeader>
           <DialogTitle>Add New Transaction</DialogTitle>
           <DialogDescription>Enter the details for your new transaction.</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="p-6 pt-4 space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="account">Account *</Label>
@@ -277,7 +275,7 @@ export function AddTransactionModal({
             />
           </div>
 
-          <DialogFooter className="p-0 pt-4">
+          <DialogFooter>
             <Button
               type="button"
               variant="outline"

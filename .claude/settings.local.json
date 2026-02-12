@@ -3,7 +3,8 @@
     "allow": [
       "Bash(git pull:*)",
       "Bash(npm uninstall:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(npm ls:*)"
     ]
   }
 }

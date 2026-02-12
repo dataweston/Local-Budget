@@ -257,14 +257,17 @@ export const vendorsRouter = createTRPCRouter({
         distinct: ['merchantName'],
       });
 
-      const vendors = transactions
-        .map((tx) => ({
-          name: tx.merchantName!,
-          normalized: normalizeVendorName(tx.merchantName!),
-        }))
-        .filter((v) => v.name && v.normalized);
+      // Get unique normalized vendor names (so we only compare distinct display names)
+      const normalizedSet = new Set<string>();
+      for (const tx of transactions) {
+        if (!tx.merchantName) continue;
+        const normalized = normalizeVendorName(tx.merchantName);
+        if (normalized) normalizedSet.add(normalized);
+      }
 
-      // Find similar vendors
+      const vendors = Array.from(normalizedSet).map((name) => ({ name }));
+
+      // Find similar vendors (compares normalized names)
       const duplicates = findSimilarVendors(vendors, threshold);
 
       return duplicates;

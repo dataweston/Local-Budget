@@ -9,7 +9,6 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-  DialogClose,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -83,13 +82,12 @@ export function AddAccountModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogClose onClick={() => onOpenChange(false)} />
         <DialogHeader>
           <DialogTitle>Add New Account</DialogTitle>
           <DialogDescription>Add a manual account to track your finances.</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="p-6 pt-4 space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="name">Account Name *</Label>
             <Input
@@ -183,7 +181,7 @@ export function AddAccountModal({
             </Select>
           </div>
 
-          <DialogFooter className="p-0 pt-4">
+          <DialogFooter>
             <Button
               type="button"
               variant="outline"

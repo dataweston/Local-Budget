@@ -42,6 +42,8 @@ export default function VendorsPage() {
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
   const [mergeGroup, setMergeGroup] = useState<string[]>([]);
   const [targetName, setTargetName] = useState('');
+  const [mergeSelection, setMergeSelection] = useState<Set<string>>(new Set());
+  const [selectMode, setSelectMode] = useState(false);
 
   const utils = api.useContext();
 
@@ -75,18 +77,44 @@ export default function VendorsPage() {
   const handleMerge = async () => {
     if (mergeGroup.length < 2 || !targetName) return;
 
-    await mergeMutation.mutateAsync({
-      sourceNames: mergeGroup,
-      targetName,
+    try {
+      await mergeMutation.mutateAsync({
+        sourceNames: mergeGroup,
+        targetName,
+      });
+    } finally {
+      setMergeModalOpen(false);
+      setMergeGroup([]);
+      setTargetName('');
+      setSelectedVendor(null);
+      setMergeSelection(new Set());
+      setSelectMode(false);
+
+      // Always refresh data
+      await utils.vendors.list.invalidate();
+      await utils.vendors.findDuplicates.invalidate();
+      await utils.vendors.getByName.invalidate();
+    }
+  };
+
+  const toggleMergeSelect = (name: string) => {
+    setMergeSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
     });
+  };
 
-    setMergeModalOpen(false);
-    setMergeGroup([]);
-    setTargetName('');
-
-    // Refresh data
-    await utils.vendors.list.invalidate();
-    await utils.vendors.findDuplicates.invalidate();
+  const openMergeFromSelection = () => {
+    const names = Array.from(mergeSelection);
+    if (names.length < 2) return;
+    setMergeGroup(names);
+    setTargetName(names[0]);
+    setMergeModalOpen(true);
   };
 
   return (
@@ -148,12 +176,40 @@ export default function VendorsPage() {
         {/* Vendor List */}
         <Card className="lg:col-span-1">
           <CardHeader>
-            <CardTitle>All Vendors</CardTitle>
-            <CardDescription>
-              {vendorsData?.total || 0} unique vendors
-            </CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>All Vendors</CardTitle>
+                <CardDescription>
+                  {vendorsData?.total || 0} unique vendors
+                </CardDescription>
+              </div>
+              <Button
+                size="sm"
+                variant={selectMode ? 'default' : 'outline'}
+                onClick={() => {
+                  setSelectMode(!selectMode);
+                  setMergeSelection(new Set());
+                }}
+              >
+                <Merge className="h-4 w-4 mr-1" />
+                {selectMode ? 'Cancel' : 'Merge'}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
+            {/* Merge selection bar */}
+            {selectMode && mergeSelection.size >= 2 && (
+              <div className="mb-3 p-3 bg-accent rounded-md flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  {mergeSelection.size} vendors selected
+                </span>
+                <Button size="sm" onClick={openMergeFromSelection}>
+                  <Merge className="h-4 w-4 mr-1" />
+                  Merge Selected
+                </Button>
+              </div>
+            )}
+
             {/* Search and Sort */}
             <div className="space-y-3 mb-4">
               <div className="relative">
@@ -196,18 +252,41 @@ export default function VendorsPage() {
                 vendorsData?.vendors.map((vendor) => (
                   <button
                     key={vendor.name}
-                    onClick={() => setSelectedVendor(vendor.name)}
+                    onClick={() => {
+                      if (selectMode) {
+                        toggleMergeSelect(vendor.name);
+                      } else {
+                        setSelectedVendor(vendor.name);
+                      }
+                    }}
                     className={`w-full p-3 rounded-md border text-left transition-colors ${
-                      selectedVendor === vendor.name
+                      selectMode && mergeSelection.has(vendor.name)
+                        ? 'bg-primary/10 border-primary'
+                        : selectedVendor === vendor.name
                         ? 'bg-accent border-primary'
                         : 'hover:bg-accent'
                     }`}
                   >
                     <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium truncate">{vendor.name}</div>
-                        <div className="text-sm text-muted-foreground">
-                          {vendor.count} transaction{vendor.count !== 1 ? 's' : ''}
+                      <div className="flex items-start gap-2 flex-1 min-w-0">
+                        {selectMode && (
+                          <div className={`mt-1 h-4 w-4 rounded border flex-shrink-0 flex items-center justify-center ${
+                            mergeSelection.has(vendor.name)
+                              ? 'bg-primary border-primary text-primary-foreground'
+                              : 'border-muted-foreground'
+                          }`}>
+                            {mergeSelection.has(vendor.name) && (
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                              </svg>
+                            )}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">{vendor.name}</div>
+                          <div className="text-sm text-muted-foreground">
+                            {vendor.count} transaction{vendor.count !== 1 ? 's' : ''}
+                          </div>
                         </div>
                       </div>
                       <div className="text-right">
