@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { syncTransactions, getAccountBalances } from '@/lib/plaid';
+import { syncTransactions, getAccountBalances, plaidClient } from '@/lib/plaid';
+import { jwtVerify, importJWK, type JWK } from 'jose';
+import { createHash } from 'crypto';
 
 // Plaid webhook event types
-type PlaidWebhookType = 
+type PlaidWebhookType =
   | 'TRANSACTIONS'
   | 'ITEM'
   | 'HOLDINGS'
@@ -26,36 +28,75 @@ interface PlaidWebhookBody {
   removed_transactions?: string[];
 }
 
-// In production, you should verify the webhook signature
-// See: https://plaid.com/docs/api/webhooks/webhook-verification/
-async function verifyPlaidWebhook(request: NextRequest): Promise<boolean> {
-  // For production, implement signature verification using:
-  // - Plaid-Verification header
-  // - plaid.webhookVerificationKeyGet()
-  // - JWT verification
-  
-  // For now, we'll do a basic check
-  const plaidVersion = request.headers.get('plaid-verification');
-  
-  // In development/sandbox, skip verification
+// Cache for Plaid verification keys (key_id -> JWK)
+const keyCache = new Map<string, { key: JWK; expiresAt: number }>();
+const KEY_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+async function getPlaidVerificationKey(keyId: string): Promise<JWK> {
+  const cached = keyCache.get(keyId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.key;
+  }
+
+  const response = await plaidClient.webhookVerificationKeyGet({ key_id: keyId });
+  const jwk = response.data.key as unknown as JWK;
+  keyCache.set(keyId, { key: jwk, expiresAt: Date.now() + KEY_CACHE_TTL });
+  return jwk;
+}
+
+async function verifyPlaidWebhook(request: NextRequest, rawBody: string): Promise<boolean> {
   if (process.env.PLAID_ENV === 'sandbox') {
     return true;
   }
-  
-  // TODO: Implement proper signature verification for production
-  return !!plaidVersion;
+
+  const token = request.headers.get('plaid-verification');
+  if (!token) {
+    return false;
+  }
+
+  try {
+    // Decode the JWT header to get the key ID
+    const [headerB64] = token.split('.');
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString());
+    const keyId = header.kid;
+    if (!keyId) return false;
+
+    // Fetch the verification key from Plaid
+    const jwk = await getPlaidVerificationKey(keyId);
+    const key = await importJWK(jwk, 'ES256');
+
+    // Verify the JWT signature and expiration
+    const { payload } = await jwtVerify(token, key, {
+      maxTokenAge: '5 min',
+    });
+
+    // Verify the request body hash matches
+    const bodyHash = createHash('sha256').update(rawBody).digest('hex');
+    if (payload.request_body_sha256 !== bodyHash) {
+      console.error('Plaid webhook body hash mismatch');
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('Plaid webhook verification failed:', err);
+    return false;
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
+    // Read raw body for signature verification
+    const rawBody = await request.text();
+
     // Verify webhook authenticity
-    const isValid = await verifyPlaidWebhook(request);
-    if (!isValid && process.env.PLAID_ENV !== 'sandbox') {
+    const isValid = await verifyPlaidWebhook(request, rawBody);
+    if (!isValid) {
       console.error('Invalid Plaid webhook signature');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
 
-    const body: PlaidWebhookBody = await request.json();
+    const body: PlaidWebhookBody = JSON.parse(rawBody);
     const { webhook_type, webhook_code, item_id, error } = body;
 
     console.log(`Plaid webhook received: ${webhook_type}/${webhook_code} for item ${item_id}`);
