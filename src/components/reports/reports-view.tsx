@@ -32,7 +32,8 @@ import {
   Cell,
 } from 'recharts';
 
-const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#14b8a6'];
+import { CHART_COLORS, CHART_PALETTE, CLASSIFICATION_STYLES } from '@/lib/colors';
+import * as M from '@/lib/metrics';
 
 export function ReportsView() {
   // Date range state
@@ -125,16 +126,16 @@ export function ReportsView() {
                     <CardDescription>{dateRange.label}</CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                       <div className="flex justify-between items-center py-2 border-b">
                         <span className="font-medium">Revenue</span>
-                        <span className="text-green-600 font-bold">
+                        <span className="text-income font-bold">
                           {formatCurrency(profitLoss.revenue)}
                         </span>
                       </div>
                       <div className="flex justify-between items-center py-2 border-b">
                         <span className="text-muted-foreground">Cost of Goods Sold</span>
-                        <span className="text-red-600">
+                        <span className="text-expense">
                           ({formatCurrency(profitLoss.cogs)})
                         </span>
                       </div>
@@ -151,25 +152,49 @@ export function ReportsView() {
                       </div>
                       <div className="flex justify-between items-center py-2 border-b">
                         <span className="text-muted-foreground">Operating Expenses</span>
-                        <span className="text-red-600">
+                        <span className="text-expense">
                           ({formatCurrency(profitLoss.operatingExpenses)})
                         </span>
                       </div>
-                      <div className="flex justify-between items-center py-3 bg-primary/10 px-2 rounded">
-                        <span className="font-bold text-lg">Operating Income</span>
+                      <div className="flex justify-between items-center py-2 border-b bg-muted/50 px-2 rounded">
+                        <span className="font-semibold">Operating Income</span>
                         <div className="text-right">
                           <span
                             className={cn(
-                              'font-bold text-lg',
+                              'font-bold',
                               profitLoss.operatingIncome >= 0
-                                ? 'text-green-600'
-                                : 'text-red-600'
+                                ? 'text-income'
+                                : 'text-expense'
                             )}
                           >
                             {formatCurrency(profitLoss.operatingIncome)}
                           </span>
                           <span className="text-xs text-muted-foreground ml-2">
                             ({profitLoss.operatingMargin.toFixed(1)}%)
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center py-2 border-b">
+                        <span className="text-muted-foreground">Personal / Owner Draws</span>
+                        <span className="text-expense">
+                          ({formatCurrency(profitLoss.personalExpenses)})
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center py-3 bg-primary/10 px-2 rounded">
+                        <span className="font-bold text-lg">Net Income</span>
+                        <div className="text-right">
+                          <span
+                            className={cn(
+                              'font-bold text-lg',
+                              profitLoss.netIncome >= 0
+                                ? 'text-income'
+                                : 'text-expense'
+                            )}
+                          >
+                            {formatCurrency(profitLoss.netIncome)}
+                          </span>
+                          <span className="text-xs text-muted-foreground ml-2">
+                            ({profitLoss.netMargin.toFixed(1)}%)
                           </span>
                         </div>
                       </div>
@@ -189,6 +214,7 @@ export function ReportsView() {
                         data={[
                           { name: 'COGS', value: profitLoss.cogs },
                           { name: 'Operating', value: profitLoss.operatingExpenses },
+                          { name: 'Personal', value: profitLoss.personalExpenses },
                         ]}
                         layout="vertical"
                       >
@@ -198,9 +224,61 @@ export function ReportsView() {
                         <Tooltip
                           formatter={(value: number) => formatCurrency(value)}
                         />
-                        <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+                        <Bar dataKey="value" fill={CHART_COLORS.primary} radius={[0, 4, 4, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                {/* Financial Health Metrics */}
+                <Card className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle>Financial Health</CardTitle>
+                    <CardDescription>Key ratios and metrics — {dateRange.label}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded-lg border p-4">
+                        <p className="text-xs text-muted-foreground">Gross Margin</p>
+                        <p className={cn('text-2xl font-bold', profitLoss.grossMargin >= 0 ? 'text-foreground' : 'text-expense')}>
+                          {profitLoss.grossMargin.toFixed(1)}%
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Revenue after COGS</p>
+                      </div>
+                      <div className="rounded-lg border p-4">
+                        <p className="text-xs text-muted-foreground">Operating Margin</p>
+                        <p className={cn('text-2xl font-bold', profitLoss.operatingMargin >= 0 ? 'text-foreground' : 'text-expense')}>
+                          {profitLoss.operatingMargin.toFixed(1)}%
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Revenue after COGS + OpEx</p>
+                      </div>
+                      <div className="rounded-lg border p-4">
+                        <p className="text-xs text-muted-foreground">Net Margin</p>
+                        <p className={cn('text-2xl font-bold', profitLoss.netMargin >= 0 ? 'text-foreground' : 'text-expense')}>
+                          {profitLoss.netMargin.toFixed(1)}%
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Revenue after all expenses</p>
+                      </div>
+                      <div className="rounded-lg border p-4">
+                        <p className="text-xs text-muted-foreground">Savings Rate</p>
+                        <p className={cn('text-2xl font-bold', profitLoss.savingsRate >= 0 ? 'text-income' : 'text-expense')}>
+                          {profitLoss.savingsRate.toFixed(1)}%
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">Income retained</p>
+                      </div>
+                    </div>
+                    {profitLoss.revenue > 0 && (
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <div className="flex justify-between items-center py-2 px-3 rounded bg-muted/50">
+                          <span className="text-sm text-muted-foreground">COGS Ratio</span>
+                          <span className="font-medium">{(profitLoss.cogs / profitLoss.revenue * 100).toFixed(1)}%</span>
+                        </div>
+                        <div className="flex justify-between items-center py-2 px-3 rounded bg-muted/50">
+                          <span className="text-sm text-muted-foreground">OpEx Ratio</span>
+                          <span className="font-medium">{(profitLoss.operatingExpenses / profitLoss.revenue * 100).toFixed(1)}%</span>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -219,14 +297,8 @@ export function ReportsView() {
                           <div key={cat.categoryId} className="flex items-center gap-3">
                             <span
                               className={cn(
-                                'text-xs font-medium px-2 py-0.5 rounded',
-                                cat.classification === 'INCOME'
-                                  ? 'bg-green-100 text-green-700'
-                                  : cat.classification === 'COGS'
-                                  ? 'bg-red-100 text-red-700'
-                                  : cat.classification === 'OPERATING'
-                                  ? 'bg-blue-100 text-blue-700'
-                                  : 'bg-gray-100 text-gray-700'
+                                'text-xs font-medium px-2 py-0.5 rounded border',
+                                CLASSIFICATION_STYLES[cat.classification] ?? 'bg-slate-50 text-slate-700 border-slate-200'
                               )}
                             >
                               {cat.classification}
@@ -277,21 +349,21 @@ export function ReportsView() {
                         ]}
                       />
                       <Legend />
-                      <Bar dataKey="income" name="Income" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="expenses" name="Expenses" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="income" name="Income" fill={CHART_COLORS.income} radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="expenses" name="Expenses" fill={CHART_COLORS.expense} radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
 
                   <div className="mt-6 grid gap-4 md:grid-cols-3">
                     <div className="rounded-lg border p-4">
                       <p className="text-xs text-muted-foreground">Total Income</p>
-                      <p className="text-xl font-bold text-green-600">
+                      <p className="text-xl font-bold text-income">
                         {formatCurrency(cashflowTotals.income)}
                       </p>
                     </div>
                     <div className="rounded-lg border p-4">
                       <p className="text-xs text-muted-foreground">Total Expenses</p>
-                      <p className="text-xl font-bold text-red-600">
+                      <p className="text-xl font-bold text-expense">
                         {formatCurrency(cashflowTotals.expenses)}
                       </p>
                     </div>
@@ -300,7 +372,7 @@ export function ReportsView() {
                       <p
                         className={cn(
                           'text-xl font-bold',
-                          cashflowTotals.net >= 0 ? 'text-green-600' : 'text-red-600'
+                          cashflowTotals.net >= 0 ? 'text-income' : 'text-expense'
                         )}
                       >
                         {formatCurrency(cashflowTotals.net)}
@@ -314,8 +386,8 @@ export function ReportsView() {
                       <thead>
                         <tr className="border-b bg-muted/50">
                           <th className="text-left p-3 font-medium">Period</th>
-                          <th className="text-right p-3 font-medium text-green-600">Income</th>
-                          <th className="text-right p-3 font-medium text-red-600">Expenses</th>
+                          <th className="text-right p-3 font-medium text-income">Income</th>
+                          <th className="text-right p-3 font-medium text-expense">Expenses</th>
                           <th className="text-right p-3 font-medium">Net</th>
                         </tr>
                       </thead>
@@ -323,16 +395,16 @@ export function ReportsView() {
                         {cashflow.map((row) => (
                           <tr key={row.date} className="border-b last:border-0">
                             <td className="p-3 font-medium">{row.date}</td>
-                            <td className="p-3 text-right text-green-600">
+                            <td className="p-3 text-right text-income">
                               {formatCurrency(row.income)}
                             </td>
-                            <td className="p-3 text-right text-red-600">
+                            <td className="p-3 text-right text-expense">
                               {formatCurrency(row.expenses)}
                             </td>
                             <td
                               className={cn(
                                 'p-3 text-right font-bold',
-                                row.net >= 0 ? 'text-green-600' : 'text-red-600'
+                                row.net >= 0 ? 'text-income' : 'text-expense'
                               )}
                             >
                               {formatCurrency(row.net)}
@@ -343,16 +415,16 @@ export function ReportsView() {
                       <tfoot>
                         <tr className="border-t bg-muted/50 font-semibold">
                           <td className="p-3">Total</td>
-                          <td className="p-3 text-right text-green-600">
+                          <td className="p-3 text-right text-income">
                             {formatCurrency(cashflowTotals.income)}
                           </td>
-                          <td className="p-3 text-right text-red-600">
+                          <td className="p-3 text-right text-expense">
                             {formatCurrency(cashflowTotals.expenses)}
                           </td>
                           <td
                             className={cn(
                               'p-3 text-right',
-                              cashflowTotals.net >= 0 ? 'text-green-600' : 'text-red-600'
+                              cashflowTotals.net >= 0 ? 'text-income' : 'text-expense'
                             )}
                           >
                             {formatCurrency(cashflowTotals.net)}
@@ -396,7 +468,7 @@ export function ReportsView() {
                           }
                         >
                           {categorySpend.slice(0, 8).map((_, index) => (
-                            <Cell key={index} fill={COLORS[index % COLORS.length]} />
+                            <Cell key={index} fill={CHART_PALETTE[index % CHART_PALETTE.length]} />
                           ))}
                         </Pie>
                         <Tooltip
@@ -418,7 +490,7 @@ export function ReportsView() {
                         <div key={cat.categoryId} className="flex items-center gap-3">
                           <div
                             className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                            style={{ backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length] }}
                           />
                           <span className="text-lg">{cat.icon}</span>
                           <span className="flex-1 font-medium">{cat.categoryName}</span>
@@ -465,7 +537,7 @@ export function ReportsView() {
                           }
                         >
                           {incomeByCategory.slice(0, 8).map((_, index) => (
-                            <Cell key={index} fill={COLORS[index % COLORS.length]} />
+                            <Cell key={index} fill={CHART_PALETTE[index % CHART_PALETTE.length]} />
                           ))}
                         </Pie>
                         <Tooltip
@@ -487,14 +559,14 @@ export function ReportsView() {
                         <div key={cat.categoryId} className="flex items-center gap-3">
                           <div
                             className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                            style={{ backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length] }}
                           />
                           <span className="text-lg">{cat.icon}</span>
                           <span className="flex-1 font-medium">{cat.categoryName}</span>
                           <span className="text-muted-foreground text-sm">
                             {cat.transactionCount} txn
                           </span>
-                          <span className="font-bold text-green-600">
+                          <span className="font-bold text-income">
                             {formatCurrency(cat.amount)}
                           </span>
                         </div>
@@ -533,7 +605,7 @@ export function ReportsView() {
                       <Bar
                         dataKey="totalSpend"
                         name="Total Spend"
-                        fill="#3b82f6"
+                        fill={CHART_COLORS.primary}
                         radius={[4, 4, 0, 0]}
                       />
                     </BarChart>
@@ -598,7 +670,7 @@ export function ReportsView() {
                         <Bar
                           dataKey="totalSpending"
                           name="Total Spending"
-                          fill="#8b5cf6"
+                          fill={CHART_COLORS.purple}
                           radius={[0, 4, 4, 0]}
                         />
                       </BarChart>

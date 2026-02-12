@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { formatCurrency, cn } from '@/lib/utils';
+import { ACCOUNT_TYPE_COLORS } from '@/lib/colors';
 import { AddAccountModal } from './AddAccountModal';
 import { PlaidLinkButton } from './PlaidLinkButton';
 import { SquareConnectButton } from './SquareConnectButton';
@@ -51,14 +52,7 @@ const accountTypeIcons: Record<string, any> = {
   default: Wallet,
 };
 
-const accountTypeColors: Record<string, string> = {
-  CHECKING: 'bg-blue-500',
-  SAVINGS: 'bg-green-500',
-  CREDIT_CARD: 'bg-purple-500',
-  CASH: 'bg-yellow-500',
-  INVESTMENT: 'bg-cyan-500',
-  default: 'bg-gray-500',
-};
+const accountTypeColors = ACCOUNT_TYPE_COLORS;
 
 export function AccountsList() {
   const [showAddModal, setShowAddModal] = useState(false);

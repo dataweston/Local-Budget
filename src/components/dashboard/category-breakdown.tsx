@@ -8,6 +8,7 @@ import {
   CardDescription,
 } from '@/components/ui/card';
 import { formatCurrency, cn } from '@/lib/utils';
+import { CATEGORY_BAR_COLORS } from '@/lib/colors';
 
 interface CategorySpend {
   categoryId: string | null;
@@ -41,19 +42,7 @@ export function CategoryBreakdown({ categories, title, description }: CategoryBr
           </div>
         ) : (
           <div className="space-y-4">
-            {topCategories.map((category, index) => {
-              const colors = [
-                'bg-blue-500',
-                'bg-purple-500',
-                'bg-green-500',
-                'bg-orange-500',
-                'bg-pink-500',
-                'bg-cyan-500',
-                'bg-yellow-500',
-                'bg-red-500',
-              ];
-
-              return (
+            {topCategories.map((category, index) => (
                 <div key={category.categoryId ?? 'uncategorized'}>
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
@@ -73,7 +62,7 @@ export function CategoryBreakdown({ categories, title, description }: CategoryBr
                   </div>
                   <div className="w-full bg-secondary rounded-full h-2">
                     <div
-                      className={cn('h-2 rounded-full transition-all', colors[index % colors.length])}
+                      className={cn('h-2 rounded-full transition-all', CATEGORY_BAR_COLORS[index % CATEGORY_BAR_COLORS.length])}
                       style={{ width: `${Math.min(category.percentOfTotal, 100)}%` }}
                     />
                   </div>
@@ -81,8 +70,7 @@ export function CategoryBreakdown({ categories, title, description }: CategoryBr
                     {category.percentOfTotal.toFixed(1)}% of total
                   </div>
                 </div>
-              );
-            })}
+              ))}
           </div>
         )}
       </CardContent>

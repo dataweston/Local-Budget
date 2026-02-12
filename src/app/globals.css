@@ -4,32 +4,42 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 0 0% 99%;
+    --foreground: 220 20% 14%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 220 20% 14%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --popover-foreground: 220 20% 14%;
+    --primary: 160 30% 42%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 16% 95%;
+    --secondary-foreground: 220 15% 25%;
+    --muted: 210 16% 95%;
+    --muted-foreground: 220 10% 46%;
+    --accent: 160 20% 93%;
+    --accent-foreground: 160 30% 25%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 90%;
+    --input: 220 13% 90%;
+    --ring: 160 30% 42%;
     --radius: 0.5rem;
-    
-    /* Custom colors for finance */
-    --income: 142.1 76.2% 36.3%;
-    --income-foreground: 355.7 100% 97.3%;
-    --expense: 0 84.2% 60.2%;
-    --expense-foreground: 210 40% 98%;
+
+    /* Finance-specific */
+    --income: 152 60% 36%;
+    --income-foreground: 0 0% 100%;
+    --expense: 0 72% 51%;
+    --expense-foreground: 0 0% 100%;
+
+    /* Chart palette */
+    --chart-1: 160 30% 42%;
+    --chart-2: 152 60% 36%;
+    --chart-3: 0 72% 51%;
+    --chart-4: 220 15% 55%;
+    --chart-5: 38 80% 55%;
+    --chart-6: 262 40% 55%;
+    --chart-7: 190 60% 42%;
+    --chart-8: 330 50% 55%;
   }
 
   .dark {
@@ -52,7 +62,7 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 224.3 76.3% 48%;
-    
+
     --income: 142.1 70.6% 45.3%;
     --income-foreground: 144.9 80.4% 10%;
     --expense: 0 72.2% 50.6%;
@@ -65,24 +75,24 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
 
-/* Custom utility classes */
 @layer utilities {
   .text-income {
-    @apply text-green-600 dark:text-green-400;
+    @apply text-emerald-600 dark:text-emerald-400;
   }
-  
+
   .text-expense {
     @apply text-red-600 dark:text-red-400;
   }
-  
+
   .bg-income {
-    @apply bg-green-50 dark:bg-green-950;
+    @apply bg-emerald-50 dark:bg-emerald-950;
   }
-  
+
   .bg-expense {
     @apply bg-red-50 dark:bg-red-950;
   }

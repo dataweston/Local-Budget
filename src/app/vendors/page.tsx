@@ -200,13 +200,13 @@ export default function VendorsPage() {
 
       {/* Duplicate Detection Alert */}
       {duplicates && duplicates.length > 0 && (
-        <Card className="mb-6 border-orange-200 bg-orange-50">
+        <Card className="mb-6 border-amber-200 bg-amber-50">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-orange-900">
+            <CardTitle className="flex items-center gap-2 text-amber-900">
               <AlertTriangle className="h-5 w-5" />
               Potential Duplicates Detected
             </CardTitle>
-            <CardDescription className="text-orange-700">
+            <CardDescription className="text-amber-700">
               We found {duplicates.length} group(s) of similar vendor names that might be duplicates
             </CardDescription>
           </CardHeader>

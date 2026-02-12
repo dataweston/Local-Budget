@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { api } from '@/lib/trpc';
 import { Header } from './header';
 import { StatsCards } from './stats-cards';
@@ -63,6 +63,66 @@ export function Dashboard() {
   });
 
   const { data: recentActivity, isLoading: activityLoading } = api.dashboard.recentActivity.useQuery();
+
+  // Fetch linked accounts for auto-sync
+  const { data: allAccounts } = api.accounts.list.useQuery();
+  const utils = api.useUtils();
+  const syncAttempted = useRef(false);
+
+  // Auto-sync on page refresh (not on client-side navigation)
+  useEffect(() => {
+    if (syncAttempted.current || !allAccounts) return;
+
+    const SYNC_DEBOUNCE_MS = 2 * 60 * 1000; // 2 minutes
+    const lastSync = sessionStorage.getItem('lb-last-sync');
+    if (lastSync && Date.now() - parseInt(lastSync, 10) < SYNC_DEBOUNCE_MS) return;
+
+    syncAttempted.current = true;
+
+    const linkedAccounts = allAccounts.filter(
+      (a) => a.plaidItemId || a.squareConnectionId
+    );
+    if (linkedAccounts.length === 0) return;
+
+    // Deduplicate Plaid items
+    const plaidItemIds = Array.from(
+      new Set(linkedAccounts.filter((a) => a.plaidItemId).map((a) => a.plaidItemId))
+    ).filter(Boolean) as string[];
+
+    const squareAccountIds = linkedAccounts
+      .filter((a) => a.squareConnectionId)
+      .map((a) => a.id);
+
+    const syncAll = async () => {
+      const promises: Promise<unknown>[] = [];
+      for (const plaidItemId of plaidItemIds) {
+        promises.push(
+          fetch('/api/plaid/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plaidItemId, fullSync: false }),
+          }).catch(() => {})
+        );
+      }
+      for (const accountId of squareAccountIds) {
+        promises.push(
+          fetch('/api/square/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId }),
+          }).catch(() => {})
+        );
+      }
+      await Promise.allSettled(promises);
+      sessionStorage.setItem('lb-last-sync', String(Date.now()));
+      // Invalidate queries so dashboard picks up new data
+      utils.dashboard.invalidate();
+      utils.accounts.invalidate();
+      utils.categories.invalidate();
+    };
+
+    syncAll();
+  }, [allAccounts, utils]);
 
   return (
     <div className="flex min-h-screen flex-col">

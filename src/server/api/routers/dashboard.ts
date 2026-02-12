@@ -248,6 +248,7 @@ export const dashboardRouter = createTRPCRouter({
       let revenue = 0;
       let cogs = 0;
       let operatingExpenses = 0;
+      let personalExpenses = 0;
       const byCategory = new Map<string, { name: string; classification: string; amount: number }>();
 
       for (const tx of transactions) {
@@ -262,6 +263,8 @@ export const dashboardRouter = createTRPCRouter({
           cogs += Math.abs(amount);
         } else if (classification === 'OPERATING') {
           operatingExpenses += Math.abs(amount);
+        } else if (classification === 'PERSONAL') {
+          personalExpenses += Math.abs(amount);
         }
 
         if (!byCategory.has(categoryKey)) {
@@ -278,6 +281,10 @@ export const dashboardRouter = createTRPCRouter({
       const grossMargin = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
       const operatingIncome = grossProfit - operatingExpenses;
       const operatingMargin = revenue > 0 ? (operatingIncome / revenue) * 100 : 0;
+      const totalExpenses = cogs + operatingExpenses + personalExpenses;
+      const netIncome = revenue - totalExpenses;
+      const netMargin = revenue > 0 ? (netIncome / revenue) * 100 : 0;
+      const savingsRate = revenue > 0 ? ((revenue - totalExpenses) / revenue) * 100 : 0;
 
       return {
         period: { start: startDate, end: endDate },
@@ -286,8 +293,12 @@ export const dashboardRouter = createTRPCRouter({
         grossProfit,
         grossMargin,
         operatingExpenses,
+        personalExpenses,
         operatingIncome,
         operatingMargin,
+        netIncome,
+        netMargin,
+        savingsRate,
         byCategory: Array.from(byCategory.entries()).map(([id, data]) => ({
           categoryId: id,
           ...data,

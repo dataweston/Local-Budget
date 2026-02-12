@@ -14,6 +14,7 @@ import {
   Legend,
 } from 'recharts';
 import { formatCurrency } from '@/lib/utils';
+import { CHART_COLORS } from '@/lib/colors';
 
 interface CashflowData {
   date: string;
@@ -69,12 +70,12 @@ export function CashflowChart({ data }: CashflowChartProps) {
             <AreaChart data={chartData}>
               <defs>
                 <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                  <stop offset="5%" stopColor={CHART_COLORS.income} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={CHART_COLORS.income} stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="colorExpenses" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+                  <stop offset="5%" stopColor={CHART_COLORS.expense} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={CHART_COLORS.expense} stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -119,7 +120,7 @@ export function CashflowChart({ data }: CashflowChartProps) {
                   type="monotone"
                   dataKey="income"
                   name="Income"
-                  stroke="#22c55e"
+                  stroke={CHART_COLORS.income}
                   strokeWidth={2}
                   fillOpacity={1}
                   fill="url(#colorIncome)"
@@ -130,7 +131,7 @@ export function CashflowChart({ data }: CashflowChartProps) {
                   type="monotone"
                   dataKey="expenses"
                   name="Expenses"
-                  stroke="#ef4444"
+                  stroke={CHART_COLORS.expense}
                   strokeWidth={2}
                   fillOpacity={1}
                   fill="url(#colorExpenses)"

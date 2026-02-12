@@ -58,21 +58,21 @@ export function formatRelativeDate(date: Date | string): string {
 export function classificationColor(classification: string | null): string {
   switch (classification) {
     case 'INCOME':
-      return 'text-green-600 bg-green-50';
+      return 'text-emerald-700 bg-emerald-50';
     case 'COGS':
-      return 'text-orange-600 bg-orange-50';
+      return 'text-amber-700 bg-amber-50';
     case 'OPERATING':
-      return 'text-blue-600 bg-blue-50';
+      return 'text-sky-700 bg-sky-50';
     case 'PERSONAL':
-      return 'text-purple-600 bg-purple-50';
+      return 'text-violet-700 bg-violet-50';
     case 'TRANSFER':
-      return 'text-gray-600 bg-gray-50';
+      return 'text-slate-700 bg-slate-50';
     case 'REIMBURSABLE':
-      return 'text-yellow-600 bg-yellow-50';
+      return 'text-yellow-700 bg-yellow-50';
     case 'REIMBURSEMENT':
-      return 'text-teal-600 bg-teal-50';
+      return 'text-teal-700 bg-teal-50';
     default:
-      return 'text-gray-500 bg-gray-50';
+      return 'text-slate-500 bg-slate-50';
   }
 }
 
