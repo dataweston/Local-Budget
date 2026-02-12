@@ -18,6 +18,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
   DialogClose,
 } from '@/components/ui/dialog';
@@ -163,6 +164,9 @@ export default function EntitiesPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editingEntity ? 'Edit Entity' : 'Add Entity'}</DialogTitle>
+            <DialogDescription>
+              {editingEntity ? 'Update this entity.' : 'Add a person, business, or project to track transactions.'}
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <div className="space-y-4 py-4">
@@ -224,9 +228,10 @@ export default function EntitiesPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete Entity</DialogTitle>
+            <DialogDescription>This action cannot be undone.</DialogDescription>
           </DialogHeader>
           <p className="py-4">
-            Are you sure you want to delete this entity? This action cannot be undone.
+            Are you sure you want to delete this entity?
             All associated accounts and transactions will remain but will need to be reassigned.
           </p>
           <DialogFooter>

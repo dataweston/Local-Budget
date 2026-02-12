@@ -7,6 +7,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
@@ -114,6 +115,7 @@ export function AddTransactionModal({
         <DialogClose onClick={() => onOpenChange(false)} />
         <DialogHeader>
           <DialogTitle>Add New Transaction</DialogTitle>
+          <DialogDescription>Enter the details for your new transaction.</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="p-6 pt-4 space-y-4">

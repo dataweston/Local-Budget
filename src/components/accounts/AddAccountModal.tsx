@@ -7,6 +7,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
@@ -85,6 +86,7 @@ export function AddAccountModal({
         <DialogClose onClick={() => onOpenChange(false)} />
         <DialogHeader>
           <DialogTitle>Add New Account</DialogTitle>
+          <DialogDescription>Add a manual account to track your finances.</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="p-6 pt-4 space-y-4">

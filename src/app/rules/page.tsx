@@ -20,6 +20,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
   DialogClose,
 } from '@/components/ui/dialog';
@@ -369,6 +370,9 @@ export default function RulesPage() {
               <DialogTitle>
                 {editingRule ? 'Edit Rule' : 'Add Rule'}
               </DialogTitle>
+              <DialogDescription>
+                {editingRule ? 'Modify this classification rule.' : 'Create a rule to automatically classify transactions.'}
+              </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
@@ -502,6 +506,7 @@ export default function RulesPage() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Test Rule Pattern</DialogTitle>
+              <DialogDescription>Preview which transactions match your rule pattern.</DialogDescription>
             </DialogHeader>
             <div className="py-4">
               <p className="text-sm text-muted-foreground mb-4">
@@ -544,6 +549,7 @@ export default function RulesPage() {
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Rule Suggestions</DialogTitle>
+              <DialogDescription>Suggested rules based on your transaction patterns.</DialogDescription>
             </DialogHeader>
             <div className="py-4">
               <p className="text-sm text-muted-foreground mb-4">
@@ -588,8 +594,9 @@ export default function RulesPage() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Delete Rule</DialogTitle>
+              <DialogDescription>This action cannot be undone.</DialogDescription>
             </DialogHeader>
-            <p>Are you sure you want to delete this rule? This action cannot be undone.</p>
+            <p>Are you sure you want to delete this rule?</p>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
                 Cancel
