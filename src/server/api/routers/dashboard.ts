@@ -1,5 +1,6 @@
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
+import { isExpenseForSpending } from '@/lib/transaction-filters';
 
 export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
@@ -37,7 +38,16 @@ export const dashboardRouter = createTRPCRouter({
           account: { userId: ctx.session.user.id },
           date: { gte: startDate, lte: endDate },
         },
-        select: { type: true, amount: true },
+        select: {
+          type: true,
+          amount: true,
+          classification: true,
+          category: {
+            select: {
+              defaultClassification: true,
+            },
+          },
+        },
       });
 
       // Previous period transactions for trend
@@ -46,16 +56,36 @@ export const dashboardRouter = createTRPCRouter({
           account: { userId: ctx.session.user.id },
           date: { gte: prevStartDate, lte: prevEndDate },
         },
-        select: { type: true, amount: true },
+        select: {
+          type: true,
+          amount: true,
+          classification: true,
+          category: {
+            select: {
+              defaultClassification: true,
+            },
+          },
+        },
       });
 
-      const calcTotal = (txs: typeof currentTransactions, type: string) =>
-        Math.abs(txs.filter((t) => t.type === type).reduce((s, t) => s + Number(t.amount), 0));
+      const calcIncomeTotal = (txs: typeof currentTransactions) =>
+        Math.abs(
+          txs
+            .filter((t) => t.type === 'INCOME')
+            .reduce((sum, t) => sum + Number(t.amount), 0)
+        );
 
-      const income = calcTotal(currentTransactions, 'INCOME');
-      const expenses = calcTotal(currentTransactions, 'EXPENSE');
-      const prevIncome = calcTotal(prevTransactions, 'INCOME');
-      const prevExpenses = calcTotal(prevTransactions, 'EXPENSE');
+      const calcExpenseTotal = (txs: typeof currentTransactions) =>
+        Math.abs(
+          txs
+            .filter((t) => isExpenseForSpending(t))
+            .reduce((sum, t) => sum + Number(t.amount), 0)
+        );
+
+      const income = calcIncomeTotal(currentTransactions);
+      const expenses = calcExpenseTotal(currentTransactions);
+      const prevIncome = calcIncomeTotal(prevTransactions);
+      const prevExpenses = calcExpenseTotal(prevTransactions);
 
       const calcTrend = (current: number, previous: number) => {
         if (previous === 0) return current > 0 ? 100 : 0;
@@ -108,6 +138,11 @@ export const dashboardRouter = createTRPCRouter({
           type: true,
           amount: true,
           classification: true,
+          category: {
+            select: {
+              defaultClassification: true,
+            },
+          },
         },
         orderBy: { date: 'asc' },
       });
@@ -159,7 +194,7 @@ export const dashboardRouter = createTRPCRouter({
 
         if (tx.type === 'INCOME') {
           day.income += amount;
-        } else if (tx.type === 'EXPENSE') {
+        } else if (isExpenseForSpending(tx)) {
           day.expenses += Math.abs(amount);
           
           switch (tx.classification) {

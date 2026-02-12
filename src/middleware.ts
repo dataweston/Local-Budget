@@ -37,7 +37,7 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
-  return authMiddleware(req, event);
+  return authMiddleware(req as any, event);
 }
 
 // Run bot blocking across app routes; keep framework/static/auth internals excluded.

@@ -140,6 +140,16 @@ export const entitiesRouter = createTRPCRouter({
           transactionsAsIncurred: {
             where: {
               type: 'EXPENSE',
+              NOT: [
+                { classification: 'TRANSFER' },
+                {
+                  category: {
+                    is: {
+                      defaultClassification: 'TRANSFER',
+                    },
+                  },
+                },
+              ],
               date: {
                 gte: input?.startDate ?? startOfMonth,
                 lte: input?.endDate ?? endOfMonth,

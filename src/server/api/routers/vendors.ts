@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { normalizeVendorName, findSimilarVendors } from '@/lib/normalization/vendors';
 import { Prisma } from '@prisma/client';
+import { isExpenseForSpending } from '@/lib/transaction-filters';
 
 export const vendorsRouter = createTRPCRouter({
   // List all unique vendors with spending data
@@ -31,11 +32,13 @@ export const vendorsRouter = createTRPCRouter({
           merchantName: true,
           amount: true,
           type: true,
+          classification: true,
           categoryId: true,
           category: {
             select: {
               id: true,
               name: true,
+              defaultClassification: true,
             },
           },
         },
@@ -70,7 +73,7 @@ export const vendorsRouter = createTRPCRouter({
         vendor.count++;
         
         // Only count expenses towards spending
-        if (tx.type === 'EXPENSE') {
+        if (isExpenseForSpending(tx)) {
           vendor.totalSpending += Math.abs(amount);
         }
 
@@ -163,6 +166,7 @@ export const vendorsRouter = createTRPCRouter({
               id: true,
               name: true,
               icon: true,
+              defaultClassification: true,
             },
           },
         },
@@ -189,7 +193,7 @@ export const vendorsRouter = createTRPCRouter({
       for (const tx of matchingTransactions) {
         const amount = Number(tx.amount);
 
-        if (tx.type === 'EXPENSE') {
+        if (isExpenseForSpending(tx)) {
           stats.totalSpending += Math.abs(amount);
         } else if (tx.type === 'INCOME') {
           stats.totalIncome += amount;
@@ -338,6 +342,16 @@ export const vendorsRouter = createTRPCRouter({
           account: { userId: ctx.session.user.id },
           merchantName: { not: null },
           type: 'EXPENSE',
+          NOT: [
+            { classification: 'TRANSFER' },
+            {
+              category: {
+                is: {
+                  defaultClassification: 'TRANSFER',
+                },
+              },
+            },
+          ],
         },
         select: {
           merchantName: true,
