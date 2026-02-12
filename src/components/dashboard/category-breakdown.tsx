@@ -20,22 +20,24 @@ interface CategorySpend {
 
 interface CategoryBreakdownProps {
   categories: CategorySpend[];
+  title?: string;
+  description?: string;
 }
 
-export function CategoryBreakdown({ categories }: CategoryBreakdownProps) {
+export function CategoryBreakdown({ categories, title, description }: CategoryBreakdownProps) {
   const sortedCategories = [...categories].sort((a, b) => b.amount - a.amount);
   const topCategories = sortedCategories.slice(0, 8);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Spending by Category</CardTitle>
-        <CardDescription>This month&apos;s expense breakdown</CardDescription>
+        <CardTitle>{title ?? 'Spending by Category'}</CardTitle>
+        <CardDescription>{description ?? "This month\u2019s expense breakdown"}</CardDescription>
       </CardHeader>
       <CardContent>
         {topCategories.length === 0 ? (
           <div className="flex items-center justify-center h-48 text-muted-foreground">
-            No spending data available
+            No data available
           </div>
         ) : (
           <div className="space-y-4">

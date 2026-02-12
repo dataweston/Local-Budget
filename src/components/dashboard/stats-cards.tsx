@@ -15,42 +15,52 @@ interface StatsCardsProps {
     monthlyIncome: number;
     monthlyExpenses: number;
     monthlyNet: number;
+    incomeTrend?: number;
+    expenseTrend?: number;
   };
+  periodLabel?: string;
 }
 
-export function StatsCards({ stats }: StatsCardsProps) {
+function formatTrend(val: number): string {
+  return (val >= 0 ? '+' : '') + val.toFixed(1) + '%';
+}
+
+export function StatsCards({ stats, periodLabel }: StatsCardsProps) {
+  const label = periodLabel ?? 'This month';
+
   const cards = [
     {
       title: 'Total Balance',
       value: formatCurrency(stats.totalBalance),
       icon: Wallet,
       description: 'Across all accounts',
-      trend: null,
+      trend: null as string | null,
+      trendUp: true,
       className: 'text-primary',
     },
     {
-      title: 'Monthly Income',
+      title: 'Income',
       value: formatCurrency(stats.monthlyIncome),
       icon: TrendingUp,
-      description: 'This month',
-      trend: '+12.5%',
-      trendUp: true,
+      description: label,
+      trend: stats.incomeTrend != null ? formatTrend(stats.incomeTrend) : null,
+      trendUp: (stats.incomeTrend ?? 0) >= 0,
       className: 'text-green-600',
     },
     {
-      title: 'Monthly Expenses',
+      title: 'Expenses',
       value: formatCurrency(stats.monthlyExpenses),
       icon: TrendingDown,
-      description: 'This month',
-      trend: '+3.2%',
-      trendUp: false,
+      description: label,
+      trend: stats.expenseTrend != null ? formatTrend(stats.expenseTrend) : null,
+      trendUp: (stats.expenseTrend ?? 0) <= 0,
       className: 'text-red-600',
     },
     {
       title: 'Net Cashflow',
       value: formatCurrency(stats.monthlyNet),
       icon: Activity,
-      description: 'This month',
+      description: label,
       trend: stats.monthlyNet >= 0 ? 'Positive' : 'Negative',
       trendUp: stats.monthlyNet >= 0,
       className: stats.monthlyNet >= 0 ? 'text-green-600' : 'text-red-600',

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useMemo } from 'react';
 import { api } from '@/lib/trpc';
 import { Header } from './header';
 import { StatsCards } from './stats-cards';
@@ -9,21 +10,78 @@ import { AccountsOverview } from './accounts-overview';
 import { CategoryBreakdown } from './category-breakdown';
 import { AlertsPanel } from './alerts-panel';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  DateRangeSelector,
+  type PeriodPreset,
+  getDateRangeForPreset,
+} from '@/components/ui/date-range-selector';
+
+function getChartPeriod(startDate: Date, endDate: Date): 'daily' | 'weekly' | 'monthly' {
+  const days = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+  if (days <= 62) return 'daily';
+  if (days <= 180) return 'weekly';
+  return 'monthly';
+}
 
 export function Dashboard() {
-  const { data: stats, isLoading: statsLoading } = api.dashboard.stats.useQuery();
-  const { data: cashflow, isLoading: cashflowLoading } = api.dashboard.cashflow.useQuery();
-  const { data: accounts, isLoading: accountsLoading } = api.accounts.balances.useQuery();
-  const { data: categorySpend, isLoading: categoryLoading } = api.categories.spending.useQuery();
-  const { data: recentActivity, isLoading: activityLoading } = api.dashboard.recentActivity.useQuery();
+  const [period, setPeriod] = useState<PeriodPreset>('this-month');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
 
-  const isLoading = statsLoading || cashflowLoading || accountsLoading || categoryLoading || activityLoading;
+  const dateRange = useMemo(() => {
+    if (period === 'custom' && customStart && customEnd) {
+      const start = new Date(customStart);
+      const end = new Date(customEnd + 'T23:59:59.999');
+      return { startDate: start, endDate: end, label: 'Custom Range' };
+    }
+    return getDateRangeForPreset(period);
+  }, [period, customStart, customEnd]);
+
+  const { data: stats, isLoading: statsLoading } = api.dashboard.stats.useQuery({
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+  });
+
+  const { data: cashflow, isLoading: cashflowLoading } = api.dashboard.cashflow.useQuery({
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    period: getChartPeriod(dateRange.startDate, dateRange.endDate),
+  });
+
+  const { data: accounts, isLoading: accountsLoading } = api.accounts.balances.useQuery();
+
+  const { data: categorySpend, isLoading: categoryLoading } = api.categories.spending.useQuery({
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    type: 'EXPENSE',
+  });
+
+  const { data: incomeByCategory, isLoading: incomeLoading } = api.categories.spending.useQuery({
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    type: 'INCOME',
+  });
+
+  const { data: recentActivity, isLoading: activityLoading } = api.dashboard.recentActivity.useQuery();
 
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
-      
+
       <main className="flex-1 container mx-auto px-4 py-6 space-y-6">
+        {/* Period Selector */}
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold">Dashboard</h2>
+          <DateRangeSelector
+            value={period}
+            onChange={setPeriod}
+            customStart={customStart}
+            customEnd={customEnd}
+            onCustomStartChange={setCustomStart}
+            onCustomEndChange={setCustomEnd}
+          />
+        </div>
+
         {/* Stats Row */}
         <section>
           {statsLoading ? (
@@ -33,7 +91,7 @@ export function Dashboard() {
               ))}
             </div>
           ) : (
-            <StatsCards stats={stats!} />
+            <StatsCards stats={stats!} periodLabel={dateRange.label} />
           )}
         </section>
 
@@ -68,26 +126,43 @@ export function Dashboard() {
           </section>
         </div>
 
-        {/* Bottom Row */}
+        {/* Category Breakdowns */}
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Recent Transactions */}
-          <section>
-            {activityLoading ? (
-              <Skeleton className="h-96" />
-            ) : (
-              <RecentTransactions transactions={recentActivity?.transactions ?? []} />
-            )}
-          </section>
-
-          {/* Category Breakdown */}
+          {/* Expense Category Breakdown */}
           <section>
             {categoryLoading ? (
               <Skeleton className="h-96" />
             ) : (
-              <CategoryBreakdown categories={categorySpend ?? []} />
+              <CategoryBreakdown
+                categories={categorySpend ?? []}
+                title="Spending by Category"
+                description={`${dateRange.label} expenses`}
+              />
+            )}
+          </section>
+
+          {/* Income Category Breakdown */}
+          <section>
+            {incomeLoading ? (
+              <Skeleton className="h-96" />
+            ) : (
+              <CategoryBreakdown
+                categories={incomeByCategory ?? []}
+                title="Income by Source"
+                description={`${dateRange.label} income`}
+              />
             )}
           </section>
         </div>
+
+        {/* Recent Transactions */}
+        <section>
+          {activityLoading ? (
+            <Skeleton className="h-96" />
+          ) : (
+            <RecentTransactions transactions={recentActivity?.transactions ?? []} />
+          )}
+        </section>
       </main>
     </div>
   );

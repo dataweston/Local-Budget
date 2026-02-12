@@ -3,60 +3,86 @@ import { z } from 'zod';
 
 export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
-  stats: protectedProcedure.query(async ({ ctx }) => {
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  stats: protectedProcedure
+    .input(
+      z.object({
+        startDate: z.date().optional(),
+        endDate: z.date().optional(),
+      }).optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const now = new Date();
+      const startDate = input?.startDate ?? new Date(now.getFullYear(), now.getMonth(), 1);
+      const endDate = input?.endDate ?? new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-    // Get account balances
-    const accounts = await ctx.db.financialAccount.findMany({
-      where: { userId: ctx.session.user.id, isActive: true },
-      select: { currentBalance: true, type: true },
-    });
+      // Calculate previous period of equal duration for trend comparison
+      const periodMs = endDate.getTime() - startDate.getTime();
+      const prevEndDate = new Date(startDate.getTime() - 1);
+      const prevStartDate = new Date(prevEndDate.getTime() - periodMs);
 
-    const totalBalance = accounts.reduce(
-      (sum, acc) => sum + Number(acc.currentBalance),
-      0
-    );
+      // Get account balances (always current)
+      const accounts = await ctx.db.financialAccount.findMany({
+        where: { userId: ctx.session.user.id, isActive: true },
+        select: { currentBalance: true, type: true },
+      });
 
-    // Get monthly transactions
-    const monthlyTransactions = await ctx.db.transaction.findMany({
-      where: {
-        account: { userId: ctx.session.user.id },
-        date: { gte: startOfMonth, lte: endOfMonth },
-      },
-      select: { type: true, amount: true },
-    });
+      const totalBalance = accounts.reduce(
+        (sum, acc) => sum + Number(acc.currentBalance),
+        0
+      );
 
-    const monthlyIncome = monthlyTransactions
-      .filter((t) => t.type === 'INCOME')
-      .reduce((sum, t) => sum + Number(t.amount), 0);
+      // Current period transactions
+      const currentTransactions = await ctx.db.transaction.findMany({
+        where: {
+          account: { userId: ctx.session.user.id },
+          date: { gte: startDate, lte: endDate },
+        },
+        select: { type: true, amount: true },
+      });
 
-    const monthlyExpenses = Math.abs(
-      monthlyTransactions
-        .filter((t) => t.type === 'EXPENSE')
-        .reduce((sum, t) => sum + Number(t.amount), 0)
-    );
+      // Previous period transactions for trend
+      const prevTransactions = await ctx.db.transaction.findMany({
+        where: {
+          account: { userId: ctx.session.user.id },
+          date: { gte: prevStartDate, lte: prevEndDate },
+        },
+        select: { type: true, amount: true },
+      });
 
-    // Get pending counts
-    const [pendingReceipts, unreviewedTransactions] = await Promise.all([
-      ctx.db.receipt.count({
-        where: { userId: ctx.session.user.id, status: { in: ['PENDING', 'PROCESSING'] } },
-      }),
-      ctx.db.transaction.count({
-        where: { account: { userId: ctx.session.user.id }, isReviewed: false },
-      }),
-    ]);
+      const calcTotal = (txs: typeof currentTransactions, type: string) =>
+        Math.abs(txs.filter((t) => t.type === type).reduce((s, t) => s + Number(t.amount), 0));
 
-    return {
-      totalBalance,
-      monthlyIncome,
-      monthlyExpenses,
-      monthlyNet: monthlyIncome - monthlyExpenses,
-      pendingReceipts,
-      unreviewedTransactions,
-    };
-  }),
+      const income = calcTotal(currentTransactions, 'INCOME');
+      const expenses = calcTotal(currentTransactions, 'EXPENSE');
+      const prevIncome = calcTotal(prevTransactions, 'INCOME');
+      const prevExpenses = calcTotal(prevTransactions, 'EXPENSE');
+
+      const calcTrend = (current: number, previous: number) => {
+        if (previous === 0) return current > 0 ? 100 : 0;
+        return ((current - previous) / previous) * 100;
+      };
+
+      // Get pending counts (not date-filtered)
+      const [pendingReceipts, unreviewedTransactions] = await Promise.all([
+        ctx.db.receipt.count({
+          where: { userId: ctx.session.user.id, status: { in: ['PENDING', 'PROCESSING'] } },
+        }),
+        ctx.db.transaction.count({
+          where: { account: { userId: ctx.session.user.id }, isReviewed: false },
+        }),
+      ]);
+
+      return {
+        totalBalance,
+        monthlyIncome: income,
+        monthlyExpenses: expenses,
+        monthlyNet: income - expenses,
+        incomeTrend: calcTrend(income, prevIncome),
+        expenseTrend: calcTrend(expenses, prevExpenses),
+        pendingReceipts,
+        unreviewedTransactions,
+      };
+    }),
 
   // Get cashflow over time
   cashflow: protectedProcedure
@@ -86,7 +112,23 @@ export const dashboardRouter = createTRPCRouter({
         orderBy: { date: 'asc' },
       });
 
-      // Group by date
+      // Group by period
+      const groupingPeriod = input?.period ?? 'daily';
+      const getDateKey = (date: Date): string => {
+        switch (groupingPeriod) {
+          case 'monthly':
+            return date.toISOString().slice(0, 7); // YYYY-MM
+          case 'weekly': {
+            const d = new Date(date);
+            const day = d.getDay();
+            d.setDate(d.getDate() - day); // Start of week (Sunday)
+            return d.toISOString().split('T')[0];
+          }
+          default:
+            return date.toISOString().split('T')[0]; // YYYY-MM-DD
+        }
+      };
+
       const grouped = new Map<string, {
         date: string;
         income: number;
@@ -98,7 +140,7 @@ export const dashboardRouter = createTRPCRouter({
       }>();
 
       for (const tx of transactions) {
-        const dateKey = tx.date.toISOString().split('T')[0];
+        const dateKey = getDateKey(tx.date);
         
         if (!grouped.has(dateKey)) {
           grouped.set(dateKey, {

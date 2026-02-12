@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { api } from '@/lib/trpc';
+import { Header } from '@/components/dashboard/header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -118,7 +119,9 @@ export default function VendorsPage() {
   };
 
   return (
-    <div className="container mx-auto py-8 px-4">
+    <div className="flex min-h-screen flex-col">
+      <Header />
+      <main className="flex-1 container mx-auto px-4 py-6">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Vendors</h1>
         <p className="text-muted-foreground">
@@ -494,6 +497,7 @@ export default function VendorsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </main>
     </div>
   );
 }

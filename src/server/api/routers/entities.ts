@@ -132,7 +132,7 @@ export const entitiesRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
       const entities = await ctx.db.entity.findMany({
         where: { userId: ctx.session.user.id },
