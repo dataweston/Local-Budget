@@ -116,9 +116,9 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Calculate date range (last 365 days)
+      // Calculate date range (last 730 days / 2 years — matches Plaid link token days_requested)
       const endDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-      const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const startDate = new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       
       console.log(`[Plaid Initial Sync] Fetching transactions from ${startDate} to ${endDate}`);
       
