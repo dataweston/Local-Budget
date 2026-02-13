@@ -273,8 +273,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function confidenceFor(dayDiff: number, candidateCount: number): 'LOW' | 'MEDIUM' | 'HIGH' {
   if (dayDiff <= 3 && candidateCount === 1) return 'HIGH';
-  if (dayDiff <= 7 && candidateCount <= 2) return 'HIGH';
+  if (dayDiff <= 5 && candidateCount <= 2) return 'HIGH';
+  if (dayDiff <= 7 && candidateCount === 1) return 'HIGH';
   if (dayDiff <= 7) return 'MEDIUM';
+  if (dayDiff <= 14 && candidateCount <= 2) return 'MEDIUM';
   return 'LOW';
 }
 
@@ -389,6 +391,29 @@ async function run() {
       });
     }
 
+    // Second pass: try extended date range for unmatched orders with unique remaining amounts
+    const extendedMaxGap = Math.ceil(args.maxDayGap * 1.5);
+    const remainingTxs = transactions.filter((tx) => !usedTxIds.has(tx.id));
+    for (const match of matches) {
+      if (match.tx) continue;
+      const cents = toCents(match.order.total);
+      const candidates = remainingTxs.filter((tx) => {
+        const txCents = toCents(tx.amount);
+        return Math.abs(txCents - cents) <= 1;
+      });
+      if (candidates.length === 1) {
+        const tx = candidates[0];
+        const dayDiff = daysBetween(tx.date, match.order.orderPlaced);
+        if (dayDiff <= extendedMaxGap) {
+          usedTxIds.add(tx.id);
+          match.tx = tx;
+          match.dayDiff = dayDiff;
+          match.candidateCount = 1;
+          match.confidence = dayDiff <= 14 ? 'MEDIUM' : 'LOW';
+        }
+      }
+    }
+
     const matchedCount = matches.filter((m) => m.tx).length;
     const unmatchedCount = matches.length - matchedCount;
     const singleItemMatched = matches.filter((m) => m.tx && m.order.itemTitles.length === 1).length;
@@ -472,6 +497,7 @@ async function run() {
             dayDiff: match.dayDiff,
             candidateCount: match.candidateCount,
             confidence: match.confidence,
+            matchStatus: 'pending',
             matchedAt: new Date().toISOString(),
           },
         };

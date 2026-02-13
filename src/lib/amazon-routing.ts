@@ -19,17 +19,26 @@ export function isAmazonTransactionText(input: TxLike): boolean {
   return text.includes('amazon') || text.includes('amzn');
 }
 
-export function isAmazonVideoTransactionText(input: TxLike): boolean {
+/** Detects Amazon digital subscriptions (Prime Video, Audible, Kindle, Music Unlimited). */
+export function isAmazonDigitalSubscriptionText(input: TxLike): boolean {
   const text = normalize(`${input.description ?? ''} ${input.merchantName ?? ''}`);
-  return /\bvideo\b/.test(text);
+  return (
+    /\bvideo\b/.test(text) ||
+    /\baudible\b/.test(text) ||
+    /\bkindle\b/.test(text) ||
+    /\bmusic\s*unlimited\b/.test(text)
+  );
 }
+
+/** @deprecated Use isAmazonDigitalSubscriptionText instead. */
+export const isAmazonVideoTransactionText = isAmazonDigitalSubscriptionText;
 
 export function getAmazonRoutingCategoryId(
   input: TxLike,
   targets: AmazonCategoryTargets
 ): string | null {
   if (!isAmazonTransactionText(input)) return null;
-  if (isAmazonVideoTransactionText(input)) {
+  if (isAmazonDigitalSubscriptionText(input)) {
     return targets.toolsSoftwareCategoryId ?? targets.amazonCategoryId ?? null;
   }
   return targets.amazonCategoryId;

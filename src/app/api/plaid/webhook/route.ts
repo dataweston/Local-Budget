@@ -203,7 +203,7 @@ async function handleTransactionsWebhook(
                     plaid_category_id: tx.category_id,
                     payment_channel: tx.payment_channel,
                   },
-                  ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+                  ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
                 },
               });
             }
@@ -232,7 +232,7 @@ async function handleTransactionsWebhook(
                 status: tx.pending ? 'PENDING' : 'POSTED',
                 description: tx.name,
                 merchantName: tx.merchant_name,
-                ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+                ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
               },
             });
           }

@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
             merchantName: m.merchantName,
             externalId: m.transactionId,
             isReviewed: false,
-            ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+            ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
           });
         } else {
           toUpdate.push({ existing, mapped: m });
@@ -143,7 +143,7 @@ export async function POST(request: NextRequest) {
             status: m.pending ? 'PENDING' : 'POSTED',
             description: m.name,
             ...(shouldUpdateMerchant && { merchantName: m.merchantName }),
-            ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+            ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
           },
         });
         modified++;
@@ -231,7 +231,7 @@ export async function POST(request: NextRequest) {
                     merchantName: mappedTx.merchantName,
                     externalId: mappedTx.transactionId,
                     isReviewed: false,
-                    ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+                    ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
                   },
                 });
                 added++;
@@ -262,7 +262,7 @@ export async function POST(request: NextRequest) {
                   status: mappedTx.pending ? 'PENDING' : 'POSTED',
                   description: mappedTx.name,
                   ...(shouldUpdateMerchant && { merchantName: mappedTx.merchantName }),
-                  ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+                  ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
                 },
               });
               modified++;

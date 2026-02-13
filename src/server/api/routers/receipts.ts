@@ -212,6 +212,8 @@ export const receiptsRouter = createTRPCRouter({
           limit: z.number().min(1).max(1000).default(250),
           startDate: z.date().optional(),
           endDate: z.date().optional(),
+          accountId: z.string().optional(),
+          matchFilter: z.enum(['all', 'matched', 'unmatched', 'pending']).optional(),
         })
         .optional()
     )
@@ -230,6 +232,7 @@ export const receiptsRouter = createTRPCRouter({
           account: { userId: ctx.session.user.id },
           type: 'EXPENSE',
           ...amazonFilter,
+          ...(input?.accountId ? { accountId: input.accountId } : {}),
           ...(input?.startDate || input?.endDate
             ? {
                 date: {
@@ -280,7 +283,7 @@ export const receiptsRouter = createTRPCRouter({
         take: input?.limit ?? 250,
       });
 
-      const data = rows.map((row) => {
+      const allData = rows.map((row) => {
         const effectiveClassification = getEffectiveClassification(row);
         const metadata = row.metadata as Record<string, unknown> | null;
         const amazonOrderMatch =
@@ -292,6 +295,12 @@ export const receiptsRouter = createTRPCRouter({
             ? (metadata.amazonOrderMatch as Record<string, unknown>)
             : null;
         const hasAmazonIngestMatch = !!amazonOrderMatch;
+        // Legacy matches (no matchStatus field) are treated as approved
+        const matchStatus: string | null = hasAmazonIngestMatch
+          ? (typeof amazonOrderMatch?.matchStatus === 'string'
+              ? amazonOrderMatch.matchStatus as string
+              : 'approved')
+          : null;
         const isVideo = isAmazonVideoTransactionText({
           description: row.description,
           merchantName: row.merchantName,
@@ -300,9 +309,28 @@ export const receiptsRouter = createTRPCRouter({
           ...row,
           effectiveClassification,
           hasAmazonIngestMatch,
+          matchStatus,
           isVideo,
         };
       });
+
+      // Apply match status filter
+      const matchFilter = input?.matchFilter ?? 'all';
+      let data = allData;
+      if (matchFilter === 'matched') {
+        data = allData.filter((row) => row.hasAmazonIngestMatch && row.matchStatus === 'approved');
+      } else if (matchFilter === 'unmatched') {
+        data = allData.filter((row) => !row.hasAmazonIngestMatch);
+      } else if (matchFilter === 'pending') {
+        data = allData.filter((row) => row.matchStatus === 'pending');
+      }
+
+      // Collect unique accounts for the filter dropdown
+      const accountMap = new Map<string, string>();
+      for (const row of allData) {
+        accountMap.set(row.account.id, row.account.name);
+      }
+      const accounts = Array.from(accountMap, ([id, name]) => ({ id, name }));
 
       const totalAmount = data.reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
       const businessAmount = data
@@ -320,6 +348,8 @@ export const receiptsRouter = createTRPCRouter({
         personalAmount,
         businessCount: data.filter((row) => row.effectiveClassification !== 'PERSONAL').length,
         personalCount: data.filter((row) => row.effectiveClassification === 'PERSONAL').length,
+        pendingMatchCount: allData.filter((row) => row.matchStatus === 'pending').length,
+        accounts,
       };
     }),
 
@@ -359,6 +389,7 @@ export const receiptsRouter = createTRPCRouter({
           description: true,
           merchantName: true,
           categoryId: true,
+          classification: true,
         },
       });
 
@@ -377,11 +408,16 @@ export const receiptsRouter = createTRPCRouter({
           routedAmazon++;
         }
 
-        if (row.categoryId === targetCategoryId) continue;
+        const needsCategoryUpdate = row.categoryId !== targetCategoryId;
+        const needsClassificationUpdate = row.classification === null;
+        if (!needsCategoryUpdate && !needsClassificationUpdate) continue;
         if (!input?.dryRun) {
           await ctx.db.transaction.update({
             where: { id: row.id },
-            data: { categoryId: targetCategoryId },
+            data: {
+              ...(needsCategoryUpdate ? { categoryId: targetCategoryId } : {}),
+              ...(needsClassificationUpdate ? { classification: 'OPERATING' } : {}),
+            },
           });
         }
         updated++;
@@ -394,6 +430,118 @@ export const receiptsRouter = createTRPCRouter({
         routedVideo,
         dryRun: input?.dryRun ?? false,
       };
+    }),
+
+  // Approve an Amazon order match
+  approveAmazonMatch: protectedProcedure
+    .input(z.object({ transactionId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const tx = await ctx.db.transaction.findFirst({
+        where: { id: input.transactionId, account: { userId: ctx.session.user.id } },
+        select: { id: true, metadata: true },
+      });
+      if (!tx) throw new Error('Transaction not found');
+      const meta = (tx.metadata as Record<string, unknown>) ?? {};
+      const amazonMatch = meta.amazonOrderMatch as Record<string, unknown> | undefined;
+      if (!amazonMatch) throw new Error('No Amazon match to approve');
+
+      await ctx.db.transaction.update({
+        where: { id: tx.id },
+        data: {
+          metadata: {
+            ...meta,
+            amazonOrderMatch: {
+              ...amazonMatch,
+              matchStatus: 'approved',
+              approvedAt: new Date().toISOString(),
+            },
+          },
+        },
+      });
+      return { success: true };
+    }),
+
+  // Reject an Amazon order match (removes match data)
+  rejectAmazonMatch: protectedProcedure
+    .input(z.object({ transactionId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const tx = await ctx.db.transaction.findFirst({
+        where: { id: input.transactionId, account: { userId: ctx.session.user.id } },
+        select: { id: true, metadata: true },
+      });
+      if (!tx) throw new Error('Transaction not found');
+      const meta = (tx.metadata as Record<string, unknown>) ?? {};
+      const { amazonOrderMatch: _, ...restMeta } = meta;
+
+      await ctx.db.transaction.update({
+        where: { id: tx.id },
+        data: {
+          metadata: Object.keys(restMeta).length > 0
+            ? JSON.parse(JSON.stringify(restMeta))
+            : null,
+        },
+      });
+      await ctx.db.lineItem.deleteMany({
+        where: { transactionId: tx.id, description: { startsWith: '[Amazon] ' } },
+      });
+      return { success: true };
+    }),
+
+  // Bulk approve Amazon matches
+  bulkApproveAmazonMatches: protectedProcedure
+    .input(z.object({ transactionIds: z.array(z.string()) }))
+    .mutation(async ({ ctx, input }) => {
+      let approved = 0;
+      for (const txId of input.transactionIds) {
+        const tx = await ctx.db.transaction.findFirst({
+          where: { id: txId, account: { userId: ctx.session.user.id } },
+          select: { id: true, metadata: true },
+        });
+        if (!tx) continue;
+        const meta = (tx.metadata as Record<string, unknown>) ?? {};
+        const amazonMatch = meta.amazonOrderMatch as Record<string, unknown> | undefined;
+        if (!amazonMatch || amazonMatch.matchStatus === 'approved') continue;
+        await ctx.db.transaction.update({
+          where: { id: tx.id },
+          data: {
+            metadata: {
+              ...meta,
+              amazonOrderMatch: {
+                ...amazonMatch,
+                matchStatus: 'approved',
+                approvedAt: new Date().toISOString(),
+              },
+            },
+          },
+        });
+        approved++;
+      }
+      return { approved };
+    }),
+
+  // Batch classify Amazon transactions as business/personal
+  batchClassifyAmazon: protectedProcedure
+    .input(
+      z.object({
+        transactionIds: z.array(z.string()),
+        classification: z.enum(['OPERATING', 'PERSONAL']),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const owned = await ctx.db.transaction.count({
+        where: {
+          id: { in: input.transactionIds },
+          account: { userId: ctx.session.user.id },
+        },
+      });
+      if (owned !== input.transactionIds.length) {
+        throw new Error('Some transactions not found');
+      }
+      await ctx.db.transaction.updateMany({
+        where: { id: { in: input.transactionIds } },
+        data: { classification: input.classification },
+      });
+      return { success: true, count: input.transactionIds.length };
     }),
 
   // Find potential matches for a receipt

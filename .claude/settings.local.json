@@ -4,7 +4,8 @@
       "Bash(git pull:*)",
       "Bash(npm uninstall:*)",
       "Bash(npx tsc:*)",
-      "Bash(npm ls:*)"
+      "Bash(npm ls:*)",
+      "Bash(npx tsx:*)"
     ]
   }
 }

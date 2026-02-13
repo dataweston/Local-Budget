@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
@@ -15,6 +15,13 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -62,6 +69,7 @@ type AmazonOrderMatchMeta = {
   dayDiff?: number | null;
   candidateCount?: number;
   itemTitles?: string[];
+  matchStatus?: string;
 };
 
 function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
@@ -85,6 +93,7 @@ function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
     itemTitles: Array.isArray(m.itemTitles)
       ? m.itemTitles.filter((x): x is string => typeof x === 'string')
       : undefined,
+    matchStatus: typeof m.matchStatus === 'string' ? m.matchStatus : undefined,
   };
 }
 
@@ -96,6 +105,8 @@ const statusConfig = {
   REVIEWED: { icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-50' },
 };
 
+type MatchFilterValue = 'all' | 'matched' | 'unmatched' | 'pending';
+
 export function ReceiptsList() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptData | null>(null);
@@ -105,6 +116,9 @@ export function ReceiptsList() {
   const [amazonCustomStart, setAmazonCustomStart] = useState('');
   const [amazonCustomEnd, setAmazonCustomEnd] = useState('');
   const [updatingBusinessPersonalTxId, setUpdatingBusinessPersonalTxId] = useState<string | null>(null);
+  const [amazonMatchFilter, setAmazonMatchFilter] = useState<MatchFilterValue>('all');
+  const [amazonAccountFilter, setAmazonAccountFilter] = useState<string | undefined>();
+  const [selectedAmazonIds, setSelectedAmazonIds] = useState<Set<string>>(new Set());
   const utils = api.useUtils();
 
   const { data, isLoading, refetch } = api.receipts.list.useQuery({
@@ -129,21 +143,53 @@ export function ReceiptsList() {
       startDate: amazonDateRange.startDate,
       endDate: amazonDateRange.endDate,
       limit: 1000,
+      accountId: amazonAccountFilter,
+      matchFilter: amazonMatchFilter === 'all' ? undefined : amazonMatchFilter,
     });
+
+  const invalidateAmazon = useCallback(async () => {
+    await utils.receipts.amazonSpending.invalidate();
+  }, [utils.receipts.amazonSpending]);
+
   const updateTransactionMutation = api.transactions.update.useMutation({
     onSuccess: async (_, vars) => {
       await Promise.all([
-        utils.receipts.amazonSpending.invalidate(),
+        invalidateAmazon(),
         utils.transactions.getById.invalidate({ id: vars.id }),
       ]);
     },
     onSettled: () => setUpdatingBusinessPersonalTxId(null),
   });
   const enforceAmazonRoutingMutation = api.receipts.enforceAmazonRouting.useMutation({
+    onSuccess: invalidateAmazon,
+  });
+  const approveMatchMutation = api.receipts.approveAmazonMatch.useMutation({
     onSuccess: async () => {
-      await utils.receipts.amazonSpending.invalidate();
+      await invalidateAmazon();
+      if (selectedAmazonTxId) {
+        await utils.transactions.getById.invalidate({ id: selectedAmazonTxId });
+      }
     },
   });
+  const rejectMatchMutation = api.receipts.rejectAmazonMatch.useMutation({
+    onSuccess: async () => {
+      await invalidateAmazon();
+      setSelectedAmazonTxId(null);
+    },
+  });
+  const bulkApproveMutation = api.receipts.bulkApproveAmazonMatches.useMutation({
+    onSuccess: async () => {
+      await invalidateAmazon();
+      setSelectedAmazonIds(new Set());
+    },
+  });
+  const batchClassifyMutation = api.receipts.batchClassifyAmazon.useMutation({
+    onSuccess: async () => {
+      await invalidateAmazon();
+      setSelectedAmazonIds(new Set());
+    },
+  });
+
   const { data: selectedAmazonTx, isLoading: isSelectedAmazonTxLoading } =
     api.transactions.getById.useQuery(
       { id: selectedAmazonTxId ?? '' },
@@ -160,6 +206,30 @@ export function ReceiptsList() {
       data: { classification: mode === 'business' ? 'OPERATING' : 'PERSONAL' },
     });
   }
+
+  function toggleAmazonSelection(id: string) {
+    setSelectedAmazonIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllAmazon() {
+    if (!amazonSpending) return;
+    if (selectedAmazonIds.size === amazonSpending.data.length) {
+      setSelectedAmazonIds(new Set());
+    } else {
+      setSelectedAmazonIds(new Set(amazonSpending.data.map((tx) => tx.id)));
+    }
+  }
+
+  const hasPendingInSelection = useMemo(() => {
+    if (!amazonSpending || selectedAmazonIds.size === 0) return false;
+    return amazonSpending.data.some(
+      (tx) => selectedAmazonIds.has(tx.id) && tx.matchStatus === 'pending'
+    );
+  }, [amazonSpending, selectedAmazonIds]);
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -248,10 +318,52 @@ export function ReceiptsList() {
                   >
                     {enforceAmazonRoutingMutation.isPending
                       ? 'Routing...'
-                      : 'Apply Amazon Routing'}
+                      : 'Backfill Routing'}
                   </Button>
                 </div>
               </div>
+
+              {/* Filters row */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  value={amazonMatchFilter}
+                  onValueChange={(v) => {
+                    setAmazonMatchFilter(v as MatchFilterValue);
+                    setSelectedAmazonIds(new Set());
+                  }}
+                >
+                  <SelectTrigger className="w-[140px] h-8 text-xs">
+                    <SelectValue placeholder="Match status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="matched">Matched</SelectItem>
+                    <SelectItem value="unmatched">Unmatched</SelectItem>
+                    <SelectItem value="pending">
+                      Pending{amazonSpending?.pendingMatchCount ? ` (${amazonSpending.pendingMatchCount})` : ''}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={amazonAccountFilter ?? '__all__'}
+                  onValueChange={(v) => {
+                    setAmazonAccountFilter(v === '__all__' ? undefined : v);
+                    setSelectedAmazonIds(new Set());
+                  }}
+                >
+                  <SelectTrigger className="w-[160px] h-8 text-xs">
+                    <SelectValue placeholder="All accounts" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all__">All accounts</SelectItem>
+                    {amazonSpending?.accounts.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div className="rounded-md border p-2">
                   <p className="text-xs text-muted-foreground">Purchases</p>
@@ -286,7 +398,7 @@ export function ReceiptsList() {
                 <p className="text-xs text-muted-foreground">
                   Routed {enforceAmazonRoutingMutation.data.updated} transaction(s):{' '}
                   {enforceAmazonRoutingMutation.data.routedAmazon} to Materials &gt; amazon and{' '}
-                  {enforceAmazonRoutingMutation.data.routedVideo} video purchase(s) to Tools and software.
+                  {enforceAmazonRoutingMutation.data.routedVideo} digital subscription(s) to Tools and software.
                 </p>
               )}
               {enforceAmazonRoutingMutation.error && (
@@ -307,6 +419,19 @@ export function ReceiptsList() {
               <p className="text-sm text-muted-foreground">No Amazon transactions found for this period.</p>
             ) : (
               <div className="space-y-2">
+                {/* Select all row */}
+                <div className="flex items-center gap-2 px-3 py-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedAmazonIds.size === amazonSpending.data.length && amazonSpending.data.length > 0}
+                    onChange={toggleAllAmazon}
+                    className="h-4 w-4 rounded border-gray-300 accent-primary"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Select all ({amazonSpending.data.length})
+                  </span>
+                </div>
+
                 {amazonSpending.data.map((tx) => {
                   const meta = parseAmazonOrderMatchMeta(tx.metadata);
                   const metadataItems = meta.itemTitles ?? [];
@@ -315,27 +440,50 @@ export function ReceiptsList() {
                   const itemCount = meta.itemCount ?? metadataItems.length;
                   const needsManualSplit = itemCount > 1 && tx.lineItems.length === 0;
                   const isBusiness = tx.effectiveClassification !== 'PERSONAL';
+                  const isSelected = selectedAmazonIds.has(tx.id);
                   return (
                     <div
                       key={tx.id}
-                      className="rounded-md border px-3 py-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                      className={cn(
+                        'rounded-md border px-3 py-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between',
+                        isSelected && 'bg-accent/50 border-primary/30',
+                      )}
                     >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {firstItem || metadataItems[0] || tx.merchantName || tx.description}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {formatDate(tx.date)} - {tx.account.name}
-                          {meta.orderId ? ` - Order ${meta.orderId}` : ''}
-                          {itemCount > 0 ? ` - ${itemCount} item(s)` : ''}
-                          {tx.category?.name ? ` - ${tx.category.name}` : ' - Uncategorized'}
-                          {` - Tx ${tx.id.slice(-8)}`}
-                        </p>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleAmazonSelection(tx.id)}
+                          className="h-4 w-4 shrink-0 rounded border-gray-300 accent-primary"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {firstItem || metadataItems[0] || tx.merchantName || tx.description}
+                          </p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {formatDate(tx.date)} - {tx.account.name}
+                            {meta.orderId ? ` - Order ${meta.orderId}` : ''}
+                            {itemCount > 0 ? ` - ${itemCount} item(s)` : ''}
+                            {tx.category?.name ? ` - ${tx.category.name}` : ' - Uncategorized'}
+                            {` - Tx ${tx.id.slice(-8)}`}
+                          </p>
+                        </div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
-                        <Badge variant={tx.hasAmazonIngestMatch ? 'default' : 'secondary'} className="text-[10px]">
-                          {tx.hasAmazonIngestMatch ? 'Matched Ingest' : 'Bank Only'}
-                        </Badge>
+                        {/* Match status badges */}
+                        {tx.matchStatus === 'pending' ? (
+                          <Badge variant="outline" className="text-[10px] text-yellow-600 border-yellow-400 bg-yellow-50">
+                            Pending Match
+                          </Badge>
+                        ) : tx.matchStatus === 'approved' ? (
+                          <Badge variant="default" className="text-[10px]">
+                            Matched
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Bank Only
+                          </Badge>
+                        )}
                         {needsManualSplit && (
                           <Badge variant="secondary" className="text-[10px]">
                             Multi-item
@@ -384,6 +532,53 @@ export function ReceiptsList() {
             )}
           </CardContent>
         </Card>
+
+        {/* Batch action bar */}
+        {selectedAmazonIds.size > 0 && (
+          <div className="sticky bottom-4 z-50 mx-auto w-fit rounded-lg border bg-background p-3 shadow-lg flex items-center gap-3">
+            <span className="text-sm font-medium">{selectedAmazonIds.size} selected</span>
+            <Button
+              size="sm"
+              disabled={batchClassifyMutation.isPending}
+              onClick={() => batchClassifyMutation.mutate({
+                transactionIds: Array.from(selectedAmazonIds),
+                classification: 'OPERATING',
+              })}
+            >
+              Mark Business
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={batchClassifyMutation.isPending}
+              onClick={() => batchClassifyMutation.mutate({
+                transactionIds: Array.from(selectedAmazonIds),
+                classification: 'PERSONAL',
+              })}
+            >
+              Mark Personal
+            </Button>
+            {hasPendingInSelection && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={bulkApproveMutation.isPending}
+                onClick={() => bulkApproveMutation.mutate({
+                  transactionIds: Array.from(selectedAmazonIds),
+                })}
+              >
+                {bulkApproveMutation.isPending ? 'Approving...' : 'Approve Matches'}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedAmazonIds(new Set())}
+            >
+              Clear
+            </Button>
+          </div>
+        )}
 
         {/* Receipts List */}
         <Card>
@@ -543,6 +738,7 @@ export function ReceiptsList() {
                 const itemCount = meta.itemCount ?? itemsToShow.length;
                 const isBusiness = selectedAmazonTx.classification !== 'PERSONAL';
                 const hasIngestMatch = !!meta.orderId;
+                const isPending = meta.matchStatus === 'pending';
                 return (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-3 text-sm">
@@ -623,6 +819,30 @@ export function ReceiptsList() {
                       )}
                     </div>
 
+                    {/* Approval actions for pending matches */}
+                    {isPending && (
+                      <div className="flex items-center gap-2 rounded-md border border-yellow-300 bg-yellow-50 p-3">
+                        <span className="text-sm font-medium text-yellow-800">Pending approval</span>
+                        <div className="ml-auto flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            disabled={approveMatchMutation.isPending || rejectMatchMutation.isPending}
+                            onClick={() => approveMatchMutation.mutate({ transactionId: selectedAmazonTxId! })}
+                          >
+                            {approveMatchMutation.isPending ? 'Approving...' : 'Approve'}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={approveMatchMutation.isPending || rejectMatchMutation.isPending}
+                            onClick={() => rejectMatchMutation.mutate({ transactionId: selectedAmazonTxId! })}
+                          >
+                            {rejectMatchMutation.isPending ? 'Rejecting...' : 'Reject'}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-2">
                       <Button variant="outline" asChild>
                         <Link href={`/transactions?search=${encodeURIComponent(selectedAmazonTx.description)}`}>
@@ -639,7 +859,7 @@ export function ReceiptsList() {
             )}
           </DialogContent>
         </Dialog>
-        
+
         {/* Receipt Detail Dialog */}
         <Dialog open={!!selectedReceipt} onOpenChange={(open) => !open && setSelectedReceipt(null)}>
           <DialogContent className="max-w-lg">
@@ -651,9 +871,9 @@ export function ReceiptsList() {
               <div className="space-y-4">
                 {selectedReceipt.fileUrl && selectedReceipt.fileType.includes('image') && (
                   <div className="rounded-lg overflow-hidden border">
-                    <img 
-                      src={selectedReceipt.fileUrl} 
-                      alt="Receipt" 
+                    <img
+                      src={selectedReceipt.fileUrl}
+                      alt="Receipt"
                       className="w-full h-auto max-h-64 object-contain"
                     />
                   </div>
@@ -683,8 +903,8 @@ export function ReceiptsList() {
                 <div>
                   <p className="text-sm text-muted-foreground">Linked Transactions</p>
                   <p className="font-medium">
-                    {selectedReceipt.transactionLinks.length > 0 
-                      ? `${selectedReceipt.transactionLinks.length} transaction(s)` 
+                    {selectedReceipt.transactionLinks.length > 0
+                      ? `${selectedReceipt.transactionLinks.length} transaction(s)`
                       : 'Not linked to any transactions'}
                   </p>
                 </div>
