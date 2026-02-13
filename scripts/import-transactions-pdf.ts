@@ -350,6 +350,16 @@ function parsePdfRows(text: string, yearHint?: number): ParsedStatementRow[] {
       continue;
     }
 
+    // Ignore statement summary/header rows (not real transactions).
+    if (
+      /\bcurrent balance\b/i.test(description) ||
+      /\bbeginning balance\b/i.test(description) ||
+      /\bending balance\b/i.test(description)
+    ) {
+      i = j - 1;
+      continue;
+    }
+
     rows.push({
       date,
       description: description.slice(0, 500),
