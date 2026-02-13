@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
 import {
@@ -23,6 +24,11 @@ import {
 } from '@/components/ui/dialog';
 import { UploadReceiptModal } from './UploadReceiptModal';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
+import {
+  DateRangeSelector,
+  getDateRangeForPreset,
+  type PeriodPreset,
+} from '@/components/ui/date-range-selector';
 import {
   Upload,
   FileText,
@@ -52,6 +58,10 @@ type AmazonOrderMatchMeta = {
   orderId?: string;
   itemCount?: number;
   confidence?: string;
+  orderPlaced?: string;
+  dayDiff?: number | null;
+  candidateCount?: number;
+  itemTitles?: string[];
 };
 
 function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
@@ -69,6 +79,12 @@ function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
     orderId: typeof m.orderId === 'string' ? m.orderId : undefined,
     itemCount: typeof m.itemCount === 'number' ? m.itemCount : undefined,
     confidence: typeof m.confidence === 'string' ? m.confidence : undefined,
+    orderPlaced: typeof m.orderPlaced === 'string' ? m.orderPlaced : undefined,
+    dayDiff: typeof m.dayDiff === 'number' ? m.dayDiff : null,
+    candidateCount: typeof m.candidateCount === 'number' ? m.candidateCount : undefined,
+    itemTitles: Array.isArray(m.itemTitles)
+      ? m.itemTitles.filter((x): x is string => typeof x === 'string')
+      : undefined,
   };
 }
 
@@ -83,6 +99,13 @@ const statusConfig = {
 export function ReceiptsList() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptData | null>(null);
+  const [selectedAmazonTxId, setSelectedAmazonTxId] = useState<string | null>(null);
+  const [amazonPeriod, setAmazonPeriod] = useState<PeriodPreset>('all-time');
+  const [amazonYearValue, setAmazonYearValue] = useState<number>(new Date().getFullYear());
+  const [amazonCustomStart, setAmazonCustomStart] = useState('');
+  const [amazonCustomEnd, setAmazonCustomEnd] = useState('');
+  const [updatingBusinessPersonalTxId, setUpdatingBusinessPersonalTxId] = useState<string | null>(null);
+  const utils = api.useUtils();
 
   const { data, isLoading, refetch } = api.receipts.list.useQuery({
     status: statusFilter as any,
@@ -90,8 +113,53 @@ export function ReceiptsList() {
 
   const { data: pendingCount } = api.receipts.pendingCount.useQuery();
   const { data: unlinkedReceipts } = api.receipts.unlinked.useQuery();
+  const amazonDateRange = useMemo(() => {
+    if (amazonPeriod === 'custom' && amazonCustomStart && amazonCustomEnd) {
+      return {
+        startDate: new Date(amazonCustomStart + 'T00:00:00'),
+        endDate: new Date(amazonCustomEnd + 'T23:59:59.999'),
+      };
+    }
+    const range = getDateRangeForPreset(amazonPeriod, { year: amazonYearValue });
+    return { startDate: range.startDate, endDate: range.endDate };
+  }, [amazonPeriod, amazonYearValue, amazonCustomStart, amazonCustomEnd]);
+
   const { data: amazonSpending, isLoading: isAmazonSpendingLoading } =
-    api.receipts.amazonSpending.useQuery();
+    api.receipts.amazonSpending.useQuery({
+      startDate: amazonDateRange.startDate,
+      endDate: amazonDateRange.endDate,
+      limit: 1000,
+    });
+  const updateTransactionMutation = api.transactions.update.useMutation({
+    onSuccess: async (_, vars) => {
+      await Promise.all([
+        utils.receipts.amazonSpending.invalidate(),
+        utils.transactions.getById.invalidate({ id: vars.id }),
+      ]);
+    },
+    onSettled: () => setUpdatingBusinessPersonalTxId(null),
+  });
+  const enforceAmazonRoutingMutation = api.receipts.enforceAmazonRouting.useMutation({
+    onSuccess: async () => {
+      await utils.receipts.amazonSpending.invalidate();
+    },
+  });
+  const { data: selectedAmazonTx, isLoading: isSelectedAmazonTxLoading } =
+    api.transactions.getById.useQuery(
+      { id: selectedAmazonTxId ?? '' },
+      { enabled: !!selectedAmazonTxId }
+    );
+  const selectedAmazonMeta = selectedAmazonTx
+    ? parseAmazonOrderMatchMeta(selectedAmazonTx.metadata)
+    : null;
+
+  function markAmazonBusinessPersonal(transactionId: string, mode: 'business' | 'personal') {
+    setUpdatingBusinessPersonalTxId(transactionId);
+    updateTransactionMutation.mutate({
+      id: transactionId,
+      data: { classification: mode === 'business' ? 'OPERATING' : 'PERSONAL' },
+    });
+  }
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -150,28 +218,82 @@ export function ReceiptsList() {
         {/* Amazon Spending Section */}
         <Card>
           <CardHeader>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Package className="h-5 w-5 text-amber-600" />
-                  Amazon Spending
-                </CardTitle>
-                <CardDescription>
-                  Ingested purchases from your Amazon order history imports
-                </CardDescription>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Package className="h-5 w-5 text-amber-600" />
+                    Amazon Spending
+                  </CardTitle>
+                  <CardDescription>
+                    All Amazon/AMZN transactions with routing + ingest-match status
+                  </CardDescription>
+                </div>
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+                  <DateRangeSelector
+                    value={amazonPeriod}
+                    onChange={setAmazonPeriod}
+                    yearValue={amazonYearValue}
+                    onYearChange={setAmazonYearValue}
+                    customStart={amazonCustomStart}
+                    customEnd={amazonCustomEnd}
+                    onCustomStartChange={setAmazonCustomStart}
+                    onCustomEndChange={setAmazonCustomEnd}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={enforceAmazonRoutingMutation.isPending}
+                    onClick={() => enforceAmazonRoutingMutation.mutate()}
+                  >
+                    {enforceAmazonRoutingMutation.isPending
+                      ? 'Routing...'
+                      : 'Apply Amazon Routing'}
+                  </Button>
+                </div>
               </div>
-              <div className="flex items-center gap-4">
-                <div className="text-right">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-md border p-2">
                   <p className="text-xs text-muted-foreground">Purchases</p>
                   <p className="text-lg font-semibold">{amazonSpending?.totalCount ?? 0}</p>
                 </div>
-                <div className="text-right">
+                <div className="rounded-md border p-2">
                   <p className="text-xs text-muted-foreground">Total</p>
                   <p className="text-lg font-semibold">
                     {formatCurrency(Number(amazonSpending?.totalAmount ?? 0))}
                   </p>
                 </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Business</p>
+                  <p className="text-lg font-semibold text-green-700">
+                    {formatCurrency(Number(amazonSpending?.businessAmount ?? 0))}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {amazonSpending?.businessCount ?? 0} tx
+                  </p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Personal</p>
+                  <p className="text-lg font-semibold text-orange-700">
+                    {formatCurrency(Number(amazonSpending?.personalAmount ?? 0))}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {amazonSpending?.personalCount ?? 0} tx
+                  </p>
+                </div>
               </div>
+              {!!enforceAmazonRoutingMutation.data && (
+                <p className="text-xs text-muted-foreground">
+                  Routed {enforceAmazonRoutingMutation.data.updated} transaction(s):{' '}
+                  {enforceAmazonRoutingMutation.data.routedAmazon} to Materials &gt; amazon and{' '}
+                  {enforceAmazonRoutingMutation.data.routedVideo} video purchase(s) to Tools and software.
+                </p>
+              )}
+              {enforceAmazonRoutingMutation.error && (
+                <p className="text-xs text-red-600">
+                  {enforceAmazonRoutingMutation.error.message}
+                </p>
+              )}
             </div>
           </CardHeader>
           <CardContent>
@@ -182,15 +304,17 @@ export function ReceiptsList() {
                 ))}
               </div>
             ) : !amazonSpending || amazonSpending.data.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No ingested Amazon purchases yet.
-              </p>
+              <p className="text-sm text-muted-foreground">No Amazon transactions found for this period.</p>
             ) : (
               <div className="space-y-2">
                 {amazonSpending.data.map((tx) => {
                   const meta = parseAmazonOrderMatchMeta(tx.metadata);
+                  const metadataItems = meta.itemTitles ?? [];
                   const firstItem =
                     tx.lineItems[0]?.description.replace(/^\[Amazon\]\s*/, '') ?? null;
+                  const itemCount = meta.itemCount ?? metadataItems.length;
+                  const needsManualSplit = itemCount > 1 && tx.lineItems.length === 0;
+                  const isBusiness = tx.effectiveClassification !== 'PERSONAL';
                   return (
                     <div
                       key={tx.id}
@@ -198,15 +322,25 @@ export function ReceiptsList() {
                     >
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">
-                          {firstItem || tx.merchantName || tx.description}
+                          {firstItem || metadataItems[0] || tx.merchantName || tx.description}
                         </p>
                         <p className="text-xs text-muted-foreground truncate">
                           {formatDate(tx.date)} - {tx.account.name}
                           {meta.orderId ? ` - Order ${meta.orderId}` : ''}
-                          {typeof meta.itemCount === 'number' ? ` - ${meta.itemCount} item(s)` : ''}
+                          {itemCount > 0 ? ` - ${itemCount} item(s)` : ''}
+                          {tx.category?.name ? ` - ${tx.category.name}` : ' - Uncategorized'}
+                          {` - Tx ${tx.id.slice(-8)}`}
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <Badge variant={tx.hasAmazonIngestMatch ? 'default' : 'secondary'} className="text-[10px]">
+                          {tx.hasAmazonIngestMatch ? 'Matched Ingest' : 'Bank Only'}
+                        </Badge>
+                        {needsManualSplit && (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Multi-item
+                          </Badge>
+                        )}
                         {meta.confidence && (
                           <Badge variant="outline" className="text-[10px] uppercase">
                             {meta.confidence}
@@ -215,6 +349,33 @@ export function ReceiptsList() {
                         <p className="text-sm font-semibold">
                           {formatCurrency(Number(tx.amount))}
                         </p>
+                        <div className="flex items-center rounded-md border overflow-hidden">
+                          <Button
+                            size="sm"
+                            variant={isBusiness ? 'default' : 'ghost'}
+                            className="h-7 rounded-none px-2"
+                            disabled={updatingBusinessPersonalTxId === tx.id}
+                            onClick={() => markAmazonBusinessPersonal(tx.id, 'business')}
+                          >
+                            Business
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={!isBusiness ? 'default' : 'ghost'}
+                            className="h-7 rounded-none px-2"
+                            disabled={updatingBusinessPersonalTxId === tx.id}
+                            onClick={() => markAmazonBusinessPersonal(tx.id, 'personal')}
+                          >
+                            Personal
+                          </Button>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setSelectedAmazonTxId(tx.id)}
+                        >
+                          View Match
+                        </Button>
                       </div>
                     </div>
                   );
@@ -344,6 +505,140 @@ export function ReceiptsList() {
             )}
           </CardContent>
         </Card>
+
+        {/* Amazon Match Detail Dialog */}
+        <Dialog
+          open={!!selectedAmazonTxId}
+          onOpenChange={(open) => !open && setSelectedAmazonTxId(null)}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {selectedAmazonTx
+                  ? `Amazon Match${selectedAmazonMeta?.orderId ? ` - Order ${selectedAmazonMeta.orderId}` : ''}`
+                  : 'Amazon Match'}
+              </DialogTitle>
+              <DialogDescription>
+                Review the matched transaction and order contents
+              </DialogDescription>
+            </DialogHeader>
+            {isSelectedAmazonTxLoading ? (
+              <div className="space-y-2">
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} className="h-10" />
+                ))}
+              </div>
+            ) : !selectedAmazonTx ? (
+              <p className="text-sm text-muted-foreground">
+                Matched transaction not found.
+              </p>
+            ) : (
+              (() => {
+                const meta = parseAmazonOrderMatchMeta(selectedAmazonTx.metadata);
+                const metadataItems = meta.itemTitles ?? [];
+                const derivedItems = selectedAmazonTx.lineItems
+                  .map((li) => li.description.replace(/^\[Amazon\]\s*/, ''))
+                  .filter(Boolean);
+                const itemsToShow = metadataItems.length > 0 ? metadataItems : derivedItems;
+                const itemCount = meta.itemCount ?? itemsToShow.length;
+                const isBusiness = selectedAmazonTx.classification !== 'PERSONAL';
+                const hasIngestMatch = !!meta.orderId;
+                return (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <p className="text-muted-foreground">Transaction ID</p>
+                        <p className="font-mono break-all">{selectedAmazonTx.id}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Amount</p>
+                        <p className="font-semibold">
+                          {formatCurrency(Number(selectedAmazonTx.amount))}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Transaction Date</p>
+                        <p>{formatDate(selectedAmazonTx.date)}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Account</p>
+                        <p>{selectedAmazonTx.account?.name}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Business / Personal</p>
+                        <p>{isBusiness ? 'Business' : 'Personal'}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Ingest Match</p>
+                        <p>{hasIngestMatch ? 'Yes' : 'No'}</p>
+                      </div>
+                      {meta.orderPlaced && (
+                        <div>
+                          <p className="text-muted-foreground">Order Date</p>
+                          <p>{meta.orderPlaced}</p>
+                        </div>
+                      )}
+                      {meta.dayDiff !== null && meta.dayDiff !== undefined && (
+                        <div>
+                          <p className="text-muted-foreground">Date Gap</p>
+                          <p>{meta.dayDiff} day(s)</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-md border p-3">
+                      <p className="text-sm text-muted-foreground">Matched Bank Description</p>
+                      <p className="font-medium">{selectedAmazonTx.description}</p>
+                      {selectedAmazonTx.merchantName &&
+                        selectedAmazonTx.merchantName !== selectedAmazonTx.description && (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Merchant: {selectedAmazonTx.merchantName}
+                          </p>
+                        )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-medium">
+                          Order Contents ({itemCount} item{itemCount === 1 ? '' : 's'})
+                        </p>
+                        {meta.confidence && (
+                          <Badge variant="outline" className="uppercase">
+                            {meta.confidence}
+                          </Badge>
+                        )}
+                      </div>
+                      {itemsToShow.length === 0 ? (
+                        <p className="text-sm text-muted-foreground mt-2">
+                          No item list found for this order.
+                        </p>
+                      ) : (
+                        <div className="mt-2 max-h-64 overflow-auto rounded-md border p-2 space-y-1">
+                          {itemsToShow.map((item, idx) => (
+                            <p key={`${idx}-${item.slice(0, 24)}`} className="text-sm">
+                              {idx + 1}. {item}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" asChild>
+                        <Link href={`/transactions?search=${encodeURIComponent(selectedAmazonTx.description)}`}>
+                          Open in Transactions
+                        </Link>
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        Search opens by transaction description.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+          </DialogContent>
+        </Dialog>
         
         {/* Receipt Detail Dialog */}
         <Dialog open={!!selectedReceipt} onOpenChange={(open) => !open && setSelectedReceipt(null)}>

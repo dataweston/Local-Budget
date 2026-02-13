@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { syncTransactions, getAccountBalances, mapPlaidTransaction, getAllTransactions } from '@/lib/plaid';
+import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '@/lib/amazon-routing';
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,6 +32,8 @@ export async function POST(request: NextRequest) {
     if (!plaidItem) {
       return NextResponse.json({ error: 'Plaid item not found' }, { status: 404 });
     }
+
+    const amazonTargets = await getAmazonCategoryTargets(db, session.user.id);
 
     // Log available accounts for debugging
     console.log(`[Plaid Sync] Starting sync for PlaidItem ${plaidItem.id}`);
@@ -90,6 +93,10 @@ export async function POST(request: NextRequest) {
       for (const m of validMapped) {
         const existing = existingMap.get(m.transactionId);
         if (!existing) {
+          const amazonCategoryId = getAmazonRoutingCategoryId(
+            { description: m.name, merchantName: m.merchantName },
+            amazonTargets
+          );
           toCreate.push({
             accountId: m.financialAccountId!,
             amount: Math.abs(m.amount),
@@ -100,6 +107,7 @@ export async function POST(request: NextRequest) {
             merchantName: m.merchantName,
             externalId: m.transactionId,
             isReviewed: false,
+            ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
           });
         } else {
           toUpdate.push({ existing, mapped: m });
@@ -122,6 +130,10 @@ export async function POST(request: NextRequest) {
         // Only update merchantName if user hasn't changed it (i.e. it still matches what Plaid had)
         // If merchantName differs from Plaid's value, the user has merged/renamed it — don't overwrite
         const shouldUpdateMerchant = !existing.merchantName || existing.merchantName === m.merchantName;
+        const amazonCategoryId = getAmazonRoutingCategoryId(
+          { description: m.name, merchantName: m.merchantName },
+          amazonTargets
+        );
 
         await db.transaction.update({
           where: { id: existing.id },
@@ -131,6 +143,7 @@ export async function POST(request: NextRequest) {
             status: m.pending ? 'PENDING' : 'POSTED',
             description: m.name,
             ...(shouldUpdateMerchant && { merchantName: m.merchantName }),
+            ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
           },
         });
         modified++;
@@ -203,6 +216,10 @@ export async function POST(request: NextRequest) {
               });
 
               if (!existing) {
+                const amazonCategoryId = getAmazonRoutingCategoryId(
+                  { description: mappedTx.name, merchantName: mappedTx.merchantName },
+                  amazonTargets
+                );
                 await db.transaction.create({
                   data: {
                     accountId: financialAccount.id,
@@ -214,6 +231,7 @@ export async function POST(request: NextRequest) {
                     merchantName: mappedTx.merchantName,
                     externalId: mappedTx.transactionId,
                     isReviewed: false,
+                    ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
                   },
                 });
                 added++;
@@ -231,6 +249,10 @@ export async function POST(request: NextRequest) {
               });
 
               const shouldUpdateMerchant = !existing?.merchantName || existing.merchantName === mappedTx.merchantName;
+              const amazonCategoryId = getAmazonRoutingCategoryId(
+                { description: mappedTx.name, merchantName: mappedTx.merchantName },
+                amazonTargets
+              );
 
               await db.transaction.updateMany({
                 where: { externalId: mappedTx.transactionId },
@@ -240,6 +262,7 @@ export async function POST(request: NextRequest) {
                   status: mappedTx.pending ? 'PENDING' : 'POSTED',
                   description: mappedTx.name,
                   ...(shouldUpdateMerchant && { merchantName: mappedTx.merchantName }),
+                  ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
                 },
               });
               modified++;

@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { PrismaClient, TransactionStatus, TransactionType } from '@prisma/client';
+import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '../src/lib/amazon-routing';
 
 type ParsedArgs = {
   accountId?: string;
@@ -281,12 +282,13 @@ async function run() {
 
     const account = await prisma.financialAccount.findUnique({
       where: { id: args.accountId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, userId: true },
     });
 
     if (!account) {
       throw new Error(`Account not found: ${args.accountId}`);
     }
+    const amazonTargets = await getAmazonCategoryTargets(prisma, account.userId);
 
     const importFiles = expandInputPaths(args.files);
     if (importFiles.length === 0) {
@@ -377,6 +379,13 @@ async function run() {
 
         const amountAbs = Math.abs(signedAmount);
         const type = signedAmount < 0 ? 'EXPENSE' : 'INCOME';
+        const amazonCategoryId =
+          type === 'EXPENSE'
+            ? getAmazonRoutingCategoryId(
+                { description, merchantName: description },
+                amazonTargets
+              )
+            : null;
 
         const digest = createHash('sha1')
           .update([
@@ -396,6 +405,7 @@ async function run() {
           date,
           description: description.slice(0, 500),
           merchantName: description.slice(0, 200),
+          ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
           externalId: `csv:${digest}`,
           isReviewed: false,
         });

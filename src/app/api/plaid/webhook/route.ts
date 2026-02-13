@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { syncTransactions, getAccountBalances, plaidClient } from '@/lib/plaid';
 import { jwtVerify, importJWK, type JWK } from 'jose';
 import { createHash } from 'crypto';
+import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '@/lib/amazon-routing';
 
 // Plaid webhook event types
 type PlaidWebhookType =
@@ -138,9 +139,17 @@ export async function POST(request: NextRequest) {
 
 async function handleTransactionsWebhook(
   code: string,
-  plaidItem: { id: string; itemId: string; accessToken: string; cursor: string | null; accounts: { id: string }[] },
+  plaidItem: {
+    id: string;
+    itemId: string;
+    accessToken: string;
+    cursor: string | null;
+    userId: string;
+    accounts: { id: string }[];
+  },
   body: PlaidWebhookBody
 ) {
+  const amazonTargets = await getAmazonCategoryTargets(db, plaidItem.userId);
   switch (code) {
     case 'SYNC_UPDATES_AVAILABLE':
     case 'INITIAL_UPDATE':
@@ -175,6 +184,10 @@ async function handleTransactionsWebhook(
             });
 
             if (!existing) {
+              const amazonCategoryId = getAmazonRoutingCategoryId(
+                { description: tx.name, merchantName: tx.merchant_name },
+                amazonTargets
+              );
               await db.transaction.create({
                 data: {
                   accountId: account.id,
@@ -190,6 +203,7 @@ async function handleTransactionsWebhook(
                     plaid_category_id: tx.category_id,
                     payment_channel: tx.payment_channel,
                   },
+                  ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
                 },
               });
             }
@@ -203,6 +217,10 @@ async function handleTransactionsWebhook(
           });
 
           if (account) {
+            const amazonCategoryId = getAmazonRoutingCategoryId(
+              { description: tx.name, merchantName: tx.merchant_name },
+              amazonTargets
+            );
             await db.transaction.updateMany({
               where: { 
                 accountId: account.id,
@@ -214,6 +232,7 @@ async function handleTransactionsWebhook(
                 status: tx.pending ? 'PENDING' : 'POSTED',
                 description: tx.name,
                 merchantName: tx.merchant_name,
+                ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
               },
             });
           }

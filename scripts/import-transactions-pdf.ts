@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { PrismaClient, TransactionStatus, TransactionType } from '@prisma/client';
+import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '../src/lib/amazon-routing';
 
 const pdfParse = require('pdf-parse') as (
   dataBuffer: Buffer
@@ -519,9 +520,10 @@ async function run() {
 
     const account = await prisma.financialAccount.findUnique({
       where: { id: args.accountId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, userId: true },
     });
     if (!account) throw new Error(`Account not found: ${args.accountId}`);
+    const amazonTargets = await getAmazonCategoryTargets(prisma, account.userId);
 
     const importFiles = expandInputPaths(args.files);
     if (importFiles.length === 0) {
@@ -637,6 +639,15 @@ async function run() {
           date: row.date,
           description: row.description.slice(0, 500),
           merchantName: row.description.slice(0, 200),
+          ...(row.sign === 'NEGATIVE'
+            ? (() => {
+                const categoryId = getAmazonRoutingCategoryId(
+                  { description: row.description, merchantName: row.description },
+                  amazonTargets
+                );
+                return categoryId ? { categoryId } : {};
+              })()
+            : {}),
           externalId: buildExternalId(account.id, filePath, row),
           isReviewed: false,
           metadata: {
