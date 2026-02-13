@@ -353,6 +353,104 @@ export const receiptsRouter = createTRPCRouter({
       };
     }),
 
+  venmoSpending: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().min(1).max(1000).default(500),
+          startDate: z.date().optional(),
+          endDate: z.date().optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db.transaction.findMany({
+        where: {
+          account: { userId: ctx.session.user.id },
+          type: 'EXPENSE',
+          OR: [
+            { description: { contains: 'venmo', mode: 'insensitive' } },
+            { merchantName: { contains: 'venmo', mode: 'insensitive' } },
+          ],
+          ...(input?.startDate || input?.endDate
+            ? {
+                date: {
+                  ...(input?.startDate ? { gte: input.startDate } : {}),
+                  ...(input?.endDate ? { lte: input.endDate } : {}),
+                },
+              }
+            : {}),
+        },
+        select: {
+          id: true,
+          date: true,
+          amount: true,
+          type: true,
+          classification: true,
+          categoryId: true,
+          description: true,
+          merchantName: true,
+          metadata: true,
+          category: {
+            select: {
+              id: true,
+              name: true,
+              defaultClassification: true,
+              parent: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+          account: {
+            select: { id: true, name: true },
+          },
+        },
+        orderBy: { date: 'desc' },
+        take: input?.limit ?? 500,
+      });
+
+      const data = rows.map((row) => {
+        const effectiveClassification = getEffectiveClassification(row);
+        const metadata = row.metadata as Record<string, unknown> | null;
+        const venmoStatementMatch =
+          metadata &&
+          typeof metadata === 'object' &&
+          !Array.isArray(metadata) &&
+          metadata.venmoStatementMatch &&
+          typeof metadata.venmoStatementMatch === 'object'
+            ? (metadata.venmoStatementMatch as Record<string, unknown>)
+            : null;
+
+        return {
+          ...row,
+          effectiveClassification,
+          hasVenmoStatementMatch: !!venmoStatementMatch,
+        };
+      });
+
+      const totalAmount = data.reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+      const businessAmount = data
+        .filter((row) => row.effectiveClassification !== 'PERSONAL')
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+      const personalAmount = data
+        .filter((row) => row.effectiveClassification === 'PERSONAL')
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+
+      return {
+        data,
+        totalCount: data.length,
+        totalAmount,
+        businessAmount,
+        personalAmount,
+        businessCount: data.filter((row) => row.effectiveClassification !== 'PERSONAL').length,
+        personalCount: data.filter((row) => row.effectiveClassification === 'PERSONAL').length,
+        matchedCount: data.filter((row) => row.hasVenmoStatementMatch).length,
+      };
+    }),
+
   // Backfill category routing for Amazon transactions:
   // - Amazon -> Materials > amazon
   // - Amazon + "video" -> Tools and software

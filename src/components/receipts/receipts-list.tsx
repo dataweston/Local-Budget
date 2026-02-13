@@ -45,6 +45,7 @@ import {
   XCircle,
   Image as ImageIcon,
   Package,
+  Wallet,
 } from 'lucide-react';
 
 interface ReceiptData {
@@ -97,6 +98,50 @@ function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
   };
 }
 
+type VenmoStatementMatchMeta = {
+  statementId?: string;
+  statementDateTime?: string;
+  type?: string;
+  status?: string;
+  note?: string;
+  from?: string;
+  to?: string;
+  amountTotalSigned?: number;
+  amountFeeSigned?: number;
+  sourceFile?: string;
+  confidence?: string;
+  dayDiff?: number | null;
+  candidateCount?: number;
+};
+
+function parseVenmoStatementMatchMeta(metadata: unknown): VenmoStatementMatchMeta {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return {};
+  const venmoStatementMatch = (metadata as Record<string, unknown>).venmoStatementMatch;
+  if (
+    !venmoStatementMatch ||
+    typeof venmoStatementMatch !== 'object' ||
+    Array.isArray(venmoStatementMatch)
+  ) {
+    return {};
+  }
+  const m = venmoStatementMatch as Record<string, unknown>;
+  return {
+    statementId: typeof m.statementId === 'string' ? m.statementId : undefined,
+    statementDateTime: typeof m.statementDateTime === 'string' ? m.statementDateTime : undefined,
+    type: typeof m.type === 'string' ? m.type : undefined,
+    status: typeof m.status === 'string' ? m.status : undefined,
+    note: typeof m.note === 'string' ? m.note : undefined,
+    from: typeof m.from === 'string' ? m.from : undefined,
+    to: typeof m.to === 'string' ? m.to : undefined,
+    amountTotalSigned: typeof m.amountTotalSigned === 'number' ? m.amountTotalSigned : undefined,
+    amountFeeSigned: typeof m.amountFeeSigned === 'number' ? m.amountFeeSigned : undefined,
+    sourceFile: typeof m.sourceFile === 'string' ? m.sourceFile : undefined,
+    confidence: typeof m.confidence === 'string' ? m.confidence : undefined,
+    dayDiff: typeof m.dayDiff === 'number' ? m.dayDiff : null,
+    candidateCount: typeof m.candidateCount === 'number' ? m.candidateCount : undefined,
+  };
+}
+
 const statusConfig = {
   PENDING: { icon: Clock, color: 'text-yellow-600', bg: 'bg-yellow-50' },
   PROCESSING: { icon: Clock, color: 'text-blue-600', bg: 'bg-blue-50' },
@@ -111,11 +156,17 @@ export function ReceiptsList() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptData | null>(null);
   const [selectedAmazonTxId, setSelectedAmazonTxId] = useState<string | null>(null);
+  const [selectedVenmoTxId, setSelectedVenmoTxId] = useState<string | null>(null);
   const [amazonPeriod, setAmazonPeriod] = useState<PeriodPreset>('all-time');
   const [amazonYearValue, setAmazonYearValue] = useState<number>(new Date().getFullYear());
   const [amazonCustomStart, setAmazonCustomStart] = useState('');
   const [amazonCustomEnd, setAmazonCustomEnd] = useState('');
   const [updatingBusinessPersonalTxId, setUpdatingBusinessPersonalTxId] = useState<string | null>(null);
+  const [venmoPeriod, setVenmoPeriod] = useState<PeriodPreset>('all-time');
+  const [venmoYearValue, setVenmoYearValue] = useState<number>(new Date().getFullYear());
+  const [venmoCustomStart, setVenmoCustomStart] = useState('');
+  const [venmoCustomEnd, setVenmoCustomEnd] = useState('');
+  const [updatingVenmoBusinessPersonalTxId, setUpdatingVenmoBusinessPersonalTxId] = useState<string | null>(null);
   const [amazonMatchFilter, setAmazonMatchFilter] = useState<MatchFilterValue>('all');
   const [amazonAccountFilter, setAmazonAccountFilter] = useState<string | undefined>();
   const [selectedAmazonIds, setSelectedAmazonIds] = useState<Set<string>>(new Set());
@@ -138,6 +189,17 @@ export function ReceiptsList() {
     return { startDate: range.startDate, endDate: range.endDate };
   }, [amazonPeriod, amazonYearValue, amazonCustomStart, amazonCustomEnd]);
 
+  const venmoDateRange = useMemo(() => {
+    if (venmoPeriod === 'custom' && venmoCustomStart && venmoCustomEnd) {
+      return {
+        startDate: new Date(venmoCustomStart + 'T00:00:00'),
+        endDate: new Date(venmoCustomEnd + 'T23:59:59.999'),
+      };
+    }
+    const range = getDateRangeForPreset(venmoPeriod, { year: venmoYearValue });
+    return { startDate: range.startDate, endDate: range.endDate };
+  }, [venmoPeriod, venmoYearValue, venmoCustomStart, venmoCustomEnd]);
+
   const { data: amazonSpending, isLoading: isAmazonSpendingLoading } =
     api.receipts.amazonSpending.useQuery({
       startDate: amazonDateRange.startDate,
@@ -145,6 +207,12 @@ export function ReceiptsList() {
       limit: 1000,
       accountId: amazonAccountFilter,
       matchFilter: amazonMatchFilter === 'all' ? undefined : amazonMatchFilter,
+    });
+  const { data: venmoSpending, isLoading: isVenmoSpendingLoading } =
+    api.receipts.venmoSpending.useQuery({
+      startDate: venmoDateRange.startDate,
+      endDate: venmoDateRange.endDate,
+      limit: 1000,
     });
 
   const invalidateAmazon = useCallback(async () => {
@@ -155,10 +223,14 @@ export function ReceiptsList() {
     onSuccess: async (_, vars) => {
       await Promise.all([
         invalidateAmazon(),
+        utils.receipts.venmoSpending.invalidate(),
         utils.transactions.getById.invalidate({ id: vars.id }),
       ]);
     },
-    onSettled: () => setUpdatingBusinessPersonalTxId(null),
+    onSettled: () => {
+      setUpdatingBusinessPersonalTxId(null);
+      setUpdatingVenmoBusinessPersonalTxId(null);
+    },
   });
   const enforceAmazonRoutingMutation = api.receipts.enforceAmazonRouting.useMutation({
     onSuccess: invalidateAmazon,
@@ -195,12 +267,28 @@ export function ReceiptsList() {
       { id: selectedAmazonTxId ?? '' },
       { enabled: !!selectedAmazonTxId }
     );
+  const { data: selectedVenmoTx, isLoading: isSelectedVenmoTxLoading } =
+    api.transactions.getById.useQuery(
+      { id: selectedVenmoTxId ?? '' },
+      { enabled: !!selectedVenmoTxId }
+    );
   const selectedAmazonMeta = selectedAmazonTx
     ? parseAmazonOrderMatchMeta(selectedAmazonTx.metadata)
+    : null;
+  const selectedVenmoMeta = selectedVenmoTx
+    ? parseVenmoStatementMatchMeta(selectedVenmoTx.metadata)
     : null;
 
   function markAmazonBusinessPersonal(transactionId: string, mode: 'business' | 'personal') {
     setUpdatingBusinessPersonalTxId(transactionId);
+    updateTransactionMutation.mutate({
+      id: transactionId,
+      data: { classification: mode === 'business' ? 'OPERATING' : 'PERSONAL' },
+    });
+  }
+
+  function markVenmoBusinessPersonal(transactionId: string, mode: 'business' | 'personal') {
+    setUpdatingVenmoBusinessPersonalTxId(transactionId);
     updateTransactionMutation.mutate({
       id: transactionId,
       data: { classification: mode === 'business' ? 'OPERATING' : 'PERSONAL' },
@@ -580,6 +668,160 @@ export function ReceiptsList() {
           </div>
         )}
 
+        {/* Venmo Spending Section */}
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Wallet className="h-5 w-5 text-sky-600" />
+                    Venmo Spending
+                  </CardTitle>
+                  <CardDescription>
+                    Venmo expense transactions with statement-match status and business/personal split
+                  </CardDescription>
+                </div>
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+                  <DateRangeSelector
+                    value={venmoPeriod}
+                    onChange={setVenmoPeriod}
+                    yearValue={venmoYearValue}
+                    onYearChange={setVenmoYearValue}
+                    customStart={venmoCustomStart}
+                    customEnd={venmoCustomEnd}
+                    onCustomStartChange={setVenmoCustomStart}
+                    onCustomEndChange={setVenmoCustomEnd}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Transactions</p>
+                  <p className="text-lg font-semibold">{venmoSpending?.totalCount ?? 0}</p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="text-lg font-semibold">
+                    {formatCurrency(Number(venmoSpending?.totalAmount ?? 0))}
+                  </p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Matched</p>
+                  <p className="text-lg font-semibold text-sky-700">
+                    {venmoSpending?.matchedCount ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Business</p>
+                  <p className="text-lg font-semibold text-green-700">
+                    {formatCurrency(Number(venmoSpending?.businessAmount ?? 0))}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {venmoSpending?.businessCount ?? 0} tx
+                  </p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Personal</p>
+                  <p className="text-lg font-semibold text-orange-700">
+                    {formatCurrency(Number(venmoSpending?.personalAmount ?? 0))}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {venmoSpending?.personalCount ?? 0} tx
+                  </p>
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isVenmoSpendingLoading ? (
+              <div className="space-y-2">
+                {[...Array(4)].map((_, i) => (
+                  <Skeleton key={i} className="h-16" />
+                ))}
+              </div>
+            ) : !venmoSpending || venmoSpending.data.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No Venmo transactions found for this period.</p>
+            ) : (
+              <div className="space-y-2">
+                {venmoSpending.data.map((tx) => {
+                  const meta = parseVenmoStatementMatchMeta(tx.metadata);
+                  const isBusiness = tx.effectiveClassification !== 'PERSONAL';
+                  const primaryText =
+                    meta.note ||
+                    meta.to ||
+                    meta.from ||
+                    tx.merchantName ||
+                    tx.description;
+                  return (
+                    <div
+                      key={tx.id}
+                      className="rounded-md border px-3 py-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{primaryText}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {formatDate(tx.date)} - {tx.account.name}
+                          {tx.category?.name ? ` - ${tx.category.name}` : ' - Uncategorized'}
+                          {meta.statementId ? ` - Statement ${meta.statementId}` : ''}
+                          {` - Tx ${tx.id.slice(-8)}`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        {tx.hasVenmoStatementMatch ? (
+                          <Badge variant="default" className="text-[10px]">
+                            Statement Matched
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Bank Only
+                          </Badge>
+                        )}
+                        {meta.confidence && (
+                          <Badge variant="outline" className="text-[10px] uppercase">
+                            {meta.confidence}
+                          </Badge>
+                        )}
+                        <p className="text-sm font-semibold">
+                          {formatCurrency(Number(tx.amount))}
+                        </p>
+                        <div className="flex items-center rounded-md border overflow-hidden">
+                          <Button
+                            size="sm"
+                            variant={isBusiness ? 'default' : 'ghost'}
+                            className="h-7 rounded-none px-2"
+                            disabled={updatingVenmoBusinessPersonalTxId === tx.id}
+                            onClick={() => markVenmoBusinessPersonal(tx.id, 'business')}
+                          >
+                            Business
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={!isBusiness ? 'default' : 'ghost'}
+                            className="h-7 rounded-none px-2"
+                            disabled={updatingVenmoBusinessPersonalTxId === tx.id}
+                            onClick={() => markVenmoBusinessPersonal(tx.id, 'personal')}
+                          >
+                            Personal
+                          </Button>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setSelectedVenmoTxId(tx.id)}
+                        >
+                          View Match
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Receipts List */}
         <Card>
           <CardHeader>
@@ -846,6 +1088,153 @@ export function ReceiptsList() {
                     <div className="flex items-center gap-2">
                       <Button variant="outline" asChild>
                         <Link href={`/transactions?search=${encodeURIComponent(selectedAmazonTx.description)}`}>
+                          Open in Transactions
+                        </Link>
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        Search opens by transaction description.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Venmo Match Detail Dialog */}
+        <Dialog
+          open={!!selectedVenmoTxId}
+          onOpenChange={(open) => !open && setSelectedVenmoTxId(null)}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {selectedVenmoTx
+                  ? `Venmo Match${selectedVenmoMeta?.statementId ? ` - Statement ${selectedVenmoMeta.statementId}` : ''}`
+                  : 'Venmo Match'}
+              </DialogTitle>
+              <DialogDescription>
+                Review statement-linked Venmo details for this transaction
+              </DialogDescription>
+            </DialogHeader>
+            {isSelectedVenmoTxLoading ? (
+              <div className="space-y-2">
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} className="h-10" />
+                ))}
+              </div>
+            ) : !selectedVenmoTx ? (
+              <p className="text-sm text-muted-foreground">
+                Matched transaction not found.
+              </p>
+            ) : (
+              (() => {
+                const meta = parseVenmoStatementMatchMeta(selectedVenmoTx.metadata);
+                const isBusiness = selectedVenmoTx.classification !== 'PERSONAL';
+                const hasStatementMatch = !!meta.statementId;
+                return (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <p className="text-muted-foreground">Transaction ID</p>
+                        <p className="font-mono break-all">{selectedVenmoTx.id}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Amount</p>
+                        <p className="font-semibold">
+                          {formatCurrency(Number(selectedVenmoTx.amount))}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Transaction Date</p>
+                        <p>{formatDate(selectedVenmoTx.date)}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Account</p>
+                        <p>{selectedVenmoTx.account?.name}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Business / Personal</p>
+                        <p>{isBusiness ? 'Business' : 'Personal'}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Statement Match</p>
+                        <p>{hasStatementMatch ? 'Yes' : 'No'}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border p-3">
+                      <p className="text-sm text-muted-foreground">Bank Description</p>
+                      <p className="font-medium">{selectedVenmoTx.description}</p>
+                      {selectedVenmoTx.merchantName &&
+                        selectedVenmoTx.merchantName !== selectedVenmoTx.description && (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Merchant: {selectedVenmoTx.merchantName}
+                          </p>
+                        )}
+                    </div>
+
+                    {hasStatementMatch ? (
+                      <div className="rounded-md border p-3 space-y-2 text-sm">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-muted-foreground">Statement Date/Time</p>
+                            <p>{meta.statementDateTime ? formatDate(meta.statementDateTime) : '-'}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Type / Status</p>
+                            <p>{meta.type || '-'} / {meta.status || '-'}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">From / To</p>
+                            <p>{meta.from || '-'} / {meta.to || '-'}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Confidence</p>
+                            <p>{meta.confidence || '-'}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Amount (total / fee)</p>
+                            <p>
+                              {typeof meta.amountTotalSigned === 'number'
+                                ? formatCurrency(Math.abs(meta.amountTotalSigned))
+                                : '-'}
+                              {' / '}
+                              {typeof meta.amountFeeSigned === 'number'
+                                ? formatCurrency(Math.abs(meta.amountFeeSigned))
+                                : '-'}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Day Gap / Candidates</p>
+                            <p>
+                              {meta.dayDiff ?? '-'} / {meta.candidateCount ?? '-'}
+                            </p>
+                          </div>
+                        </div>
+                        {meta.note && (
+                          <div>
+                            <p className="text-muted-foreground">Note</p>
+                            <p>{meta.note}</p>
+                          </div>
+                        )}
+                        {meta.sourceFile && (
+                          <div>
+                            <p className="text-muted-foreground">Source File</p>
+                            <p className="font-mono break-all">{meta.sourceFile}</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        No ingested Venmo statement match is attached to this transaction.
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" asChild>
+                        <Link href={`/transactions?search=${encodeURIComponent(selectedVenmoTx.description)}`}>
                           Open in Transactions
                         </Link>
                       </Button>

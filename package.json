@@ -16,7 +16,9 @@
     "import:csv": "tsx scripts/import-transactions-csv.ts",
     "import:pdf": "tsx scripts/import-transactions-pdf.ts",
     "amazon:crossref": "tsx scripts/crossref-amazon-orders-html.ts",
-    "amazon:crossref:apply": "tsx scripts/crossref-amazon-orders-html.ts --apply"
+    "amazon:crossref:apply": "tsx scripts/crossref-amazon-orders-html.ts --apply",
+    "venmo:crossref": "tsx scripts/crossref-venmo-statements.ts",
+    "venmo:crossref:apply": "tsx scripts/crossref-venmo-statements.ts --apply"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
