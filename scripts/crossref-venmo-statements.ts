@@ -331,7 +331,7 @@ function tokenMatches(entry: VenmoStatementEntry, tx: CandidateTx): number {
     .map((t) => t.trim())
     .filter((t) => t.length >= 3 && !stop.has(t));
   let matches = 0;
-  for (const t of new Set(tokens)) {
+  for (const t of Array.from(new Set(tokens))) {
     if (text.includes(t)) matches++;
   }
   return matches;
@@ -636,4 +636,3 @@ run().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
 });
-
