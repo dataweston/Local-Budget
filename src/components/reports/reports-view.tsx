@@ -133,6 +133,16 @@ export function ReportsView() {
                           {formatCurrency(profitLoss.revenue)}
                         </span>
                       </div>
+                      {profitLoss.reimbursementIncome > 0 && (
+                        <div className="flex justify-between items-center py-2 border-b pl-4">
+                          <span className="text-xs text-muted-foreground italic">
+                            incl. Reimbursements received
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {formatCurrency(profitLoss.reimbursementIncome)}
+                          </span>
+                        </div>
+                      )}
                       <div className="flex justify-between items-center py-2 border-b">
                         <span className="text-muted-foreground">Cost of Goods Sold</span>
                         <span className="text-expense">
@@ -156,6 +166,14 @@ export function ReportsView() {
                           ({formatCurrency(profitLoss.operatingExpenses)})
                         </span>
                       </div>
+                      {profitLoss.reimbursableExpenses > 0 && (
+                        <div className="flex justify-between items-center py-2 border-b">
+                          <span className="text-muted-foreground">Reimbursable Expenses</span>
+                          <span className="text-expense">
+                            ({formatCurrency(profitLoss.reimbursableExpenses)})
+                          </span>
+                        </div>
+                      )}
                       <div className="flex justify-between items-center py-2 border-b bg-muted/50 px-2 rounded">
                         <span className="font-semibold">Operating Income</span>
                         <div className="text-right">

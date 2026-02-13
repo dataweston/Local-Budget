@@ -249,6 +249,8 @@ export const dashboardRouter = createTRPCRouter({
       let cogs = 0;
       let operatingExpenses = 0;
       let personalExpenses = 0;
+      let reimbursableExpenses = 0;
+      let reimbursementIncome = 0;
       const byCategory = new Map<string, { name: string; classification: string; amount: number }>();
 
       for (const tx of transactions) {
@@ -259,10 +261,16 @@ export const dashboardRouter = createTRPCRouter({
 
         if (classification === 'INCOME') {
           revenue += amount;
+        } else if (classification === 'REIMBURSEMENT') {
+          // Money coming back — type is INCOME, amount is negative in DB
+          reimbursementIncome += Math.abs(amount);
         } else if (classification === 'COGS') {
           cogs += Math.abs(amount);
         } else if (classification === 'OPERATING') {
           operatingExpenses += Math.abs(amount);
+        } else if (classification === 'REIMBURSABLE') {
+          // Money paid out expecting reimbursement — type is EXPENSE
+          reimbursableExpenses += Math.abs(amount);
         } else if (classification === 'PERSONAL') {
           personalExpenses += Math.abs(amount);
         }
@@ -277,23 +285,27 @@ export const dashboardRouter = createTRPCRouter({
         byCategory.get(categoryKey)!.amount += Math.abs(amount);
       }
 
-      const grossProfit = revenue - cogs;
-      const grossMargin = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
-      const operatingIncome = grossProfit - operatingExpenses;
-      const operatingMargin = revenue > 0 ? (operatingIncome / revenue) * 100 : 0;
-      const totalExpenses = cogs + operatingExpenses + personalExpenses;
-      const netIncome = revenue - totalExpenses;
-      const netMargin = revenue > 0 ? (netIncome / revenue) * 100 : 0;
-      const savingsRate = revenue > 0 ? ((revenue - totalExpenses) / revenue) * 100 : 0;
+      // Reimbursements are income-like (money returned), add to revenue
+      const totalRevenue = revenue + reimbursementIncome;
+      const grossProfit = totalRevenue - cogs;
+      const grossMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+      const operatingIncome = grossProfit - operatingExpenses - reimbursableExpenses;
+      const operatingMargin = totalRevenue > 0 ? (operatingIncome / totalRevenue) * 100 : 0;
+      const totalExpenses = cogs + operatingExpenses + personalExpenses + reimbursableExpenses;
+      const netIncome = totalRevenue - totalExpenses;
+      const netMargin = totalRevenue > 0 ? (netIncome / totalRevenue) * 100 : 0;
+      const savingsRate = totalRevenue > 0 ? ((totalRevenue - totalExpenses) / totalRevenue) * 100 : 0;
 
       return {
         period: { start: startDate, end: endDate },
-        revenue,
+        revenue: totalRevenue,
         cogs,
         grossProfit,
         grossMargin,
         operatingExpenses,
         personalExpenses,
+        reimbursableExpenses,
+        reimbursementIncome,
         operatingIncome,
         operatingMargin,
         netIncome,
