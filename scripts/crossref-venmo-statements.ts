@@ -29,6 +29,7 @@ type VenmoStatementEntry = {
 
 type CandidateTx = {
   id: string;
+  type: 'INCOME' | 'EXPENSE';
   date: Date;
   amount: number;
   description: string;
@@ -40,11 +41,20 @@ type CandidateTx = {
 type EntryMatch = {
   entry: VenmoStatementEntry;
   tx: CandidateTx | null;
+  matchSource: 'VENMO_TEXT' | 'TRANSFER_FALLBACK' | 'NONE';
   confidence: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';
   candidateCount: number;
   dayDiff: number | null;
   amountDiff: number | null;
   tokenMatches: number;
+};
+
+type RankedCandidate = {
+  tx: CandidateTx;
+  dayDiff: number;
+  minAmtDiff: number;
+  nameMatchCount: number;
+  score: number;
 };
 
 const DEFAULT_INPUT = path.join('imports', 'sofi', 'Your Orders_files', 'VenmoStatement_*.csv');
@@ -60,7 +70,7 @@ function usage() {
       '  npx tsx scripts/crossref-venmo-statements.ts "imports/sofi/Your Orders_files/VenmoStatement_*.csv" --apply',
       '',
       'Notes:',
-      '  - Matches statement rows to existing Venmo expense transactions in DB.',
+      '  - Matches statement rows to existing Venmo income/expense transactions in DB.',
       '  - On --apply, writes metadata.venmoStatementMatch and defaults to PERSONAL unless already OPERATING.',
     ].join('\n')
   );
@@ -354,6 +364,43 @@ function candidateAmounts(entry: VenmoStatementEntry): number[] {
   return uniqueNumbers(vals);
 }
 
+function expectedTxType(entry: VenmoStatementEntry): CandidateTx['type'] {
+  const venmoType = entry.type.toLowerCase();
+  if (venmoType.includes('instant transfer')) {
+    // Venmo outflow to bank shows as bank inflow, and vice versa.
+    return entry.amountTotalSigned < 0 ? 'INCOME' : 'EXPENSE';
+  }
+  return entry.amountTotalSigned >= 0 ? 'INCOME' : 'EXPENSE';
+}
+
+function rankCandidates(
+  entry: VenmoStatementEntry,
+  candidates: CandidateTx[],
+  usedTxIds: Set<string>,
+  maxDayGap: number,
+  maxAmountDiff: number
+): RankedCandidate[] {
+  return candidates
+    .filter((tx) => !usedTxIds.has(tx.id))
+    .map((tx) => {
+      const dayDiff = daysBetween(tx.date, entry.statementDate);
+      const amtCandidates = candidateAmounts(entry);
+      const minAmtDiff = Math.min(...amtCandidates.map((a) => Math.abs(a - tx.amount)));
+      const nameMatchCount = tokenMatches(entry, tx);
+      const hasTransferText = /transfer|ach|xfer|p2p|external|deposit|withdrawal|instant/i.test(
+        `${tx.description} ${tx.merchantName ?? ''}`
+      );
+      const score =
+        nameMatchCount * 100 +
+        (hasTransferText ? 10 : 0) -
+        dayDiff * 10 -
+        minAmtDiff * 1000;
+      return { tx, dayDiff, minAmtDiff, nameMatchCount, score };
+    })
+    .filter((x) => x.dayDiff <= maxDayGap && x.minAmtDiff <= maxAmountDiff)
+    .sort((a, b) => b.score - a.score || a.dayDiff - b.dayDiff || a.minAmtDiff - b.minAmtDiff);
+}
+
 async function run() {
   const args = parseArgs(process.argv.slice(2));
   const prisma = new PrismaClient();
@@ -368,21 +415,21 @@ async function run() {
 
     const entries = csvFiles.flatMap((f) => parseVenmoStatementFile(f));
     const completedEntries = entries.filter((e) => e.status.toLowerCase() === 'complete');
-    const expenseLikeEntries = completedEntries.filter((e) => e.amountTotalSigned < 0);
-    if (expenseLikeEntries.length === 0) {
-      throw new Error('No completed negative Venmo rows found in provided files.');
+    const matchableEntries = completedEntries.filter((e) => e.amountTotalSigned !== 0);
+    if (matchableEntries.length === 0) {
+      throw new Error('No completed non-zero Venmo rows found in provided files.');
     }
 
     const minDate = new Date(
-      Math.min(...expenseLikeEntries.map((e) => e.statementDate.getTime())) - 7 * 86_400_000
+      Math.min(...matchableEntries.map((e) => e.statementDate.getTime())) - 7 * 86_400_000
     );
     const maxDate = new Date(
-      Math.max(...expenseLikeEntries.map((e) => e.statementDate.getTime())) + 7 * 86_400_000
+      Math.max(...matchableEntries.map((e) => e.statementDate.getTime())) + 7 * 86_400_000
     );
 
     const txRows = await prisma.transaction.findMany({
       where: {
-        type: 'EXPENSE',
+        type: { in: ['INCOME', 'EXPENSE'] },
         date: { gte: minDate, lte: maxDate },
         OR: [
           { description: { contains: 'venmo', mode: 'insensitive' } },
@@ -391,6 +438,48 @@ async function run() {
       },
       select: {
         id: true,
+        type: true,
+        date: true,
+        amount: true,
+        description: true,
+        merchantName: true,
+        classification: true,
+        metadata: true,
+      },
+      orderBy: [{ date: 'asc' }],
+    });
+    const transferTxRows = await prisma.transaction.findMany({
+      where: {
+        type: { in: ['INCOME', 'EXPENSE'] },
+        date: { gte: minDate, lte: maxDate },
+        NOT: {
+          OR: [
+            { description: { contains: 'venmo', mode: 'insensitive' } },
+            { merchantName: { contains: 'venmo', mode: 'insensitive' } },
+          ],
+        },
+        OR: [
+          { description: { contains: 'transfer', mode: 'insensitive' } },
+          { description: { contains: 'ach', mode: 'insensitive' } },
+          { description: { contains: 'xfer', mode: 'insensitive' } },
+          { description: { contains: 'deposit', mode: 'insensitive' } },
+          { description: { contains: 'withdrawal', mode: 'insensitive' } },
+          { description: { contains: 'p2p', mode: 'insensitive' } },
+          { description: { contains: 'external', mode: 'insensitive' } },
+          { description: { contains: 'instant', mode: 'insensitive' } },
+          { merchantName: { contains: 'transfer', mode: 'insensitive' } },
+          { merchantName: { contains: 'ach', mode: 'insensitive' } },
+          { merchantName: { contains: 'xfer', mode: 'insensitive' } },
+          { merchantName: { contains: 'deposit', mode: 'insensitive' } },
+          { merchantName: { contains: 'withdrawal', mode: 'insensitive' } },
+          { merchantName: { contains: 'p2p', mode: 'insensitive' } },
+          { merchantName: { contains: 'external', mode: 'insensitive' } },
+          { merchantName: { contains: 'instant', mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        type: true,
         date: true,
         amount: true,
         description: true,
@@ -403,6 +492,17 @@ async function run() {
 
     const txs: CandidateTx[] = txRows.map((t) => ({
       id: t.id,
+      type: t.type as CandidateTx['type'],
+      date: t.date,
+      amount: Math.abs(Number(t.amount)),
+      description: t.description,
+      merchantName: t.merchantName,
+      classification: t.classification,
+      metadata: t.metadata,
+    }));
+    const transferTxs: CandidateTx[] = transferTxRows.map((t) => ({
+      id: t.id,
+      type: t.type as CandidateTx['type'],
       date: t.date,
       amount: Math.abs(Number(t.amount)),
       description: t.description,
@@ -411,51 +511,96 @@ async function run() {
       metadata: t.metadata,
     }));
 
-    const txByCents = new Map<number, CandidateTx[]>();
+    const txByTypeAndCents = new Map<string, CandidateTx[]>();
     for (const tx of txs) {
       const cents = Math.round(tx.amount * 100);
-      const bucket = txByCents.get(cents) ?? [];
+      const key = `${tx.type}:${cents}`;
+      const bucket = txByTypeAndCents.get(key) ?? [];
       bucket.push(tx);
-      txByCents.set(cents, bucket);
+      txByTypeAndCents.set(key, bucket);
     }
-    txByCents.forEach((bucket) => bucket.sort((a, b) => a.date.getTime() - b.date.getTime()));
+    txByTypeAndCents.forEach((bucket) =>
+      bucket.sort((a, b) => a.date.getTime() - b.date.getTime())
+    );
+    const transferTxByTypeAndCents = new Map<string, CandidateTx[]>();
+    for (const tx of transferTxs) {
+      const cents = Math.round(tx.amount * 100);
+      const key = `${tx.type}:${cents}`;
+      const bucket = transferTxByTypeAndCents.get(key) ?? [];
+      bucket.push(tx);
+      transferTxByTypeAndCents.set(key, bucket);
+    }
+    transferTxByTypeAndCents.forEach((bucket) =>
+      bucket.sort((a, b) => a.date.getTime() - b.date.getTime())
+    );
 
     const usedTxIds = new Set<string>();
     const matches: EntryMatch[] = [];
 
-    const sortedEntries = [...expenseLikeEntries].sort(
+    const sortedEntries = [...matchableEntries].sort(
       (a, b) => a.statementDateTime.getTime() - b.statementDateTime.getTime()
     );
     for (const entry of sortedEntries) {
+      const targetType = expectedTxType(entry);
       const amtCandidates = candidateAmounts(entry);
       const centsCandidates = uniqueNumbers(amtCandidates).map((x) => Math.round(x * 100));
-      const candidateTxs = centsCandidates.flatMap((c) => [
-        ...(txByCents.get(c - 1) ?? []),
-        ...(txByCents.get(c) ?? []),
-        ...(txByCents.get(c + 1) ?? []),
+      const primaryCandidateTxs = centsCandidates.flatMap((c) => [
+        ...(txByTypeAndCents.get(`${targetType}:${c - 1}`) ?? []),
+        ...(txByTypeAndCents.get(`${targetType}:${c}`) ?? []),
+        ...(txByTypeAndCents.get(`${targetType}:${c + 1}`) ?? []),
       ]);
 
-      const uniqCandidateMap = new Map<string, CandidateTx>();
-      for (const tx of candidateTxs) {
-        if (!uniqCandidateMap.has(tx.id)) uniqCandidateMap.set(tx.id, tx);
+      const uniqPrimaryCandidateMap = new Map<string, CandidateTx>();
+      for (const tx of primaryCandidateTxs) {
+        if (!uniqPrimaryCandidateMap.has(tx.id)) uniqPrimaryCandidateMap.set(tx.id, tx);
       }
 
-      const ranked = Array.from(uniqCandidateMap.values())
-        .filter((tx) => !usedTxIds.has(tx.id))
-        .map((tx) => {
-          const dayDiff = daysBetween(tx.date, entry.statementDate);
-          const minAmtDiff = Math.min(...amtCandidates.map((a) => Math.abs(a - tx.amount)));
-          const nameMatchCount = tokenMatches(entry, tx);
-          const score = nameMatchCount * 100 - dayDiff * 10 - minAmtDiff * 1000;
-          return { tx, dayDiff, minAmtDiff, nameMatchCount, score };
-        })
-        .filter((x) => x.dayDiff <= args.maxDayGap && x.minAmtDiff <= 0.02)
-        .sort((a, b) => b.score - a.score || a.dayDiff - b.dayDiff || a.minAmtDiff - b.minAmtDiff);
+      let ranked = rankCandidates(
+        entry,
+        Array.from(uniqPrimaryCandidateMap.values()),
+        usedTxIds,
+        args.maxDayGap,
+        0.02
+      );
+      let matchSource: EntryMatch['matchSource'] = 'VENMO_TEXT';
+
+      if (ranked.length === 0) {
+        const fallbackCandidateTxs = centsCandidates.flatMap((c) => [
+          ...(transferTxByTypeAndCents.get(`${targetType}:${c - 1}`) ?? []),
+          ...(transferTxByTypeAndCents.get(`${targetType}:${c}`) ?? []),
+          ...(transferTxByTypeAndCents.get(`${targetType}:${c + 1}`) ?? []),
+        ]);
+        const uniqFallbackCandidateMap = new Map<string, CandidateTx>();
+        for (const tx of fallbackCandidateTxs) {
+          if (!uniqFallbackCandidateMap.has(tx.id)) uniqFallbackCandidateMap.set(tx.id, tx);
+        }
+        ranked = rankCandidates(
+          entry,
+          Array.from(uniqFallbackCandidateMap.values()),
+          usedTxIds,
+          Math.min(args.maxDayGap, 3),
+          0.01
+        );
+        if (ranked.length > 0) {
+          const bestFallback = ranked[0];
+          const fallbackAcceptable =
+            (bestFallback.dayDiff <= 1 && bestFallback.minAmtDiff <= 0.01 && ranked.length === 1) ||
+            (bestFallback.nameMatchCount > 0 &&
+              bestFallback.dayDiff <= 2 &&
+              bestFallback.minAmtDiff <= 0.01);
+          if (!fallbackAcceptable) {
+            ranked = [];
+          } else {
+            matchSource = 'TRANSFER_FALLBACK';
+          }
+        }
+      }
 
       if (ranked.length === 0) {
         matches.push({
           entry,
           tx: null,
+          matchSource: 'NONE',
           confidence: 'NONE',
           candidateCount: 0,
           dayDiff: null,
@@ -477,10 +622,14 @@ async function run() {
       } else if (best.dayDiff <= 3 && best.minAmtDiff <= 0.01) {
         confidence = 'MEDIUM';
       }
+      if (matchSource === 'TRANSFER_FALLBACK' && confidence === 'HIGH') {
+        confidence = 'MEDIUM';
+      }
 
       matches.push({
         entry,
         tx: best.tx,
+        matchSource,
         confidence,
         candidateCount: ranked.length,
         dayDiff: best.dayDiff,
@@ -493,6 +642,14 @@ async function run() {
     const matchedCount = matches.filter((m) => !!m.tx).length;
     const unmatchedCount = matches.length - matchedCount;
     const highCount = matches.filter((m) => m.confidence === 'HIGH').length;
+    const mediumCount = matches.filter((m) => m.confidence === 'MEDIUM').length;
+    const lowCount = matches.filter((m) => m.confidence === 'LOW').length;
+    const matchedIncomeCount = matches.filter((m) => m.tx && expectedTxType(m.entry) === 'INCOME').length;
+    const matchedExpenseCount = matches.filter((m) => m.tx && expectedTxType(m.entry) === 'EXPENSE').length;
+    const matchedFromVenmoText = matches.filter((m) => m.matchSource === 'VENMO_TEXT' && !!m.tx).length;
+    const matchedFromTransferFallback = matches.filter(
+      (m) => m.matchSource === 'TRANSFER_FALLBACK' && !!m.tx
+    ).length;
 
     const lines: string[] = [
       [
@@ -504,7 +661,10 @@ async function run() {
         'note',
         'amount_total',
         'amount_fee',
+        'expected_tx_type',
+        'match_source',
         'matched_tx_id',
+        'matched_tx_type',
         'matched_tx_date',
         'matched_tx_amount',
         'matched_tx_description',
@@ -527,7 +687,10 @@ async function run() {
           csvEscape(m.entry.note),
           csvEscape(m.entry.amountTotalSigned.toFixed(2)),
           csvEscape(m.entry.amountFeeSigned.toFixed(2)),
+          csvEscape(expectedTxType(m.entry)),
+          csvEscape(m.matchSource),
           csvEscape(m.tx?.id ?? ''),
+          csvEscape(m.tx?.type ?? ''),
           csvEscape(m.tx ? m.tx.date.toISOString().slice(0, 10) : ''),
           csvEscape(m.tx ? m.tx.amount.toFixed(2) : ''),
           csvEscape(m.tx?.description ?? ''),
@@ -544,7 +707,7 @@ async function run() {
 
     const unmatchedReport = reportPath.replace(/\.csv$/i, '-unmatched.csv');
     const unmatchedLines: string[] = [
-      ['statement_id', 'statement_datetime', 'type', 'from', 'to', 'note', 'amount_total', 'amount_fee', 'source_file'].join(','),
+      ['statement_id', 'statement_datetime', 'type', 'from', 'to', 'note', 'amount_total', 'amount_fee', 'expected_tx_type', 'source_file'].join(','),
     ];
     for (const m of matches.filter((m) => !m.tx)) {
       unmatchedLines.push(
@@ -557,6 +720,7 @@ async function run() {
           csvEscape(m.entry.note),
           csvEscape(m.entry.amountTotalSigned.toFixed(2)),
           csvEscape(m.entry.amountFeeSigned.toFixed(2)),
+          csvEscape(expectedTxType(m.entry)),
           csvEscape(m.entry.sourceFile),
         ].join(',')
       );
@@ -589,6 +753,7 @@ async function run() {
             amountDiff: m.amountDiff,
             candidateCount: m.candidateCount,
             confidence: m.confidence,
+            matchSource: m.matchSource,
             matchedAt: new Date().toISOString(),
           },
         };
@@ -615,11 +780,18 @@ async function run() {
         `CSV files: ${csvFiles.length}`,
         `Rows parsed (all): ${entries.length}`,
         `Rows parsed (complete): ${completedEntries.length}`,
-        `Rows parsed (expense-like): ${expenseLikeEntries.length}`,
-        `Candidate DB Venmo expenses: ${txs.length}`,
+        `Rows parsed (matchable): ${matchableEntries.length}`,
+        `Candidate DB Venmo tx (income+expense): ${txs.length}`,
+        `Candidate DB transfer-like tx (fallback): ${transferTxs.length}`,
         `Matched: ${matchedCount}`,
+        `  - Matched income: ${matchedIncomeCount}`,
+        `  - Matched expense: ${matchedExpenseCount}`,
+        `  - Matched via Venmo text: ${matchedFromVenmoText}`,
+        `  - Matched via transfer fallback: ${matchedFromTransferFallback}`,
         `Unmatched: ${unmatchedCount}`,
         `High confidence: ${highCount}`,
+        `Medium confidence: ${mediumCount}`,
+        `Low confidence: ${lowCount}`,
         `Report: ${path.relative(process.cwd(), reportPath) || reportPath}`,
         `Unmatched report: ${path.relative(process.cwd(), unmatchedReport) || unmatchedReport}`,
         args.apply

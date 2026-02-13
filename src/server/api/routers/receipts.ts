@@ -357,9 +357,13 @@ export const receiptsRouter = createTRPCRouter({
     .input(
       z
         .object({
-          limit: z.number().min(1).max(1000).default(500),
+          limit: z.number().min(1).max(2000).default(1000),
           startDate: z.date().optional(),
           endDate: z.date().optional(),
+          typeFilter: z.enum(['income', 'expense']).optional(),
+          matchFilter: z.enum(['matched', 'unmatched']).optional(),
+          accountId: z.string().optional(),
+          sortBy: z.enum(['date-desc', 'date-asc', 'amount-desc', 'amount-asc']).optional(),
         })
         .optional()
     )
@@ -367,7 +371,11 @@ export const receiptsRouter = createTRPCRouter({
       const rows = await ctx.db.transaction.findMany({
         where: {
           account: { userId: ctx.session.user.id },
-          type: 'EXPENSE',
+          ...(input?.typeFilter === 'income'
+            ? { type: 'INCOME' as const }
+            : input?.typeFilter === 'expense'
+              ? { type: 'EXPENSE' as const }
+              : { type: { in: ['INCOME', 'EXPENSE'] as const } }),
           OR: [
             { description: { contains: 'venmo', mode: 'insensitive' } },
             { merchantName: { contains: 'venmo', mode: 'insensitive' } },
@@ -409,10 +417,9 @@ export const receiptsRouter = createTRPCRouter({
           },
         },
         orderBy: { date: 'desc' },
-        take: input?.limit ?? 500,
       });
 
-      const data = rows.map((row) => {
+      const allData = rows.map((row) => {
         const effectiveClassification = getEffectiveClassification(row);
         const metadata = row.metadata as Record<string, unknown> | null;
         const venmoStatementMatch =
@@ -431,23 +438,72 @@ export const receiptsRouter = createTRPCRouter({
         };
       });
 
-      const totalAmount = data.reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
-      const businessAmount = data
+      const matchFilter = input?.matchFilter ?? undefined;
+      let filtered = allData;
+      if (input?.accountId) {
+        filtered = filtered.filter((row) => row.account.id === input.accountId);
+      }
+      if (matchFilter === 'matched') {
+        filtered = filtered.filter((row) => row.hasVenmoStatementMatch);
+      } else if (matchFilter === 'unmatched') {
+        filtered = filtered.filter((row) => !row.hasVenmoStatementMatch);
+      }
+
+      const sortBy = input?.sortBy ?? 'date-desc';
+      const sorted = [...filtered].sort((a, b) => {
+        if (sortBy === 'date-asc') {
+          return a.date.getTime() - b.date.getTime();
+        }
+        if (sortBy === 'amount-desc') {
+          return Math.abs(Number(b.amount)) - Math.abs(Number(a.amount));
+        }
+        if (sortBy === 'amount-asc') {
+          return Math.abs(Number(a.amount)) - Math.abs(Number(b.amount));
+        }
+        return b.date.getTime() - a.date.getTime();
+      });
+
+      const limit = input?.limit ?? 1000;
+      const data = sorted.slice(0, limit);
+
+      const incomeAmount = sorted
+        .filter((row) => row.type === 'INCOME')
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+      const expenseAmount = sorted
+        .filter((row) => row.type === 'EXPENSE')
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+      const netAmount = incomeAmount - expenseAmount;
+      const totalAmount = incomeAmount + expenseAmount;
+
+      const businessAmount = sorted
         .filter((row) => row.effectiveClassification !== 'PERSONAL')
-        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
-      const personalAmount = data
+        .reduce((sum, row) => sum + Number(row.amount), 0);
+      const personalAmount = sorted
         .filter((row) => row.effectiveClassification === 'PERSONAL')
-        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+        .reduce((sum, row) => sum + Number(row.amount), 0);
+
+      const accountMap = new Map<string, string>();
+      for (const row of allData) {
+        accountMap.set(row.account.id, row.account.name);
+      }
+      const accounts = Array.from(accountMap, ([id, name]) => ({ id, name }));
 
       return {
         data,
-        totalCount: data.length,
+        totalCount: sorted.length,
         totalAmount,
+        incomeAmount,
+        expenseAmount,
+        netAmount,
         businessAmount,
         personalAmount,
-        businessCount: data.filter((row) => row.effectiveClassification !== 'PERSONAL').length,
-        personalCount: data.filter((row) => row.effectiveClassification === 'PERSONAL').length,
-        matchedCount: data.filter((row) => row.hasVenmoStatementMatch).length,
+        businessCount: sorted.filter((row) => row.effectiveClassification !== 'PERSONAL').length,
+        personalCount: sorted.filter((row) => row.effectiveClassification === 'PERSONAL').length,
+        incomeCount: sorted.filter((row) => row.type === 'INCOME').length,
+        expenseCount: sorted.filter((row) => row.type === 'EXPENSE').length,
+        matchedCount: sorted.filter((row) => row.hasVenmoStatementMatch).length,
+        unmatchedCount: sorted.filter((row) => !row.hasVenmoStatementMatch).length,
+        accounts,
       };
     }),
 
