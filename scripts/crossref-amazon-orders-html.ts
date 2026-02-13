@@ -345,9 +345,9 @@ async function run() {
       list.push(tx);
       txByCents.set(cents, list);
     }
-    for (const list of txByCents.values()) {
+    txByCents.forEach((list) => {
       list.sort((a, b) => a.date.getTime() - b.date.getTime());
-    }
+    });
 
     const usedTxIds = new Set<string>();
     const matches: OrderMatch[] = [];
