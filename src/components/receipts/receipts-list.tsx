@@ -13,7 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -27,11 +27,11 @@ import {
   Upload,
   FileText,
   Link2,
-  AlertCircle,
   CheckCircle2,
   Clock,
   XCircle,
-  Image,
+  Image as ImageIcon,
+  Package,
 } from 'lucide-react';
 
 interface ReceiptData {
@@ -46,6 +46,30 @@ interface ReceiptData {
   createdAt: Date | string;
   transactionLinks: any[];
   _count: { lineItems: number };
+}
+
+type AmazonOrderMatchMeta = {
+  orderId?: string;
+  itemCount?: number;
+  confidence?: string;
+};
+
+function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return {};
+  const amazonOrderMatch = (metadata as Record<string, unknown>).amazonOrderMatch;
+  if (
+    !amazonOrderMatch ||
+    typeof amazonOrderMatch !== 'object' ||
+    Array.isArray(amazonOrderMatch)
+  ) {
+    return {};
+  }
+  const m = amazonOrderMatch as Record<string, unknown>;
+  return {
+    orderId: typeof m.orderId === 'string' ? m.orderId : undefined,
+    itemCount: typeof m.itemCount === 'number' ? m.itemCount : undefined,
+    confidence: typeof m.confidence === 'string' ? m.confidence : undefined,
+  };
 }
 
 const statusConfig = {
@@ -66,6 +90,8 @@ export function ReceiptsList() {
 
   const { data: pendingCount } = api.receipts.pendingCount.useQuery();
   const { data: unlinkedReceipts } = api.receipts.unlinked.useQuery();
+  const { data: amazonSpending, isLoading: isAmazonSpendingLoading } =
+    api.receipts.amazonSpending.useQuery();
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -120,6 +146,83 @@ export function ReceiptsList() {
             />
           </Card>
         </div>
+
+        {/* Amazon Spending Section */}
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Package className="h-5 w-5 text-amber-600" />
+                  Amazon Spending
+                </CardTitle>
+                <CardDescription>
+                  Ingested purchases from your Amazon order history imports
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Purchases</p>
+                  <p className="text-lg font-semibold">{amazonSpending?.totalCount ?? 0}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="text-lg font-semibold">
+                    {formatCurrency(Number(amazonSpending?.totalAmount ?? 0))}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isAmazonSpendingLoading ? (
+              <div className="space-y-2">
+                {[...Array(4)].map((_, i) => (
+                  <Skeleton key={i} className="h-16" />
+                ))}
+              </div>
+            ) : !amazonSpending || amazonSpending.data.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No ingested Amazon purchases yet.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {amazonSpending.data.map((tx) => {
+                  const meta = parseAmazonOrderMatchMeta(tx.metadata);
+                  const firstItem =
+                    tx.lineItems[0]?.description.replace(/^\[Amazon\]\s*/, '') ?? null;
+                  return (
+                    <div
+                      key={tx.id}
+                      className="rounded-md border px-3 py-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {firstItem || tx.merchantName || tx.description}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {formatDate(tx.date)} - {tx.account.name}
+                          {meta.orderId ? ` - Order ${meta.orderId}` : ''}
+                          {typeof meta.itemCount === 'number' ? ` - ${meta.itemCount} item(s)` : ''}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {meta.confidence && (
+                          <Badge variant="outline" className="text-[10px] uppercase">
+                            {meta.confidence}
+                          </Badge>
+                        )}
+                        <p className="text-sm font-semibold">
+                          {formatCurrency(Number(tx.amount))}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Receipts List */}
         <Card>
@@ -181,7 +284,7 @@ export function ReceiptsList() {
                         <div className="flex items-start gap-3">
                           <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-muted">
                             {receipt.fileType.includes('image') ? (
-                              <Image className="h-6 w-6 text-muted-foreground" />
+                              <ImageIcon className="h-6 w-6 text-muted-foreground" />
                             ) : (
                               <FileText className="h-6 w-6 text-muted-foreground" />
                             )}

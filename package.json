@@ -14,7 +14,9 @@
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "import:csv": "tsx scripts/import-transactions-csv.ts",
-    "import:pdf": "tsx scripts/import-transactions-pdf.ts"
+    "import:pdf": "tsx scripts/import-transactions-pdf.ts",
+    "amazon:crossref": "tsx scripts/crossref-amazon-orders-html.ts",
+    "amazon:crossref:apply": "tsx scripts/crossref-amazon-orders-html.ts --apply"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",

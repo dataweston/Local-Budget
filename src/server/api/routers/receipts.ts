@@ -197,6 +197,59 @@ export const receiptsRouter = createTRPCRouter({
       return receipts;
     }),
 
+  // Ingested Amazon spending from order-history imports
+  amazonSpending: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().min(1).max(1000).default(250),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db.transaction.findMany({
+        where: {
+          account: { userId: ctx.session.user.id },
+          type: 'EXPENSE',
+          metadata: {
+            path: ['amazonOrderMatch', 'source'],
+            equals: 'amazon-orders-html',
+          },
+        },
+        select: {
+          id: true,
+          date: true,
+          amount: true,
+          description: true,
+          merchantName: true,
+          metadata: true,
+          account: {
+            select: { id: true, name: true },
+          },
+          lineItems: {
+            where: {
+              description: { startsWith: '[Amazon] ' },
+            },
+            select: {
+              id: true,
+              description: true,
+              totalPrice: true,
+            },
+          },
+        },
+        orderBy: { date: 'desc' },
+        take: input?.limit ?? 250,
+      });
+
+      const totalAmount = rows.reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+
+      return {
+        data: rows,
+        totalCount: rows.length,
+        totalAmount,
+      };
+    }),
+
   // Find potential matches for a receipt
   findMatches: protectedProcedure
     .input(z.object({ receiptId: z.string() }))
