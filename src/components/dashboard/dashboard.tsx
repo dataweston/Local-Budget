@@ -25,6 +25,7 @@ function getChartPeriod(startDate: Date, endDate: Date): 'daily' | 'weekly' | 'm
 
 export function Dashboard() {
   const [period, setPeriod] = useState<PeriodPreset>('this-month');
+  const [yearValue, setYearValue] = useState<number>(new Date().getFullYear());
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
 
@@ -34,8 +35,8 @@ export function Dashboard() {
       const end = new Date(customEnd + 'T23:59:59.999');
       return { startDate: start, endDate: end, label: 'Custom Range' };
     }
-    return getDateRangeForPreset(period);
-  }, [period, customStart, customEnd]);
+    return getDateRangeForPreset(period, { year: yearValue });
+  }, [period, yearValue, customStart, customEnd]);
 
   const { data: stats, isLoading: statsLoading } = api.dashboard.stats.useQuery({
     startDate: dateRange.startDate,
@@ -135,6 +136,8 @@ export function Dashboard() {
           <DateRangeSelector
             value={period}
             onChange={setPeriod}
+            yearValue={yearValue}
+            onYearChange={setYearValue}
             customStart={customStart}
             customEnd={customEnd}
             onCustomStartChange={setCustomStart}

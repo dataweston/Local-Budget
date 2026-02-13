@@ -38,6 +38,7 @@ import * as M from '@/lib/metrics';
 export function ReportsView() {
   // Date range state
   const [period, setPeriod] = useState<PeriodPreset>('this-month');
+  const [yearValue, setYearValue] = useState<number>(new Date().getFullYear());
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
 
@@ -47,8 +48,8 @@ export function ReportsView() {
       const end = new Date(customEnd + 'T23:59:59.999');
       return { startDate: start, endDate: end, label: 'Custom' };
     }
-    return getDateRangeForPreset(period);
-  }, [period, customStart, customEnd]);
+    return getDateRangeForPreset(period, { year: yearValue });
+  }, [period, yearValue, customStart, customEnd]);
 
   const dateInput = { startDate: dateRange.startDate, endDate: dateRange.endDate };
 
@@ -97,6 +98,8 @@ export function ReportsView() {
           <DateRangeSelector
             value={period}
             onChange={setPeriod}
+            yearValue={yearValue}
+            onYearChange={setYearValue}
             customStart={customStart}
             customEnd={customEnd}
             onCustomStartChange={setCustomStart}

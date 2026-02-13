@@ -15,6 +15,7 @@ export type PeriodPreset =
   | 'last-month'
   | 'last-3-months'
   | 'last-6-months'
+  | 'calendar-year'
   | 'ytd'
   | 'last-12-months'
   | 'all-time'
@@ -31,13 +32,21 @@ const PRESET_OPTIONS: { value: PeriodPreset; label: string }[] = [
   { value: 'last-month', label: 'Last Month' },
   { value: 'last-3-months', label: 'Last 3 Months' },
   { value: 'last-6-months', label: 'Last 6 Months' },
+  { value: 'calendar-year', label: 'Calendar Year' },
   { value: 'ytd', label: 'Year to Date' },
   { value: 'last-12-months', label: 'Last 12 Months' },
   { value: 'all-time', label: 'All Time' },
   { value: 'custom', label: 'Custom Range' },
 ];
 
-export function getDateRangeForPreset(preset: PeriodPreset): DateRange {
+interface PresetOptions {
+  year?: number;
+}
+
+export function getDateRangeForPreset(
+  preset: PeriodPreset,
+  options?: PresetOptions
+): DateRange {
   const now = new Date();
   const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
@@ -65,6 +74,14 @@ export function getDateRangeForPreset(preset: PeriodPreset): DateRange {
         endDate: endOfToday,
         label: 'Last 6 Months',
       };
+    case 'calendar-year': {
+      const year = options?.year ?? now.getFullYear();
+      return {
+        startDate: new Date(year, 0, 1),
+        endDate: new Date(year, 11, 31, 23, 59, 59, 999),
+        label: `All of ${year}`,
+      };
+    }
     case 'ytd':
       return {
         startDate: new Date(now.getFullYear(), 0, 1),
@@ -95,6 +112,8 @@ export function getDateRangeForPreset(preset: PeriodPreset): DateRange {
 interface DateRangeSelectorProps {
   value: PeriodPreset;
   onChange: (preset: PeriodPreset) => void;
+  yearValue?: number;
+  onYearChange?: (year: number) => void;
   customStart?: string;
   customEnd?: string;
   onCustomStartChange?: (val: string) => void;
@@ -105,12 +124,23 @@ interface DateRangeSelectorProps {
 export function DateRangeSelector({
   value,
   onChange,
+  yearValue,
+  onYearChange,
   customStart,
   customEnd,
   onCustomStartChange,
   onCustomEndChange,
   className,
 }: DateRangeSelectorProps) {
+  const yearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const years: number[] = [];
+    for (let y = currentYear; y >= currentYear - 10; y--) {
+      years.push(y);
+    }
+    return years;
+  }, []);
+
   return (
     <div className={`flex items-center gap-2 ${className ?? ''}`}>
       <Select value={value} onValueChange={(v) => onChange(v as PeriodPreset)}>
@@ -125,6 +155,24 @@ export function DateRangeSelector({
           ))}
         </SelectContent>
       </Select>
+
+      {value === 'calendar-year' && (
+        <Select
+          value={String(yearValue ?? new Date().getFullYear())}
+          onValueChange={(v) => onYearChange?.(parseInt(v, 10))}
+        >
+          <SelectTrigger className="w-[130px] h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {yearOptions.map((year) => (
+              <SelectItem key={year} value={String(year)}>
+                {year}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
 
       {value === 'custom' && (
         <>

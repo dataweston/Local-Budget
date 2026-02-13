@@ -12,7 +12,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "import:csv": "tsx scripts/import-transactions-csv.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
