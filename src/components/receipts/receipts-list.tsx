@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
@@ -156,6 +156,7 @@ type IngestSectionValue = 'amazon' | 'venmo';
 type VenmoTypeFilterValue = 'all' | 'income' | 'expense';
 type VenmoMatchFilterValue = 'all' | 'matched' | 'unmatched';
 type VenmoSortValue = 'date-desc' | 'date-asc' | 'amount-desc' | 'amount-asc';
+const INGEST_PAGE_SIZE = 50;
 
 export function ReceiptsList() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
@@ -180,6 +181,8 @@ export function ReceiptsList() {
   const [venmoMatchFilter, setVenmoMatchFilter] = useState<VenmoMatchFilterValue>('all');
   const [venmoAccountFilter, setVenmoAccountFilter] = useState<string | undefined>();
   const [venmoSort, setVenmoSort] = useState<VenmoSortValue>('date-desc');
+  const [amazonPage, setAmazonPage] = useState(1);
+  const [venmoPage, setVenmoPage] = useState(1);
   const [selectedAmazonIds, setSelectedAmazonIds] = useState<Set<string>>(new Set());
   const utils = api.useUtils();
 
@@ -216,7 +219,8 @@ export function ReceiptsList() {
     api.receipts.amazonSpending.useQuery({
       startDate: amazonDateRange.startDate,
       endDate: amazonDateRange.endDate,
-      limit: 1000,
+      limit: INGEST_PAGE_SIZE,
+      page: amazonPage,
       accountId: amazonAccountFilter,
       matchFilter: amazonMatchFilter === 'all' ? undefined : amazonMatchFilter,
     });
@@ -224,7 +228,8 @@ export function ReceiptsList() {
     api.receipts.venmoSpending.useQuery({
       startDate: venmoDateRange.startDate,
       endDate: venmoDateRange.endDate,
-      limit: 1000,
+      limit: INGEST_PAGE_SIZE,
+      page: venmoPage,
       typeFilter: venmoTypeFilter === 'all' ? undefined : venmoTypeFilter,
       matchFilter: venmoMatchFilter === 'all' ? undefined : venmoMatchFilter,
       accountId: venmoAccountFilter,
@@ -339,6 +344,25 @@ export function ReceiptsList() {
       (tx) => selectedAmazonIds.has(tx.id) && tx.matchStatus === 'pending'
     );
   }, [amazonSpending, selectedAmazonIds]);
+
+  useEffect(() => {
+    setAmazonPage(1);
+    setSelectedAmazonIds(new Set());
+  }, [amazonPeriod, amazonYearValue, amazonCustomStart, amazonCustomEnd, amazonMatchFilter, amazonAccountFilter]);
+
+  useEffect(() => {
+    setVenmoPage(1);
+  }, [venmoPeriod, venmoYearValue, venmoCustomStart, venmoCustomEnd, venmoTypeFilter, venmoMatchFilter, venmoAccountFilter, venmoSort]);
+
+  useEffect(() => {
+    const maxPage = amazonSpending?.pagination?.totalPages ?? 1;
+    if (amazonPage > maxPage) setAmazonPage(maxPage);
+  }, [amazonSpending?.pagination?.totalPages, amazonPage]);
+
+  useEffect(() => {
+    const maxPage = venmoSpending?.pagination?.totalPages ?? 1;
+    if (venmoPage > maxPage) setVenmoPage(maxPage);
+  }, [venmoSpending?.pagination?.totalPages, venmoPage]);
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -588,7 +612,7 @@ export function ReceiptsList() {
                     className="h-4 w-4 rounded border-gray-300 accent-primary"
                   />
                   <span className="text-xs text-muted-foreground">
-                    Select all ({amazonSpending.data.length})
+                    Select page ({amazonSpending.data.length})
                   </span>
                 </div>
 
@@ -597,6 +621,7 @@ export function ReceiptsList() {
                   const metadataItems = meta.itemTitles ?? [];
                   const firstItem =
                     tx.lineItems[0]?.description.replace(/^\[Amazon\]\s*/, '') ?? null;
+                  const bankNote = (tx.notes ?? tx.description)?.trim() ?? '';
                   const itemCount = meta.itemCount ?? metadataItems.length;
                   const needsManualSplit = itemCount > 1 && tx.lineItems.length === 0;
                   const isBusiness = tx.effectiveClassification !== 'PERSONAL';
@@ -627,6 +652,11 @@ export function ReceiptsList() {
                             {tx.category?.name ? ` - ${tx.category.name}` : ' - Uncategorized'}
                             {` - Tx ${tx.id.slice(-8)}`}
                           </p>
+                          {bankNote && (
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              Bank note: {bankNote}
+                            </p>
+                          )}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -688,6 +718,31 @@ export function ReceiptsList() {
                     </div>
                   );
                 })}
+
+                <div className="flex items-center justify-between border-t pt-2 mt-1">
+                  <p className="text-xs text-muted-foreground">
+                    Page {amazonSpending.pagination?.page ?? amazonPage} of {amazonSpending.pagination?.totalPages ?? 1}
+                    {' '}({amazonSpending.totalCount} total)
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={(amazonSpending.pagination?.page ?? amazonPage) <= 1}
+                      onClick={() => setAmazonPage((p) => Math.max(1, p - 1))}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={(amazonSpending.pagination?.page ?? amazonPage) >= (amazonSpending.pagination?.totalPages ?? 1)}
+                      onClick={() => setAmazonPage((p) => p + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
               </div>
             )}
           </CardContent>
@@ -965,6 +1020,31 @@ export function ReceiptsList() {
                     </div>
                   );
                 })}
+
+                <div className="flex items-center justify-between border-t pt-2 mt-1">
+                  <p className="text-xs text-muted-foreground">
+                    Page {venmoSpending.pagination?.page ?? venmoPage} of {venmoSpending.pagination?.totalPages ?? 1}
+                    {' '}({venmoSpending.totalCount} total)
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={(venmoSpending.pagination?.page ?? venmoPage) <= 1}
+                      onClick={() => setVenmoPage((p) => Math.max(1, p - 1))}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={(venmoSpending.pagination?.page ?? venmoPage) >= (venmoSpending.pagination?.totalPages ?? 1)}
+                      onClick={() => setVenmoPage((p) => p + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
               </div>
             )}
           </CardContent>
@@ -1176,6 +1256,11 @@ export function ReceiptsList() {
                     <div className="rounded-md border p-3">
                       <p className="text-sm text-muted-foreground">Matched Bank Description</p>
                       <p className="font-medium">{selectedAmazonTx.description}</p>
+                      {selectedAmazonTx.notes && (
+                        <p className="text-sm text-muted-foreground mt-1">
+                          Bank note: {selectedAmazonTx.notes}
+                        </p>
+                      )}
                       {selectedAmazonTx.merchantName &&
                         selectedAmazonTx.merchantName !== selectedAmazonTx.description && (
                           <p className="text-sm text-muted-foreground mt-1">

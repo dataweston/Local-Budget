@@ -231,7 +231,8 @@ export const receiptsRouter = createTRPCRouter({
     .input(
       z
         .object({
-          limit: z.number().min(1).max(1000).default(250),
+          limit: z.number().min(1).max(100).default(50),
+          page: z.number().min(1).default(1),
           startDate: z.date().optional(),
           endDate: z.date().optional(),
           accountId: z.string().optional(),
@@ -272,6 +273,7 @@ export const receiptsRouter = createTRPCRouter({
           classification: true,
           categoryId: true,
           description: true,
+          notes: true,
           merchantName: true,
           metadata: true,
           category: {
@@ -302,7 +304,6 @@ export const receiptsRouter = createTRPCRouter({
           },
         },
         orderBy: { date: 'desc' },
-        take: input?.limit ?? 250,
       });
 
       const allData = rows.map((row) => {
@@ -347,6 +348,11 @@ export const receiptsRouter = createTRPCRouter({
         data = allData.filter((row) => row.matchStatus === 'pending');
       }
 
+      const limit = input?.limit ?? 50;
+      const page = input?.page ?? 1;
+      const dataStart = (page - 1) * limit;
+      const pagedData = data.slice(dataStart, dataStart + limit);
+
       // Collect unique accounts for the filter dropdown
       const accountMap = new Map<string, string>();
       for (const row of allData) {
@@ -363,7 +369,7 @@ export const receiptsRouter = createTRPCRouter({
         .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
 
       return {
-        data,
+        data: pagedData,
         totalCount: data.length,
         totalAmount,
         businessAmount,
@@ -372,6 +378,11 @@ export const receiptsRouter = createTRPCRouter({
         personalCount: data.filter((row) => row.effectiveClassification === 'PERSONAL').length,
         pendingMatchCount: allData.filter((row) => row.matchStatus === 'pending').length,
         accounts,
+        pagination: {
+          page,
+          limit,
+          totalPages: Math.max(1, Math.ceil(data.length / limit)),
+        },
       };
     }),
 
@@ -379,7 +390,8 @@ export const receiptsRouter = createTRPCRouter({
     .input(
       z
         .object({
-          limit: z.number().min(1).max(2000).default(1000),
+          limit: z.number().min(1).max(100).default(50),
+          page: z.number().min(1).default(1),
           startDate: z.date().optional(),
           endDate: z.date().optional(),
           typeFilter: z.enum(['income', 'expense']).optional(),
@@ -421,6 +433,7 @@ export const receiptsRouter = createTRPCRouter({
           classification: true,
           categoryId: true,
           description: true,
+          notes: true,
           merchantName: true,
           metadata: true,
           category: {
@@ -530,8 +543,10 @@ export const receiptsRouter = createTRPCRouter({
         return b.date.getTime() - a.date.getTime();
       });
 
-      const limit = input?.limit ?? 1000;
-      const data = sorted.slice(0, limit);
+      const limit = input?.limit ?? 50;
+      const page = input?.page ?? 1;
+      const dataStart = (page - 1) * limit;
+      const data = sorted.slice(dataStart, dataStart + limit);
 
       const incomeAmount = sorted
         .filter((row) => row.type === 'INCOME')
@@ -571,6 +586,11 @@ export const receiptsRouter = createTRPCRouter({
         matchedCount: sorted.filter((row) => row.hasVenmoStatementMatch).length,
         unmatchedCount: sorted.filter((row) => !row.hasVenmoStatementMatch).length,
         accounts,
+        pagination: {
+          page,
+          limit,
+          totalPages: Math.max(1, Math.ceil(sorted.length / limit)),
+        },
       };
     }),
 
