@@ -3,7 +3,11 @@ import { db } from '@/lib/db';
 import { syncTransactions, getAccountBalances, plaidClient } from '@/lib/plaid';
 import { jwtVerify, importJWK, type JWK } from 'jose';
 import { createHash } from 'crypto';
-import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '@/lib/amazon-routing';
+import {
+  getAmazonCategoryTargets,
+  getAmazonRoutingCategoryId,
+  getAmazonRoutingClassification,
+} from '@/lib/amazon-routing';
 import { getVenmoBankRouting } from '@/lib/venmo-routing';
 
 // Plaid webhook event types
@@ -189,10 +193,12 @@ async function handleTransactionsWebhook(
                 description: tx.name,
                 merchantName: tx.merchant_name,
               });
+              const amazonInput = { description: tx.name, merchantName: tx.merchant_name };
               const amazonCategoryId = getAmazonRoutingCategoryId(
-                { description: tx.name, merchantName: tx.merchant_name },
+                amazonInput,
                 amazonTargets
               );
+              const amazonClassification = getAmazonRoutingClassification(amazonInput);
               await db.transaction.create({
                 data: {
                   accountId: account.id,
@@ -211,7 +217,10 @@ async function handleTransactionsWebhook(
                   ...(venmoRouting
                     ? { classification: venmoRouting.classification }
                     : amazonCategoryId
-                      ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                      ? {
+                          categoryId: amazonCategoryId,
+                          classification: amazonClassification ?? 'OPERATING',
+                        }
                       : {}),
                 },
               });
@@ -230,10 +239,12 @@ async function handleTransactionsWebhook(
               description: tx.name,
               merchantName: tx.merchant_name,
             });
+            const amazonInput = { description: tx.name, merchantName: tx.merchant_name };
             const amazonCategoryId = getAmazonRoutingCategoryId(
-              { description: tx.name, merchantName: tx.merchant_name },
+              amazonInput,
               amazonTargets
             );
+            const amazonClassification = getAmazonRoutingClassification(amazonInput);
             await db.transaction.updateMany({
               where: { 
                 accountId: account.id,
@@ -248,7 +259,10 @@ async function handleTransactionsWebhook(
                 ...(venmoRouting
                   ? { classification: venmoRouting.classification, categoryId: null }
                   : amazonCategoryId
-                    ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                    ? {
+                        categoryId: amazonCategoryId,
+                        classification: amazonClassification ?? 'OPERATING',
+                      }
                     : {}),
               },
             });

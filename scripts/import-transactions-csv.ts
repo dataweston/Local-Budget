@@ -2,7 +2,11 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { PrismaClient, TransactionStatus, TransactionType } from '@prisma/client';
-import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '../src/lib/amazon-routing';
+import {
+  getAmazonCategoryTargets,
+  getAmazonRoutingCategoryId,
+  getAmazonRoutingClassification,
+} from '../src/lib/amazon-routing';
 import { getVenmoBankRouting } from '../src/lib/venmo-routing';
 
 type ParsedArgs = {
@@ -391,6 +395,10 @@ async function run() {
                 amazonTargets
               )
             : null;
+        const amazonClassification =
+          type === 'EXPENSE'
+            ? getAmazonRoutingClassification({ description, merchantName: description })
+            : null;
 
         const digest = createHash('sha1')
           .update([
@@ -413,7 +421,12 @@ async function run() {
           ...(venmoRouting
             ? { classification: venmoRouting.classification }
             : amazonCategoryId
-              ? { categoryId: amazonCategoryId }
+              ? {
+                  categoryId: amazonCategoryId,
+                  ...(amazonClassification === 'PERSONAL'
+                    ? { classification: 'PERSONAL' as const }
+                    : {}),
+                }
               : {}),
           externalId: `csv:${digest}`,
           isReviewed: false,

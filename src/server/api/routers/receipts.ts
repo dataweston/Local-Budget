@@ -4,6 +4,7 @@ import { updateReceiptSchema, linkReceiptSchema } from '@/lib/schemas';
 import { generateReceiptEmail } from '@/lib/email/parser';
 import {
   getAmazonCategoryTargets,
+  getAmazonRoutingClassification,
   getAmazonRoutingCategoryId,
   isAmazonTransactionText,
   isAmazonVideoTransactionText,
@@ -554,7 +555,7 @@ export const receiptsRouter = createTRPCRouter({
 
   // Backfill category routing for Amazon transactions:
   // - Amazon -> Materials > amazon
-  // - Amazon + "video" -> Tools and software
+  // - Amazon digital subscriptions -> Tools and software + Personal
   enforceAmazonRouting: protectedProcedure
     .input(
       z
@@ -599,7 +600,9 @@ export const receiptsRouter = createTRPCRouter({
       for (const row of rows) {
         if (!isAmazonTransactionText(row)) continue;
         const targetCategoryId = getAmazonRoutingCategoryId(row, targets);
+        const targetClassification = getAmazonRoutingClassification(row);
         if (!targetCategoryId) continue;
+        if (!targetClassification) continue;
 
         if (targetCategoryId === targets.toolsSoftwareCategoryId) {
           routedVideo++;
@@ -608,14 +611,17 @@ export const receiptsRouter = createTRPCRouter({
         }
 
         const needsCategoryUpdate = row.categoryId !== targetCategoryId;
-        const needsClassificationUpdate = row.classification === null;
+        const needsClassificationUpdate =
+          targetClassification === 'PERSONAL'
+            ? row.classification !== 'PERSONAL'
+            : row.classification === null;
         if (!needsCategoryUpdate && !needsClassificationUpdate) continue;
         if (!input?.dryRun) {
           await ctx.db.transaction.update({
             where: { id: row.id },
             data: {
               ...(needsCategoryUpdate ? { categoryId: targetCategoryId } : {}),
-              ...(needsClassificationUpdate ? { classification: 'OPERATING' } : {}),
+              ...(needsClassificationUpdate ? { classification: targetClassification } : {}),
             },
           });
         }

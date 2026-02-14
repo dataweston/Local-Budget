@@ -10,6 +10,8 @@ export type AmazonCategoryTargets = {
   toolsSoftwareCategoryId: string | null;
 };
 
+export type AmazonRoutingClassification = 'OPERATING' | 'PERSONAL';
+
 function normalize(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
@@ -23,7 +25,9 @@ export function isAmazonTransactionText(input: TxLike): boolean {
 export function isAmazonDigitalSubscriptionText(input: TxLike): boolean {
   const text = normalize(`${input.description ?? ''} ${input.merchantName ?? ''}`);
   return (
-    /\bvideo\b/.test(text) ||
+    /\bprime\s*video\b/.test(text) ||
+    /\bamzn?\s*digital\b/.test(text) ||
+    /\bdigital\s*(services?|svcs?)\b/.test(text) ||
     /\baudible\b/.test(text) ||
     /\bkindle\b/.test(text) ||
     /\bmusic\s*unlimited\b/.test(text)
@@ -32,6 +36,13 @@ export function isAmazonDigitalSubscriptionText(input: TxLike): boolean {
 
 /** @deprecated Use isAmazonDigitalSubscriptionText instead. */
 export const isAmazonVideoTransactionText = isAmazonDigitalSubscriptionText;
+
+export function getAmazonRoutingClassification(
+  input: TxLike
+): AmazonRoutingClassification | null {
+  if (!isAmazonTransactionText(input)) return null;
+  return isAmazonDigitalSubscriptionText(input) ? 'PERSONAL' : 'OPERATING';
+}
 
 export function getAmazonRoutingCategoryId(
   input: TxLike,

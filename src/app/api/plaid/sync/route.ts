@@ -3,7 +3,11 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { syncTransactions, getAccountBalances, mapPlaidTransaction, getAllTransactions } from '@/lib/plaid';
-import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '@/lib/amazon-routing';
+import {
+  getAmazonCategoryTargets,
+  getAmazonRoutingCategoryId,
+  getAmazonRoutingClassification,
+} from '@/lib/amazon-routing';
 import { getVenmoBankRouting } from '@/lib/venmo-routing';
 
 export async function POST(request: NextRequest) {
@@ -98,10 +102,12 @@ export async function POST(request: NextRequest) {
             description: m.name,
             merchantName: m.merchantName,
           });
+          const amazonInput = { description: m.name, merchantName: m.merchantName };
           const amazonCategoryId = getAmazonRoutingCategoryId(
-            { description: m.name, merchantName: m.merchantName },
+            amazonInput,
             amazonTargets
           );
+          const amazonClassification = getAmazonRoutingClassification(amazonInput);
           toCreate.push({
             accountId: m.financialAccountId!,
             amount: Math.abs(m.amount),
@@ -115,7 +121,10 @@ export async function POST(request: NextRequest) {
             ...(venmoRouting
               ? { classification: venmoRouting.classification }
               : amazonCategoryId
-                ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                ? {
+                    categoryId: amazonCategoryId,
+                    classification: amazonClassification ?? 'OPERATING',
+                  }
                 : {}),
           });
         } else {
@@ -143,10 +152,12 @@ export async function POST(request: NextRequest) {
           description: m.name,
           merchantName: m.merchantName,
         });
+        const amazonInput = { description: m.name, merchantName: m.merchantName };
         const amazonCategoryId = getAmazonRoutingCategoryId(
-          { description: m.name, merchantName: m.merchantName },
+          amazonInput,
           amazonTargets
         );
+        const amazonClassification = getAmazonRoutingClassification(amazonInput);
 
         await db.transaction.update({
           where: { id: existing.id },
@@ -159,7 +170,10 @@ export async function POST(request: NextRequest) {
             ...(venmoRouting
               ? { classification: venmoRouting.classification, categoryId: null }
               : amazonCategoryId
-                ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                ? {
+                    categoryId: amazonCategoryId,
+                    classification: amazonClassification ?? 'OPERATING',
+                  }
                 : {}),
           },
         });
@@ -237,10 +251,15 @@ export async function POST(request: NextRequest) {
                   description: mappedTx.name,
                   merchantName: mappedTx.merchantName,
                 });
+                const amazonInput = {
+                  description: mappedTx.name,
+                  merchantName: mappedTx.merchantName,
+                };
                 const amazonCategoryId = getAmazonRoutingCategoryId(
-                  { description: mappedTx.name, merchantName: mappedTx.merchantName },
+                  amazonInput,
                   amazonTargets
                 );
+                const amazonClassification = getAmazonRoutingClassification(amazonInput);
                 await db.transaction.create({
                   data: {
                     accountId: financialAccount.id,
@@ -255,7 +274,10 @@ export async function POST(request: NextRequest) {
                     ...(venmoRouting
                       ? { classification: venmoRouting.classification }
                       : amazonCategoryId
-                        ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                        ? {
+                            categoryId: amazonCategoryId,
+                            classification: amazonClassification ?? 'OPERATING',
+                          }
                         : {}),
                   },
                 });
@@ -278,10 +300,15 @@ export async function POST(request: NextRequest) {
                 description: mappedTx.name,
                 merchantName: mappedTx.merchantName,
               });
+              const amazonInput = {
+                description: mappedTx.name,
+                merchantName: mappedTx.merchantName,
+              };
               const amazonCategoryId = getAmazonRoutingCategoryId(
-                { description: mappedTx.name, merchantName: mappedTx.merchantName },
+                amazonInput,
                 amazonTargets
               );
+              const amazonClassification = getAmazonRoutingClassification(amazonInput);
 
               await db.transaction.updateMany({
                 where: { externalId: mappedTx.transactionId },
@@ -294,7 +321,10 @@ export async function POST(request: NextRequest) {
                   ...(venmoRouting
                     ? { classification: venmoRouting.classification, categoryId: null }
                     : amazonCategoryId
-                      ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                      ? {
+                          categoryId: amazonCategoryId,
+                          classification: amazonClassification ?? 'OPERATING',
+                        }
                       : {}),
                 },
               });

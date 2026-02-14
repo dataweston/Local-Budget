@@ -91,10 +91,14 @@ export function ReportsView() {
     ...dateInput,
     period: 'monthly',
   });
-  const { data: categorySpend, isLoading: catLoading } = api.categories.spending.useQuery(dateInput);
-  const { data: incomeByCategory, isLoading: incomeLoading } = api.categories.spending.useQuery({
+  const { data: categorySpend, isLoading: catLoading } = api.categories.spendingClusters.useQuery({
+    ...dateInput,
+    clusterLimit: 4,
+  });
+  const { data: incomeByCategory, isLoading: incomeLoading } = api.categories.spendingClusters.useQuery({
     ...dateInput,
     type: 'INCOME',
+    clusterLimit: 4,
   });
   const { data: vendorData, isLoading: vendorLoading } = api.vendors.list.useQuery({
     ...dateInput,
@@ -143,6 +147,15 @@ export function ReportsView() {
       }
     });
   }, [categorySpend, expenseSortBy, expenseSortOrder]);
+
+  const incomeRows = useMemo(() => {
+    return (incomeByCategory ?? []).map((row) => ({
+      ...row,
+      displayName: row.parentCategoryName
+        ? `${row.parentCategoryName} > ${row.categoryName}`
+        : row.categoryName,
+    }));
+  }, [incomeByCategory]);
 
   const vendorRows = useMemo(() => {
     const rows = (vendorData?.vendors ?? []).filter((v) => v.totalSpending > 0);
@@ -268,7 +281,7 @@ export function ReportsView() {
                         <CardTitle>By Category</CardTitle>
                         <CardDescription>Sortable, aligned category lines</CardDescription>
                       </div>
-                      <div className="flex gap-2">
+                  <div className="flex gap-2">
                         <Select value={categorySortBy} onValueChange={(v) => setCategorySortBy(v as CategorySort)}>
                           <SelectTrigger className="h-8 w-[140px]"><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -362,7 +375,9 @@ export function ReportsView() {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <CardTitle>Expense Categories</CardTitle>
-                      <CardDescription>Split-aware category aggregation</CardDescription>
+                      <CardDescription>
+                        Split-aware category aggregation with inferred sub-clusters
+                      </CardDescription>
                     </div>
                     <div className="flex gap-2">
                       <Select value={expenseSortBy} onValueChange={(v) => setExpenseSortBy(v as CategorySort)}>
@@ -399,6 +414,7 @@ export function ReportsView() {
                       <thead>
                         <tr className="bg-muted/50 border-b">
                           <th className="text-left p-2">Category</th>
+                          <th className="text-left p-2">Inferred Clusters</th>
                           <th className="text-right p-2">Tx</th>
                           <th className="text-right p-2">Share</th>
                           <th className="text-right p-2">Amount</th>
@@ -408,6 +424,24 @@ export function ReportsView() {
                         {expenseRows.map((row) => (
                           <tr key={`${row.categoryId}-${row.displayName}`} className="border-b last:border-0">
                             <td className="p-2 font-medium">{row.displayName}</td>
+                            <td className="p-2">
+                              <div className="flex flex-wrap gap-1.5">
+                                {(row.clusters ?? []).map((cluster) => (
+                                  <span
+                                    key={cluster.clusterKey}
+                                    className="inline-flex items-center rounded border bg-muted/30 px-2 py-0.5 text-[11px] text-muted-foreground"
+                                    title={`${cluster.transactionCount} tx • ${cluster.percentOfCategory.toFixed(1)}%`}
+                                  >
+                                    {cluster.clusterLabel} ({formatCurrency(cluster.amount)})
+                                  </span>
+                                ))}
+                              </div>
+                              {row.totalClusterCount > (row.clusters?.length ?? 0) && (
+                                <p className="mt-1 text-[10px] text-muted-foreground">
+                                  +{row.totalClusterCount - (row.clusters?.length ?? 0)} more clusters
+                                </p>
+                              )}
+                            </td>
                             <td className="p-2 text-right text-muted-foreground">{row.transactionCount}</td>
                             <td className="p-2 text-right text-muted-foreground">{row.percentOfTotal.toFixed(1)}%</td>
                             <td className="p-2 text-right font-semibold">{formatCurrency(row.amount)}</td>
@@ -428,14 +462,16 @@ export function ReportsView() {
               <Card>
                 <CardHeader>
                   <CardTitle>Income Sources</CardTitle>
-                  <CardDescription>Category-level income for {dateRange.label}</CardDescription>
+                  <CardDescription>
+                    Category-level income with inferred source clusters for {dateRange.label}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <ResponsiveContainer width="100%" height={280}>
-                    <BarChart data={(incomeByCategory ?? []).slice(0, 10)} layout="vertical">
+                    <BarChart data={incomeRows.slice(0, 10)} layout="vertical">
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis type="number" tickFormatter={(v) => `$${v}`} />
-                      <YAxis type="category" dataKey="categoryName" width={170} tick={{ fontSize: 11 }} />
+                      <YAxis type="category" dataKey="displayName" width={170} tick={{ fontSize: 11 }} />
                       <Tooltip formatter={(value: number) => formatCurrency(value)} />
                       <Bar dataKey="amount" fill={CHART_COLORS.income} />
                     </BarChart>
@@ -445,18 +481,33 @@ export function ReportsView() {
                       <thead>
                         <tr className="bg-muted/50 border-b">
                           <th className="text-left p-2">Category</th>
+                          <th className="text-left p-2">Inferred Clusters</th>
                           <th className="text-right p-2">Tx</th>
                           <th className="text-right p-2">Share</th>
                           <th className="text-right p-2">Amount</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {(incomeByCategory ?? []).map((row) => (
-                          <tr key={`${row.categoryId}-${row.categoryName}`} className="border-b last:border-0">
-                            <td className="p-2 font-medium">
-                              {row.parentCategoryName
-                                ? `${row.parentCategoryName} > ${row.categoryName}`
-                                : row.categoryName}
+                        {incomeRows.map((row) => (
+                          <tr key={`${row.categoryId}-${row.displayName}`} className="border-b last:border-0">
+                            <td className="p-2 font-medium">{row.displayName}</td>
+                            <td className="p-2">
+                              <div className="flex flex-wrap gap-1.5">
+                                {(row.clusters ?? []).map((cluster) => (
+                                  <span
+                                    key={cluster.clusterKey}
+                                    className="inline-flex items-center rounded border bg-muted/30 px-2 py-0.5 text-[11px] text-muted-foreground"
+                                    title={`${cluster.transactionCount} tx • ${cluster.percentOfCategory.toFixed(1)}%`}
+                                  >
+                                    {cluster.clusterLabel} ({formatCurrency(cluster.amount)})
+                                  </span>
+                                ))}
+                              </div>
+                              {row.totalClusterCount > (row.clusters?.length ?? 0) && (
+                                <p className="mt-1 text-[10px] text-muted-foreground">
+                                  +{row.totalClusterCount - (row.clusters?.length ?? 0)} more clusters
+                                </p>
+                              )}
                             </td>
                             <td className="p-2 text-right text-muted-foreground">{row.transactionCount}</td>
                             <td className="p-2 text-right text-muted-foreground">{row.percentOfTotal.toFixed(1)}%</td>

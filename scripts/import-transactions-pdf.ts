@@ -2,7 +2,11 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { PrismaClient, TransactionStatus, TransactionType } from '@prisma/client';
-import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '../src/lib/amazon-routing';
+import {
+  getAmazonCategoryTargets,
+  getAmazonRoutingCategoryId,
+  getAmazonRoutingClassification,
+} from '../src/lib/amazon-routing';
 import { getVenmoBankRouting } from '../src/lib/venmo-routing';
 
 const pdfParse = require('pdf-parse') as (
@@ -649,12 +653,21 @@ async function run() {
             ? { classification: venmoRouting.classification }
             : row.sign === 'NEGATIVE'
               ? (() => {
-                const categoryId = getAmazonRoutingCategoryId(
-                  { description: row.description, merchantName: row.description },
-                  amazonTargets
-                );
-                return categoryId ? { categoryId } : {};
-              })()
+                  const amazonInput = {
+                    description: row.description,
+                    merchantName: row.description,
+                  };
+                  const categoryId = getAmazonRoutingCategoryId(amazonInput, amazonTargets);
+                  const amazonClassification = getAmazonRoutingClassification(amazonInput);
+                  return categoryId
+                    ? {
+                        categoryId,
+                        ...(amazonClassification === 'PERSONAL'
+                          ? { classification: 'PERSONAL' as const }
+                          : {}),
+                      }
+                    : {};
+                })()
               : {}),
           externalId: buildExternalId(account.id, filePath, row),
           isReviewed: false,
