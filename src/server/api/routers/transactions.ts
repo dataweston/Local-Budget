@@ -48,12 +48,40 @@ export const transactionsRouter = createTRPCRouter({
       }
 
       if (input?.search) {
+        const q = input.search.trim();
         where.AND = [
           {
             OR: [
-              { description: { contains: input.search, mode: 'insensitive' } },
-              { merchantName: { contains: input.search, mode: 'insensitive' } },
-              { userDescription: { contains: input.search, mode: 'insensitive' } },
+              { description: { contains: q, mode: 'insensitive' } },
+              { merchantName: { contains: q, mode: 'insensitive' } },
+              { userDescription: { contains: q, mode: 'insensitive' } },
+              { notes: { contains: q, mode: 'insensitive' } },
+              {
+                lineItems: {
+                  some: {
+                    description: { contains: q, mode: 'insensitive' },
+                  },
+                },
+              },
+              {
+                receiptLinks: {
+                  some: {
+                    receipt: {
+                      OR: [
+                        { vendorName: { contains: q, mode: 'insensitive' } },
+                        { rawOcrText: { contains: q, mode: 'insensitive' } },
+                        {
+                          lineItems: {
+                            some: {
+                              description: { contains: q, mode: 'insensitive' },
+                            },
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
             ],
           },
         ];

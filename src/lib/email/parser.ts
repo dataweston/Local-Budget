@@ -70,6 +70,8 @@ export function isReceiptAttachment(attachment: EmailAttachment): boolean {
     'image/png',
     'image/gif',
     'image/webp',
+    'image/heic',
+    'image/heif',
     'application/pdf',
   ];
 

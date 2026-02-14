@@ -10,7 +10,8 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Loader2, Upload, Camera, Image, X, Check, AlertCircle } from 'lucide-react';
+import { api } from '@/lib/trpc';
+import { Loader2, Upload, Camera, Image as ImageIcon, X, Check, AlertCircle } from 'lucide-react';
 
 interface ParsedReceiptData {
   vendor?: string;
@@ -23,6 +24,7 @@ interface ParsedReceiptData {
   lineItems?: Array<{
     description: string;
     amount: number;
+    kind?: string;
   }>;
   rawText: string;
 }
@@ -46,12 +48,23 @@ export function UploadReceiptModal({
   const [step, setStep] = useState<'upload' | 'processing' | 'review'>('upload');
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const { data: inboundEmail } = api.receipts.getInboundEmail.useQuery(undefined, {
+    enabled: isOpen,
+  });
 
   const handleFileSelect = useCallback((file: File) => {
     // Validate file type
-    const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+    const validTypes = [
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/heic',
+      'image/heif',
+      'application/pdf',
+    ];
     if (!validTypes.includes(file.type)) {
-      setError('Please upload a valid image file (JPEG, PNG, WebP, or HEIC)');
+      setError('Please upload a valid invoice file (JPEG, PNG, WebP, HEIC, HEIF, or PDF)');
       return;
     }
 
@@ -97,7 +110,13 @@ export function UploadReceiptModal({
       }
 
       const data = await response.json();
-      setParsedData(data.parsedData);
+      const parsedData = data.parsedData ?? {
+        vendor: data.ocrResult?.vendorName,
+        total: data.ocrResult?.totalAmount,
+        date: data.ocrResult?.date,
+        rawText: '',
+      };
+      setParsedData(parsedData);
       setStep('review');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to process receipt');
@@ -151,20 +170,20 @@ export function UploadReceiptModal({
         {trigger || (
           <Button variant="outline" size="sm">
             <Upload className="h-4 w-4 mr-2" />
-            Upload Receipt
+            Import Invoice
           </Button>
         )}
       </DialogTrigger>
       <DialogContent className="sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>
-            {step === 'upload' && 'Upload Receipt'}
-            {step === 'processing' && 'Processing Receipt'}
+            {step === 'upload' && 'Upload Invoice'}
+            {step === 'processing' && 'Processing Invoice'}
             {step === 'review' && 'Review Extracted Data'}
           </DialogTitle>
           <DialogDescription>
-            {step === 'upload' && 'Upload a receipt image to automatically extract transaction details.'}
-            {step === 'processing' && 'Analyzing your receipt using OCR...'}
+            {step === 'upload' && 'Upload an invoice from browser, camera, or email forwarding.'}
+            {step === 'processing' && 'Analyzing your invoice using OCR/document parsing...'}
             {step === 'review' && 'Review the extracted information and confirm.'}
           </DialogDescription>
         </DialogHeader>
@@ -182,20 +201,62 @@ export function UploadReceiptModal({
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
-                accept="image/jpeg,image/png,image/webp,image/heic"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleFileSelect(file);
                 }}
               />
-              <Image className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <input
+                ref={cameraInputRef}
+                type="file"
+                className="hidden"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileSelect(file);
+                }}
+              />
+              <ImageIcon className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
               <p className="text-sm text-muted-foreground mb-2">
-                Drag and drop a receipt image here, or click to browse
+                Drag/drop an invoice, or click to browse
               </p>
               <p className="text-xs text-muted-foreground">
-                Supports JPEG, PNG, WebP, HEIC (max 10MB)
+                Supports JPEG, PNG, WebP, HEIC, HEIF, PDF (max 10MB)
               </p>
             </div>
+            {!!inboundEmail?.email && (
+              <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+                <p className="font-medium">Gmail / iPhone quick import</p>
+                <p className="text-muted-foreground mt-1">
+                  Forward invoice emails or photo attachments to:
+                </p>
+                <p className="font-mono mt-1 break-all">{inboundEmail.email}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(inboundEmail.email);
+                    }}
+                  >
+                    Copy Email
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      window.open(`mailto:${inboundEmail.email}?subject=Invoice`, '_blank');
+                    }}
+                  >
+                    Open Mail App
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {error && (
               <div className="flex items-center gap-2 text-destructive text-sm">
@@ -208,10 +269,21 @@ export function UploadReceiptModal({
               <Button variant="outline" onClick={handleClose}>
                 Cancel
               </Button>
-              <Button variant="outline" disabled>
-                <Camera className="h-4 w-4 mr-2" />
-                Use Camera (Coming Soon)
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => cameraInputRef.current?.click()}
+                >
+                  <Camera className="h-4 w-4 mr-2" />
+                  Snap Photo
+                </Button>
+                <Button
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="h-4 w-4 mr-2" />
+                  Upload File
+                </Button>
+              </div>
             </div>
           </div>
         )}
@@ -294,7 +366,10 @@ export function UploadReceiptModal({
                     <div className="bg-muted rounded-lg p-3 max-h-32 overflow-y-auto">
                       {parsedData.lineItems.map((item, index) => (
                         <div key={index} className="flex justify-between text-sm py-1">
-                          <span className="truncate mr-2">{item.description}</span>
+                          <span className="truncate mr-2">
+                            {item.kind && item.kind !== 'item' ? `[${item.kind}] ` : ''}
+                            {item.description}
+                          </span>
                           <span>{formatCurrency(item.amount)}</span>
                         </div>
                       ))}

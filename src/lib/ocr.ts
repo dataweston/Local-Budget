@@ -1,5 +1,7 @@
 import Tesseract from 'tesseract.js';
 
+const pdfParse = require('pdf-parse') as (buffer: Buffer) => Promise<{ text: string }>;
+
 // ============================================================================
 // OCR Text Extraction
 // ============================================================================
@@ -40,9 +42,35 @@ export interface ParsedReceiptData {
     name: string;
     quantity?: number;
     price?: number;
+    kind?: 'item' | 'shipping' | 'fee' | 'tax' | 'tip' | 'discount' | 'other';
+    classificationHint?: 'COGS' | 'OPERATING' | 'PERSONAL';
   }>;
   paymentMethod?: string;
   lastFourDigits?: string;
+}
+
+function parseAmountToken(input: string): number | null {
+  const match = input.match(/-?\$?\s*(\d+[.,]\d{2})/);
+  if (!match) return null;
+  return Number.parseFloat(match[1].replace(',', '.'));
+}
+
+function inferItemKind(name: string): NonNullable<NonNullable<ParsedReceiptData['items']>[number]['kind']> {
+  const normalized = name.toLowerCase();
+  if (/\b(ship|shipping|delivery|freight)\b/.test(normalized)) return 'shipping';
+  if (/\b(fee|service charge|convenience|processing|surcharge)\b/.test(normalized)) return 'fee';
+  if (/\b(tax|vat|gst|hst)\b/.test(normalized)) return 'tax';
+  if (/\b(tip|gratuity)\b/.test(normalized)) return 'tip';
+  if (/\b(discount|coupon|promo|savings?)\b/.test(normalized)) return 'discount';
+  return 'item';
+}
+
+function classificationHintForKind(
+  kind: NonNullable<NonNullable<ParsedReceiptData['items']>[number]['kind']>
+): 'COGS' | 'OPERATING' | 'PERSONAL' {
+  if (kind === 'item') return 'COGS';
+  if (kind === 'discount') return 'COGS';
+  return 'OPERATING';
 }
 
 // Parse extracted text to find receipt data
@@ -139,20 +167,67 @@ export function parseReceiptText(text: string): ParsedReceiptData {
     result.lastFourDigits = cardMatch[1];
   }
 
-  // Try to extract line items (basic implementation)
+  // Extract line items and invoice charges.
   const items: ParsedReceiptData['items'] = [];
-  const itemPattern = /^(.+?)\s+\$?\s*(\d+[.,]\d{2})$/;
+  const itemPattern = /^(.+?)\s+(-?\$?\s*\d+[.,]\d{2})$/i;
+  const qtyPattern = /^(\d+(?:\.\d+)?)\s*[xX]\s*(.+?)\s+(-?\$?\s*\d+[.,]\d{2})$/i;
+  const invoiceNoisePattern =
+    /\b(total|subtotal|amount due|balance due|cash|change|card|visa|mastercard|debit|credit)\b/i;
   
   for (const line of lines) {
+    if (invoiceNoisePattern.test(line)) continue;
+
+    const qtyMatch = line.match(qtyPattern);
+    if (qtyMatch) {
+      const qty = Number.parseFloat(qtyMatch[1]);
+      const name = qtyMatch[2].trim();
+      const price = parseAmountToken(qtyMatch[3]);
+      if (!Number.isNaN(qty) && price !== null) {
+        const kind = inferItemKind(name);
+        items.push({
+          name,
+          quantity: qty,
+          price,
+          kind,
+          classificationHint: classificationHintForKind(kind),
+        });
+        continue;
+      }
+    }
+
     const match = line.match(itemPattern);
-    if (match && !line.toLowerCase().includes('total') && !line.toLowerCase().includes('subtotal')) {
+    if (match) {
+      const name = match[1].trim();
+      const price = parseAmountToken(match[2]);
+      if (price === null) continue;
+      const kind = inferItemKind(name);
       items.push({
-        name: match[1].trim(),
-        price: parseFloat(match[2].replace(',', '.')),
+        name,
+        price,
+        kind,
+        classificationHint: classificationHintForKind(kind),
       });
     }
   }
   
+  // Backfill tax/tip as explicit searchable line items if OCR didn't catch them in item rows.
+  if (result.tax && !items.some((i) => i.kind === 'tax')) {
+    items.push({
+      name: 'Sales Tax',
+      price: result.tax,
+      kind: 'tax',
+      classificationHint: 'OPERATING',
+    });
+  }
+  if (result.tip && !items.some((i) => i.kind === 'tip')) {
+    items.push({
+      name: 'Tip',
+      price: result.tip,
+      kind: 'tip',
+      classificationHint: 'OPERATING',
+    });
+  }
+
   if (items.length > 0) {
     result.items = items;
   }
@@ -181,4 +256,21 @@ export async function processReceiptImage(imageSource: Buffer | string): Promise
     rawText: ocrResult.text,
     confidence: ocrResult.confidence,
   };
+}
+
+export async function processReceiptDocument(input: {
+  buffer: Buffer;
+  mimeType: string;
+}): Promise<ProcessedReceipt> {
+  if (input.mimeType.toLowerCase() === 'application/pdf') {
+    const pdf = await pdfParse(input.buffer);
+    const parsedData = parseReceiptText(pdf.text || '');
+    return {
+      ...parsedData,
+      rawText: pdf.text || '',
+      confidence: 100,
+    };
+  }
+
+  return processReceiptImage(input.buffer);
 }

@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
@@ -158,6 +159,7 @@ type VenmoSortValue = 'date-desc' | 'date-asc' | 'amount-desc' | 'amount-asc';
 
 export function ReceiptsList() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [receiptSearch, setReceiptSearch] = useState('');
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptData | null>(null);
   const [selectedAmazonTxId, setSelectedAmazonTxId] = useState<string | null>(null);
   const [selectedVenmoTxId, setSelectedVenmoTxId] = useState<string | null>(null);
@@ -183,6 +185,7 @@ export function ReceiptsList() {
 
   const { data, isLoading, refetch } = api.receipts.list.useQuery({
     status: statusFilter as any,
+    search: receiptSearch.trim() || undefined,
   });
 
   const { data: pendingCount } = api.receipts.pendingCount.useQuery();
@@ -272,6 +275,11 @@ export function ReceiptsList() {
     onSuccess: async () => {
       await invalidateAmazon();
       setSelectedAmazonIds(new Set());
+    },
+  });
+  const createSplitsFromReceiptMutation = api.splits.createFromReceipt.useMutation({
+    onSuccess: async (_, vars) => {
+      await utils.splits.getByTransactionId.invalidate({ transactionId: vars.transactionId });
     },
   });
 
@@ -385,6 +393,23 @@ export function ReceiptsList() {
             />
           </Card>
         </div>
+
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Input
+                type="search"
+                placeholder="Search invoices by vendor, OCR text, or line item..."
+                value={receiptSearch}
+                onChange={(e) => setReceiptSearch(e.target.value)}
+                className="sm:max-w-xl"
+              />
+              <p className="text-xs text-muted-foreground">
+                Search scans invoice line items, OCR text, and vendor names.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Ingest Source Sections */}
         <Card>
@@ -1415,11 +1440,47 @@ export function ReceiptsList() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Linked Transactions</p>
-                  <p className="font-medium">
-                    {selectedReceipt.transactionLinks.length > 0
-                      ? `${selectedReceipt.transactionLinks.length} transaction(s)`
-                      : 'Not linked to any transactions'}
-                  </p>
+                  {selectedReceipt.transactionLinks.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="font-medium">
+                        {selectedReceipt.transactionLinks.length} transaction(s)
+                      </p>
+                      {selectedReceipt.transactionLinks.map((link: any) => (
+                        <div
+                          key={link.id ?? link.transactionId}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded border p-2"
+                        >
+                          <div className="text-xs">
+                            <p className="font-medium">
+                              {link.transaction?.description ?? link.transactionId}
+                            </p>
+                            {typeof link.transaction?.amount !== 'undefined' && (
+                              <p className="text-muted-foreground">
+                                {formatCurrency(Number(link.transaction.amount))}
+                              </p>
+                            )}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={createSplitsFromReceiptMutation.isPending}
+                            onClick={() =>
+                              createSplitsFromReceiptMutation.mutate({
+                                transactionId: link.transactionId,
+                                receiptId: selectedReceipt.id,
+                              })
+                            }
+                          >
+                            {createSplitsFromReceiptMutation.isPending
+                              ? 'Building...'
+                              : 'Split by Invoice Items'}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="font-medium">Not linked to any transactions</p>
+                  )}
                 </div>
               </div>
             )}

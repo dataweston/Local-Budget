@@ -18,6 +18,7 @@ export const receiptsRouter = createTRPCRouter({
       z.object({
         status: z.enum(['PENDING', 'PROCESSING', 'PROCESSED', 'FAILED', 'REVIEWED']).optional(),
         hasTransaction: z.boolean().optional(),
+        search: z.string().optional(),
         page: z.number().default(1),
         limit: z.number().default(20),
       }).optional()
@@ -29,6 +30,26 @@ export const receiptsRouter = createTRPCRouter({
 
       const where: any = { userId: ctx.session.user.id };
       if (input?.status) where.status = input.status;
+      if (input?.search?.trim()) {
+        const q = input.search.trim();
+        where.AND = [
+          {
+            OR: [
+              { fileName: { contains: q, mode: 'insensitive' } },
+              { vendorName: { contains: q, mode: 'insensitive' } },
+              { rawOcrText: { contains: q, mode: 'insensitive' } },
+              { notes: { contains: q, mode: 'insensitive' } },
+              {
+                lineItems: {
+                  some: {
+                    description: { contains: q, mode: 'insensitive' },
+                  },
+                },
+              },
+            ],
+          },
+        ];
+      }
 
       const [receipts, total] = await Promise.all([
         ctx.db.receipt.findMany({
