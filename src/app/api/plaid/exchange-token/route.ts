@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { exchangePublicToken, getAccountBalances, getInstitution, getAllTransactions, syncTransactions, mapPlaidTransaction } from '@/lib/plaid';
+import { getVenmoBankRouting } from '@/lib/venmo-routing';
 
 export async function POST(request: NextRequest) {
   try {
@@ -138,18 +139,23 @@ export async function POST(request: NextRequest) {
         });
 
         if (!existing) {
+          const venmoRouting = getVenmoBankRouting({
+            description: mappedTx.name,
+            merchantName: mappedTx.merchantName,
+          });
           // Plaid convention: positive = money OUT (expense), negative = money IN (income)
           await db.transaction.create({
             data: {
               accountId: financialAccountId,
               amount: Math.abs(mappedTx.amount),
-              type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+              type: (venmoRouting?.type ?? (mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
               status: mappedTx.pending ? 'PENDING' : 'POSTED',
               date: new Date(mappedTx.date),
               description: mappedTx.name,
               merchantName: mappedTx.merchantName,
               externalId: mappedTx.transactionId,
               isReviewed: false,
+              ...(venmoRouting ? { classification: venmoRouting.classification } : {}),
             },
           });
           totalAdded++;

@@ -18,7 +18,9 @@
     "amazon:crossref": "tsx scripts/crossref-amazon-orders-html.ts",
     "amazon:crossref:apply": "tsx scripts/crossref-amazon-orders-html.ts --apply",
     "venmo:crossref": "tsx scripts/crossref-venmo-statements.ts",
-    "venmo:crossref:apply": "tsx scripts/crossref-venmo-statements.ts --apply"
+    "venmo:crossref:apply": "tsx scripts/crossref-venmo-statements.ts --apply",
+    "venmo:sync": "tsx scripts/sync-venmo-statements.ts",
+    "venmo:sync:apply": "tsx scripts/sync-venmo-statements.ts --apply"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",

@@ -4,6 +4,7 @@ import { syncTransactions, getAccountBalances, plaidClient } from '@/lib/plaid';
 import { jwtVerify, importJWK, type JWK } from 'jose';
 import { createHash } from 'crypto';
 import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '@/lib/amazon-routing';
+import { getVenmoBankRouting } from '@/lib/venmo-routing';
 
 // Plaid webhook event types
 type PlaidWebhookType =
@@ -184,6 +185,10 @@ async function handleTransactionsWebhook(
             });
 
             if (!existing) {
+              const venmoRouting = getVenmoBankRouting({
+                description: tx.name,
+                merchantName: tx.merchant_name,
+              });
               const amazonCategoryId = getAmazonRoutingCategoryId(
                 { description: tx.name, merchantName: tx.merchant_name },
                 amazonTargets
@@ -192,7 +197,7 @@ async function handleTransactionsWebhook(
                 data: {
                   accountId: account.id,
                   amount: Math.abs(tx.amount),
-                  type: tx.amount < 0 ? 'INCOME' : 'EXPENSE',
+                  type: (venmoRouting?.type ?? (tx.amount < 0 ? 'INCOME' : 'EXPENSE')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
                   status: tx.pending ? 'PENDING' : 'POSTED',
                   date: new Date(tx.date),
                   description: tx.name,
@@ -203,7 +208,11 @@ async function handleTransactionsWebhook(
                     plaid_category_id: tx.category_id,
                     payment_channel: tx.payment_channel,
                   },
-                  ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
+                  ...(venmoRouting
+                    ? { classification: venmoRouting.classification }
+                    : amazonCategoryId
+                      ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                      : {}),
                 },
               });
             }
@@ -217,6 +226,10 @@ async function handleTransactionsWebhook(
           });
 
           if (account) {
+            const venmoRouting = getVenmoBankRouting({
+              description: tx.name,
+              merchantName: tx.merchant_name,
+            });
             const amazonCategoryId = getAmazonRoutingCategoryId(
               { description: tx.name, merchantName: tx.merchant_name },
               amazonTargets
@@ -228,11 +241,15 @@ async function handleTransactionsWebhook(
               },
               data: {
                 amount: Math.abs(tx.amount),
-                type: tx.amount < 0 ? 'INCOME' : 'EXPENSE',
+                type: (venmoRouting?.type ?? (tx.amount < 0 ? 'INCOME' : 'EXPENSE')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
                 status: tx.pending ? 'PENDING' : 'POSTED',
                 description: tx.name,
                 merchantName: tx.merchant_name,
-                ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
+                ...(venmoRouting
+                  ? { classification: venmoRouting.classification, categoryId: null }
+                  : amazonCategoryId
+                    ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                    : {}),
               },
             });
           }

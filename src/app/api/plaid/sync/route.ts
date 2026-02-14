@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { syncTransactions, getAccountBalances, mapPlaidTransaction, getAllTransactions } from '@/lib/plaid';
 import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '@/lib/amazon-routing';
+import { getVenmoBankRouting } from '@/lib/venmo-routing';
 
 export async function POST(request: NextRequest) {
   try {
@@ -93,6 +94,10 @@ export async function POST(request: NextRequest) {
       for (const m of validMapped) {
         const existing = existingMap.get(m.transactionId);
         if (!existing) {
+          const venmoRouting = getVenmoBankRouting({
+            description: m.name,
+            merchantName: m.merchantName,
+          });
           const amazonCategoryId = getAmazonRoutingCategoryId(
             { description: m.name, merchantName: m.merchantName },
             amazonTargets
@@ -100,14 +105,18 @@ export async function POST(request: NextRequest) {
           toCreate.push({
             accountId: m.financialAccountId!,
             amount: Math.abs(m.amount),
-            type: (m.amount > 0 ? 'EXPENSE' : 'INCOME') as 'EXPENSE' | 'INCOME',
+            type: (venmoRouting?.type ?? (m.amount > 0 ? 'EXPENSE' : 'INCOME')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
             status: (m.pending ? 'PENDING' : 'POSTED') as 'PENDING' | 'POSTED',
             date: new Date(m.date),
             description: m.name,
             merchantName: m.merchantName,
             externalId: m.transactionId,
             isReviewed: false,
-            ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
+            ...(venmoRouting
+              ? { classification: venmoRouting.classification }
+              : amazonCategoryId
+                ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                : {}),
           });
         } else {
           toUpdate.push({ existing, mapped: m });
@@ -130,6 +139,10 @@ export async function POST(request: NextRequest) {
         // Only update merchantName if user hasn't changed it (i.e. it still matches what Plaid had)
         // If merchantName differs from Plaid's value, the user has merged/renamed it — don't overwrite
         const shouldUpdateMerchant = !existing.merchantName || existing.merchantName === m.merchantName;
+        const venmoRouting = getVenmoBankRouting({
+          description: m.name,
+          merchantName: m.merchantName,
+        });
         const amazonCategoryId = getAmazonRoutingCategoryId(
           { description: m.name, merchantName: m.merchantName },
           amazonTargets
@@ -139,11 +152,15 @@ export async function POST(request: NextRequest) {
           where: { id: existing.id },
           data: {
             amount: Math.abs(m.amount),
-            type: m.amount > 0 ? 'EXPENSE' : 'INCOME',
+            type: (venmoRouting?.type ?? (m.amount > 0 ? 'EXPENSE' : 'INCOME')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
             status: m.pending ? 'PENDING' : 'POSTED',
             description: m.name,
             ...(shouldUpdateMerchant && { merchantName: m.merchantName }),
-            ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
+            ...(venmoRouting
+              ? { classification: venmoRouting.classification, categoryId: null }
+              : amazonCategoryId
+                ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                : {}),
           },
         });
         modified++;
@@ -216,6 +233,10 @@ export async function POST(request: NextRequest) {
               });
 
               if (!existing) {
+                const venmoRouting = getVenmoBankRouting({
+                  description: mappedTx.name,
+                  merchantName: mappedTx.merchantName,
+                });
                 const amazonCategoryId = getAmazonRoutingCategoryId(
                   { description: mappedTx.name, merchantName: mappedTx.merchantName },
                   amazonTargets
@@ -224,14 +245,18 @@ export async function POST(request: NextRequest) {
                   data: {
                     accountId: financialAccount.id,
                     amount: Math.abs(mappedTx.amount),
-                    type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+                    type: (venmoRouting?.type ?? (mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
                     status: mappedTx.pending ? 'PENDING' : 'POSTED',
                     date: new Date(mappedTx.date),
                     description: mappedTx.name,
                     merchantName: mappedTx.merchantName,
                     externalId: mappedTx.transactionId,
                     isReviewed: false,
-                    ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
+                    ...(venmoRouting
+                      ? { classification: venmoRouting.classification }
+                      : amazonCategoryId
+                        ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                        : {}),
                   },
                 });
                 added++;
@@ -249,6 +274,10 @@ export async function POST(request: NextRequest) {
               });
 
               const shouldUpdateMerchant = !existing?.merchantName || existing.merchantName === mappedTx.merchantName;
+              const venmoRouting = getVenmoBankRouting({
+                description: mappedTx.name,
+                merchantName: mappedTx.merchantName,
+              });
               const amazonCategoryId = getAmazonRoutingCategoryId(
                 { description: mappedTx.name, merchantName: mappedTx.merchantName },
                 amazonTargets
@@ -258,11 +287,15 @@ export async function POST(request: NextRequest) {
                 where: { externalId: mappedTx.transactionId },
                 data: {
                   amount: Math.abs(mappedTx.amount),
-                  type: mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME',
+                  type: (venmoRouting?.type ?? (mappedTx.amount > 0 ? 'EXPENSE' : 'INCOME')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
                   status: mappedTx.pending ? 'PENDING' : 'POSTED',
                   description: mappedTx.name,
                   ...(shouldUpdateMerchant && { merchantName: mappedTx.merchantName }),
-                  ...(amazonCategoryId ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const } : {}),
+                  ...(venmoRouting
+                    ? { classification: venmoRouting.classification, categoryId: null }
+                    : amazonCategoryId
+                      ? { categoryId: amazonCategoryId, classification: 'OPERATING' as const }
+                      : {}),
                 },
               });
               modified++;

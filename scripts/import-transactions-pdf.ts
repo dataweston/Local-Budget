@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { PrismaClient, TransactionStatus, TransactionType } from '@prisma/client';
 import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '../src/lib/amazon-routing';
+import { getVenmoBankRouting } from '../src/lib/venmo-routing';
 
 const pdfParse = require('pdf-parse') as (
   dataBuffer: Buffer
@@ -631,23 +632,30 @@ async function run() {
           continue;
         }
 
+        const venmoRouting = getVenmoBankRouting({
+          description: row.description,
+          merchantName: row.description,
+        });
+        const txType = venmoRouting?.type ?? (row.sign === 'NEGATIVE' ? 'EXPENSE' : 'INCOME');
         toCreate.push({
           accountId: account.id,
           amount: row.amountAbs,
-          type: row.sign === 'NEGATIVE' ? 'EXPENSE' : 'INCOME',
+          type: txType,
           status: 'POSTED',
           date: row.date,
           description: row.description.slice(0, 500),
           merchantName: row.description.slice(0, 200),
-          ...(row.sign === 'NEGATIVE'
-            ? (() => {
+          ...(venmoRouting
+            ? { classification: venmoRouting.classification }
+            : row.sign === 'NEGATIVE'
+              ? (() => {
                 const categoryId = getAmazonRoutingCategoryId(
                   { description: row.description, merchantName: row.description },
                   amazonTargets
                 );
                 return categoryId ? { categoryId } : {};
               })()
-            : {}),
+              : {}),
           externalId: buildExternalId(account.id, filePath, row),
           isReviewed: false,
           metadata: {

@@ -379,6 +379,8 @@ export const receiptsRouter = createTRPCRouter({
           OR: [
             { description: { contains: 'venmo', mode: 'insensitive' } },
             { merchantName: { contains: 'venmo', mode: 'insensitive' } },
+            { account: { name: { contains: 'venmo', mode: 'insensitive' } } },
+            { account: { institution: { contains: 'venmo', mode: 'insensitive' } } },
           ],
           ...(input?.startDate || input?.endDate
             ? {
@@ -413,7 +415,7 @@ export const receiptsRouter = createTRPCRouter({
             },
           },
           account: {
-            select: { id: true, name: true },
+            select: { id: true, name: true, institution: true },
           },
         },
         orderBy: { date: 'desc' },
@@ -422,7 +424,7 @@ export const receiptsRouter = createTRPCRouter({
       const allData = rows.map((row) => {
         const effectiveClassification = getEffectiveClassification(row);
         const metadata = row.metadata as Record<string, unknown> | null;
-        const venmoStatementMatch =
+        const venmoStatementMatchLegacy =
           metadata &&
           typeof metadata === 'object' &&
           !Array.isArray(metadata) &&
@@ -430,11 +432,54 @@ export const receiptsRouter = createTRPCRouter({
           typeof metadata.venmoStatementMatch === 'object'
             ? (metadata.venmoStatementMatch as Record<string, unknown>)
             : null;
+        const venmoStatementEntry =
+          metadata &&
+          typeof metadata === 'object' &&
+          !Array.isArray(metadata) &&
+          metadata.venmoStatementEntry &&
+          typeof metadata.venmoStatementEntry === 'object'
+            ? (metadata.venmoStatementEntry as Record<string, unknown>)
+            : null;
+        const venmoReconciliation =
+          metadata &&
+          typeof metadata === 'object' &&
+          !Array.isArray(metadata) &&
+          metadata.venmoReconciliation &&
+          typeof metadata.venmoReconciliation === 'object'
+            ? (metadata.venmoReconciliation as Record<string, unknown>)
+            : null;
+
+        const matchedBankTransactionId =
+          venmoReconciliation &&
+          typeof venmoReconciliation.matchedBankTransactionId === 'string'
+            ? venmoReconciliation.matchedBankTransactionId
+            : null;
+        const canonicalTransactionId =
+          venmoReconciliation &&
+          typeof venmoReconciliation.canonicalTransactionId === 'string'
+            ? venmoReconciliation.canonicalTransactionId
+            : null;
+        const statementType =
+          venmoStatementEntry &&
+          typeof venmoStatementEntry.type === 'string'
+            ? venmoStatementEntry.type.toLowerCase()
+            : '';
+        const isCanonicalIncomeWithoutBankCounterpart =
+          !!venmoStatementEntry &&
+          row.type === 'INCOME' &&
+          !statementType.includes('transfer');
+
+        const hasVenmoStatementMatch =
+          !!venmoStatementMatchLegacy ||
+          !!matchedBankTransactionId ||
+          !!canonicalTransactionId ||
+          isCanonicalIncomeWithoutBankCounterpart;
 
         return {
           ...row,
           effectiveClassification,
-          hasVenmoStatementMatch: !!venmoStatementMatch,
+          hasVenmoStatementMatch,
+          isVenmoStatementCanonical: !!venmoStatementEntry,
         };
       });
 

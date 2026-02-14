@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { PrismaClient, TransactionStatus, TransactionType } from '@prisma/client';
 import { getAmazonCategoryTargets, getAmazonRoutingCategoryId } from '../src/lib/amazon-routing';
+import { getVenmoBankRouting } from '../src/lib/venmo-routing';
 
 type ParsedArgs = {
   accountId?: string;
@@ -378,7 +379,11 @@ async function run() {
         }
 
         const amountAbs = Math.abs(signedAmount);
-        const type = signedAmount < 0 ? 'EXPENSE' : 'INCOME';
+        const venmoRouting = getVenmoBankRouting({
+          description,
+          merchantName: description,
+        });
+        const type = venmoRouting?.type ?? (signedAmount < 0 ? 'EXPENSE' : 'INCOME');
         const amazonCategoryId =
           type === 'EXPENSE'
             ? getAmazonRoutingCategoryId(
@@ -405,7 +410,11 @@ async function run() {
           date,
           description: description.slice(0, 500),
           merchantName: description.slice(0, 200),
-          ...(amazonCategoryId ? { categoryId: amazonCategoryId } : {}),
+          ...(venmoRouting
+            ? { classification: venmoRouting.classification }
+            : amazonCategoryId
+              ? { categoryId: amazonCategoryId }
+              : {}),
           externalId: `csv:${digest}`,
           isReviewed: false,
         });
