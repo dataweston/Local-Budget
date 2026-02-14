@@ -14,6 +14,8 @@ export const vendorsRouter = createTRPCRouter({
         sortBy: z.enum(['name', 'spending', 'count']).optional().default('spending'),
         sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
         limit: z.number().optional().default(50),
+        startDate: z.date().optional(),
+        endDate: z.date().optional(),
       }).optional()
     )
     .query(async ({ ctx, input }) => {
@@ -21,12 +23,32 @@ export const vendorsRouter = createTRPCRouter({
       const sortBy = input?.sortBy ?? 'spending';
       const sortOrder = input?.sortOrder ?? 'desc';
       const limit = input?.limit ?? 50;
+      const dateWhere =
+        input?.startDate || input?.endDate
+          ? {
+              date: {
+                ...(input?.startDate ? { gte: input.startDate } : {}),
+                ...(input?.endDate ? { lte: input.endDate } : {}),
+              },
+            }
+          : {};
 
       // Get all transactions with merchant names for the user
       const transactions = await ctx.db.transaction.findMany({
         where: {
           account: { userId: ctx.session.user.id },
           merchantName: { not: null },
+          ...dateWhere,
+          NOT: [
+            { classification: 'TRANSFER' as const },
+            {
+              category: {
+                is: {
+                  defaultClassification: 'TRANSFER' as const,
+                },
+              },
+            },
+          ],
         },
         select: {
           merchantName: true,
@@ -49,6 +71,7 @@ export const vendorsRouter = createTRPCRouter({
         name: string;
         normalizedName: string;
         count: number;
+        spendingCount: number;
         totalSpending: number;
         categories: Map<string, { name: string; count: number }>;
       }>();
@@ -64,6 +87,7 @@ export const vendorsRouter = createTRPCRouter({
             name: normalized,
             normalizedName: normalized.toLowerCase(),
             count: 0,
+            spendingCount: 0,
             totalSpending: 0,
             categories: new Map(),
           });
@@ -75,6 +99,7 @@ export const vendorsRouter = createTRPCRouter({
         // Only count expenses towards spending
         if (isExpenseForSpending(tx)) {
           vendor.totalSpending += Math.abs(amount);
+          vendor.spendingCount++;
         }
 
         // Track category distribution
@@ -95,6 +120,7 @@ export const vendorsRouter = createTRPCRouter({
         name: v.name,
         normalizedName: v.normalizedName,
         count: v.count,
+        spendingCount: v.spendingCount,
         totalSpending: v.totalSpending,
         categories: Array.from(v.categories.values()).sort((a, b) => b.count - a.count),
       }));

@@ -6,10 +6,12 @@ export const categoriesRouter = createTRPCRouter({
   // List all categories
   list: protectedProcedure
     .input(
-      z.object({
-        includeSystem: z.boolean().default(true),
-        parentId: z.string().nullable().optional(),
-      }).optional()
+      z
+        .object({
+          includeSystem: z.boolean().default(true),
+          parentId: z.string().nullable().optional(),
+        })
+        .optional()
     )
     .query(async ({ ctx, input }) => {
       const categories = await ctx.db.category.findMany({
@@ -147,35 +149,24 @@ export const categoriesRouter = createTRPCRouter({
       return { success: true };
     }),
 
-  // Get spending by category
+  // Get spending by category (split-aware)
   spending: protectedProcedure
     .input(
-      z.object({
-        startDate: z.date().optional(),
-        endDate: z.date().optional(),
-        type: z.enum(['EXPENSE', 'INCOME']).default('EXPENSE'),
-      }).optional()
+      z
+        .object({
+          startDate: z.date().optional(),
+          endDate: z.date().optional(),
+          type: z.enum(['EXPENSE', 'INCOME']).default('EXPENSE'),
+        })
+        .optional()
     )
     .query(async ({ ctx, input }) => {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
       const targetType = input?.type ?? 'EXPENSE';
-      const transferExclusion = {
-        NOT: [
-          { classification: 'TRANSFER' as const },
-          {
-            category: {
-              is: {
-                defaultClassification: 'TRANSFER' as const,
-              },
-            },
-          },
-        ],
-      };
 
-      const result = await ctx.db.transaction.groupBy({
-        by: ['categoryId'],
+      const transactions = await ctx.db.transaction.findMany({
         where: {
           account: { userId: ctx.session.user.id },
           type: targetType,
@@ -183,42 +174,129 @@ export const categoriesRouter = createTRPCRouter({
             gte: input?.startDate ?? startOfMonth,
             lte: input?.endDate ?? endOfMonth,
           },
-          ...transferExclusion,
         },
-        _sum: {
+        select: {
+          id: true,
           amount: true,
+          classification: true,
+          category: {
+            select: {
+              id: true,
+              name: true,
+              icon: true,
+              color: true,
+              defaultClassification: true,
+              parentId: true,
+              parent: { select: { id: true, name: true } },
+            },
+          },
+          splits: {
+            select: {
+              amount: true,
+              classification: true,
+              category: {
+                select: {
+                  id: true,
+                  name: true,
+                  icon: true,
+                  color: true,
+                  defaultClassification: true,
+                  parentId: true,
+                  parent: { select: { id: true, name: true } },
+                },
+              },
+            },
+          },
         },
-        _count: true,
       });
 
-      // Get category details
-      const categoryIds = result
-        .map((r) => r.categoryId)
-        .filter((id): id is string => id !== null);
+      type CategoryInfo = {
+        id: string;
+        name: string;
+        icon: string | null;
+        color: string | null;
+        parentId: string | null;
+        parent: { id: string; name: string } | null;
+      };
 
-      const categories = await ctx.db.category.findMany({
-        where: { id: { in: categoryIds } },
-        select: { id: true, name: true, icon: true, color: true },
-      });
+      type AggregateRow = {
+        categoryId: string | null;
+        categoryName: string;
+        icon: string | null;
+        color: string | null;
+        parentCategoryId: string | null;
+        parentCategoryName: string | null;
+        amount: number;
+        transactionIds: Set<string>;
+      };
 
-      const categoryMap = new Map(categories.map((c) => [c.id, c]));
-      const totalSpend = result.reduce(
-        (sum, r) => sum + Math.abs(Number(r._sum.amount ?? 0)),
-        0
-      );
+      const aggregates = new Map<string, AggregateRow>();
 
-      return result.map((r) => {
-        const category = r.categoryId ? categoryMap.get(r.categoryId) : null;
-        const amount = Math.abs(Number(r._sum.amount ?? 0));
-        return {
-          categoryId: r.categoryId,
-          categoryName: category?.name ?? 'Uncategorized',
-          icon: category?.icon ?? '❓',
-          color: category?.color,
-          amount,
-          transactionCount: r._count,
-          percentOfTotal: totalSpend > 0 ? (amount / totalSpend) * 100 : 0,
-        };
-      }).sort((a, b) => b.amount - a.amount);
+      const push = (transactionId: string, amount: number, category: CategoryInfo | null) => {
+        const categoryId = category?.id ?? null;
+        const categoryName = category?.name ?? 'Uncategorized';
+        const key = categoryId ?? `uncategorized:${categoryName}`;
+
+        if (!aggregates.has(key)) {
+          aggregates.set(key, {
+            categoryId,
+            categoryName,
+            icon: category?.icon ?? '?',
+            color: category?.color ?? null,
+            parentCategoryId: category?.parentId ?? null,
+            parentCategoryName: category?.parent?.name ?? null,
+            amount: 0,
+            transactionIds: new Set<string>(),
+          });
+        }
+
+        const row = aggregates.get(key)!;
+        row.amount += amount;
+        row.transactionIds.add(transactionId);
+      };
+
+      for (const tx of transactions) {
+        const txClassification = tx.classification ?? tx.category?.defaultClassification ?? null;
+
+        if (tx.splits.length > 0) {
+          for (const split of tx.splits) {
+            const splitClassification =
+              split.classification ??
+              split.category?.defaultClassification ??
+              txClassification;
+            if (splitClassification === 'TRANSFER') continue;
+
+            push(
+              tx.id,
+              Math.abs(Number(split.amount)),
+              (split.category as CategoryInfo | null) ?? (tx.category as CategoryInfo | null)
+            );
+          }
+          continue;
+        }
+
+        if (txClassification === 'TRANSFER') continue;
+        push(tx.id, Math.abs(Number(tx.amount)), tx.category as CategoryInfo | null);
+      }
+
+      const rows = Array.from(aggregates.values()).map((row) => ({
+        categoryId: row.categoryId,
+        categoryName: row.categoryName,
+        icon: row.icon,
+        color: row.color,
+        parentCategoryId: row.parentCategoryId,
+        parentCategoryName: row.parentCategoryName,
+        amount: row.amount,
+        transactionCount: row.transactionIds.size,
+      }));
+
+      const totalSpend = rows.reduce((sum, row) => sum + row.amount, 0);
+
+      return rows
+        .map((row) => ({
+          ...row,
+          percentOfTotal: totalSpend > 0 ? (row.amount / totalSpend) * 100 : 0,
+        }))
+        .sort((a, b) => b.amount - a.amount);
     }),
 });

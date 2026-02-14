@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
 import {
@@ -19,6 +19,13 @@ import {
   type PeriodPreset,
 } from '@/components/ui/date-range-selector';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   ResponsiveContainer,
   BarChart,
   Bar,
@@ -27,72 +34,174 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  PieChart,
-  Pie,
-  Cell,
 } from 'recharts';
-
-import { CHART_COLORS, CHART_PALETTE, CLASSIFICATION_STYLES } from '@/lib/colors';
+import { CHART_COLORS, CLASSIFICATION_STYLES } from '@/lib/colors';
 import * as M from '@/lib/metrics';
 
+type SortOrder = 'asc' | 'desc';
+type CategorySort = 'amount' | 'name' | 'classification' | 'count' | 'share';
+type VendorSort = 'spending' | 'name' | 'count';
+
+const CLASS_ORDER: Record<string, number> = {
+  INCOME: 0,
+  REIMBURSEMENT: 1,
+  COGS: 2,
+  OPERATING: 3,
+  REIMBURSABLE: 4,
+  PERSONAL: 5,
+};
+
+const sortRows = <T,>(
+  rows: T[],
+  order: SortOrder,
+  compare: (a: T, b: T) => number
+): T[] => {
+  const sorted = [...rows].sort(compare);
+  return order === 'asc' ? sorted : sorted.reverse();
+};
+
 export function ReportsView() {
-  // Date range state
   const [period, setPeriod] = useState<PeriodPreset>('this-month');
   const [yearValue, setYearValue] = useState<number>(new Date().getFullYear());
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
 
+  const [categorySortBy, setCategorySortBy] = useState<CategorySort>('amount');
+  const [categorySortOrder, setCategorySortOrder] = useState<SortOrder>('desc');
+  const [expenseSortBy, setExpenseSortBy] = useState<CategorySort>('amount');
+  const [expenseSortOrder, setExpenseSortOrder] = useState<SortOrder>('desc');
+  const [vendorSortBy, setVendorSortBy] = useState<VendorSort>('spending');
+  const [vendorSortOrder, setVendorSortOrder] = useState<SortOrder>('desc');
+
   const dateRange = useMemo(() => {
     if (period === 'custom' && customStart && customEnd) {
-      const start = new Date(customStart + 'T00:00:00');
-      const end = new Date(customEnd + 'T23:59:59.999');
-      return { startDate: start, endDate: end, label: 'Custom' };
+      return {
+        startDate: new Date(customStart + 'T00:00:00'),
+        endDate: new Date(customEnd + 'T23:59:59.999'),
+        label: 'Custom',
+      };
     }
     return getDateRangeForPreset(period, { year: yearValue });
   }, [period, yearValue, customStart, customEnd]);
 
   const dateInput = { startDate: dateRange.startDate, endDate: dateRange.endDate };
-
-  // Queries — all date-filtered
   const { data: profitLoss, isLoading: plLoading } = api.dashboard.profitLoss.useQuery(dateInput);
+  const { data: stats } = api.dashboard.stats.useQuery(dateInput);
+  const { data: cashflow, isLoading: cashflowLoading } = api.dashboard.cashflow.useQuery({
+    ...dateInput,
+    period: 'monthly',
+  });
   const { data: categorySpend, isLoading: catLoading } = api.categories.spending.useQuery(dateInput);
   const { data: incomeByCategory, isLoading: incomeLoading } = api.categories.spending.useQuery({
     ...dateInput,
     type: 'INCOME',
   });
-  const { data: entitySpend, isLoading: entityLoading } = api.entities.spendingSummary.useQuery(dateInput);
-  const { data: cashflow, isLoading: cashflowLoading } = api.dashboard.cashflow.useQuery({
-    ...dateInput,
-    period: 'monthly',
-  });
   const { data: vendorData, isLoading: vendorLoading } = api.vendors.list.useQuery({
+    ...dateInput,
     sortBy: 'spending',
     sortOrder: 'desc',
-    limit: 10,
+    limit: 100,
   });
 
-  const cashflowTotals = useMemo(() => {
-    if (!cashflow || cashflow.length === 0) {
-      return { income: 0, expenses: 0, net: 0 };
-    }
+  const pnlCategoryRows = useMemo(() => {
+    if (!profitLoss) return [];
+    return sortRows(profitLoss.byCategory, categorySortOrder, (a, b) => {
+      switch (categorySortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'classification':
+          return (CLASS_ORDER[a.classification] ?? 999) - (CLASS_ORDER[b.classification] ?? 999);
+        case 'count':
+          return a.transactionCount - b.transactionCount;
+        case 'share':
+          return a.percentOfTotal - b.percentOfTotal;
+        default:
+          return a.amount - b.amount;
+      }
+    });
+  }, [profitLoss, categorySortBy, categorySortOrder]);
 
-    return cashflow.reduce(
-      (totals, row) => {
-        totals.income += row.income;
-        totals.expenses += row.expenses;
-        totals.net += row.net;
-        return totals;
-      },
+  const expenseRows = useMemo(() => {
+    const rows = (categorySpend ?? []).map((row) => ({
+      ...row,
+      displayName: row.parentCategoryName
+        ? `${row.parentCategoryName} > ${row.categoryName}`
+        : row.categoryName,
+    }));
+    return sortRows(rows, expenseSortOrder, (a, b) => {
+      switch (expenseSortBy) {
+        case 'name':
+          return a.displayName.localeCompare(b.displayName);
+        case 'classification':
+          return 0;
+        case 'count':
+          return a.transactionCount - b.transactionCount;
+        case 'share':
+          return a.percentOfTotal - b.percentOfTotal;
+        default:
+          return a.amount - b.amount;
+      }
+    });
+  }, [categorySpend, expenseSortBy, expenseSortOrder]);
+
+  const vendorRows = useMemo(() => {
+    const rows = (vendorData?.vendors ?? []).filter((v) => v.totalSpending > 0);
+    return sortRows(rows, vendorSortOrder, (a, b) => {
+      switch (vendorSortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'count':
+          return (a.spendingCount ?? a.count) - (b.spendingCount ?? b.count);
+        default:
+          return a.totalSpending - b.totalSpending;
+      }
+    });
+  }, [vendorData?.vendors, vendorSortBy, vendorSortOrder]);
+
+  const cashflowTotals = useMemo(() => {
+    return (cashflow ?? []).reduce(
+      (acc, row) => ({
+        income: acc.income + row.income,
+        expenses: acc.expenses + row.expenses,
+        net: acc.net + row.net,
+      }),
       { income: 0, expenses: 0, net: 0 }
     );
   }, [cashflow]);
 
+  const healthCards = useMemo(() => {
+    if (!profitLoss) return [];
+    const runway = M.cashRunwayMonths({
+      currentBalance: stats?.totalBalance ?? 0,
+      monthlyBurnRate: profitLoss.averageMonthlyExpenses,
+      monthlyOperatingBurn: profitLoss.operatingBurnRate,
+    });
+    const cogsRatio = M.cogsRatio({ revenue: profitLoss.revenue, cogs: profitLoss.cogs });
+    const opexRatio = M.opexRatio({
+      revenue: profitLoss.revenue,
+      operatingExpenses: profitLoss.operatingExpenses,
+    });
+    return [
+      ['Gross Margin', `${profitLoss.grossMargin.toFixed(1)}%`],
+      ['Operating Margin', `${profitLoss.operatingMargin.toFixed(1)}%`],
+      ['Net Margin', `${profitLoss.netMargin.toFixed(1)}%`],
+      ['Savings Rate', `${profitLoss.savingsRate.toFixed(1)}%`],
+      ['COGS Ratio', `${cogsRatio.toFixed(1)}%`],
+      ['OpEx Ratio', `${opexRatio.toFixed(1)}%`],
+      ['Avg Monthly Revenue', formatCurrency(profitLoss.averageMonthlyRevenue)],
+      ['Avg Monthly Expenses', formatCurrency(profitLoss.averageMonthlyExpenses)],
+      ['Operating Burn / Mo', formatCurrency(profitLoss.operatingBurnRate)],
+      ['Revenue / Expense', `${profitLoss.expenseCoverageRatio.toFixed(2)}x`],
+      ['Top Expense Concentration', `${profitLoss.topExpenseCategoryShare.toFixed(1)}%`],
+      ['Cash Runway', Number.isFinite(runway) ? `${runway.toFixed(1)} mo` : 'Infinity'],
+      ['Uncategorized Spend', formatCurrency(profitLoss.uncategorizedAmount)],
+    ];
+  }, [profitLoss, stats?.totalBalance]);
+
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
-
       <main className="flex-1 container mx-auto px-4 py-6 space-y-6">
-        {/* Date Range Selector */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Reports</h1>
           <DateRangeSelector
@@ -113,623 +222,317 @@ export function ReportsView() {
             <TabsTrigger value="income-vs-expense">Income vs Expense</TabsTrigger>
             <TabsTrigger value="categories">Expense Categories</TabsTrigger>
             <TabsTrigger value="income-sources">Income Sources</TabsTrigger>
-            <TabsTrigger value="entities">By Entity</TabsTrigger>
             <TabsTrigger value="top-vendors">Top Vendors</TabsTrigger>
           </TabsList>
 
-          {/* P&L Tab */}
           <TabsContent value="pnl" className="mt-6">
-            {plLoading ? (
+            {plLoading || !profitLoss ? (
               <Skeleton className="h-96" />
-            ) : profitLoss ? (
+            ) : (
               <div className="grid gap-6 lg:grid-cols-2">
                 <Card>
                   <CardHeader>
                     <CardTitle>Profit & Loss Summary</CardTitle>
                     <CardDescription>{dateRange.label}</CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center py-2 border-b">
-                        <span className="font-medium">Revenue</span>
-                        <span className="text-income font-bold">
-                          {formatCurrency(profitLoss.revenue)}
-                        </span>
-                      </div>
-                      {profitLoss.reimbursementIncome > 0 && (
-                        <div className="flex justify-between items-center py-2 border-b pl-4">
-                          <span className="text-xs text-muted-foreground italic">
-                            incl. Reimbursements received
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {formatCurrency(profitLoss.reimbursementIncome)}
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex justify-between items-center py-2 border-b">
-                        <span className="text-muted-foreground">Cost of Goods Sold</span>
-                        <span className="text-expense">
-                          ({formatCurrency(profitLoss.cogs)})
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center py-2 border-b bg-muted/50 px-2 rounded">
-                        <span className="font-semibold">Gross Profit</span>
-                        <div className="text-right">
-                          <span className="font-bold">
-                            {formatCurrency(profitLoss.grossProfit)}
-                          </span>
-                          <span className="text-xs text-muted-foreground ml-2">
-                            ({profitLoss.grossMargin.toFixed(1)}%)
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex justify-between items-center py-2 border-b">
-                        <span className="text-muted-foreground">Operating Expenses</span>
-                        <span className="text-expense">
-                          ({formatCurrency(profitLoss.operatingExpenses)})
-                        </span>
-                      </div>
-                      {profitLoss.reimbursableExpenses > 0 && (
-                        <div className="flex justify-between items-center py-2 border-b">
-                          <span className="text-muted-foreground">Reimbursable Expenses</span>
-                          <span className="text-expense">
-                            ({formatCurrency(profitLoss.reimbursableExpenses)})
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex justify-between items-center py-2 border-b bg-muted/50 px-2 rounded">
-                        <span className="font-semibold">Operating Income</span>
-                        <div className="text-right">
-                          <span
-                            className={cn(
-                              'font-bold',
-                              profitLoss.operatingIncome >= 0
-                                ? 'text-income'
-                                : 'text-expense'
-                            )}
-                          >
-                            {formatCurrency(profitLoss.operatingIncome)}
-                          </span>
-                          <span className="text-xs text-muted-foreground ml-2">
-                            ({profitLoss.operatingMargin.toFixed(1)}%)
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex justify-between items-center py-2 border-b">
-                        <span className="text-muted-foreground">Personal / Owner Draws</span>
-                        <span className="text-expense">
-                          ({formatCurrency(profitLoss.personalExpenses)})
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center py-3 bg-primary/10 px-2 rounded">
-                        <span className="font-bold text-lg">Net Income</span>
-                        <div className="text-right">
-                          <span
-                            className={cn(
-                              'font-bold text-lg',
-                              profitLoss.netIncome >= 0
-                                ? 'text-income'
-                                : 'text-expense'
-                            )}
-                          >
-                            {formatCurrency(profitLoss.netIncome)}
-                          </span>
-                          <span className="text-xs text-muted-foreground ml-2">
-                            ({profitLoss.netMargin.toFixed(1)}%)
-                          </span>
-                        </div>
-                      </div>
-                    </div>
+                  <CardContent className="space-y-2">
+                    <div className="flex justify-between"><span>Revenue</span><span className="font-bold text-income">{formatCurrency(profitLoss.revenue)}</span></div>
+                    <div className="flex justify-between"><span>COGS</span><span className="text-expense">({formatCurrency(profitLoss.cogs)})</span></div>
+                    <div className="flex justify-between"><span>Operating Expenses</span><span className="text-expense">({formatCurrency(profitLoss.operatingExpenses)})</span></div>
+                    <div className="flex justify-between"><span>Personal</span><span className="text-expense">({formatCurrency(profitLoss.personalExpenses)})</span></div>
+                    <div className="flex justify-between font-bold"><span>Net Income</span><span className={cn(profitLoss.netIncome >= 0 ? 'text-income' : 'text-expense')}>{formatCurrency(profitLoss.netIncome)}</span></div>
                   </CardContent>
                 </Card>
 
-                {/* Expense Breakdown Chart */}
                 <Card>
                   <CardHeader>
-                    <CardTitle>Expense Breakdown</CardTitle>
-                    <CardDescription>By classification</CardDescription>
+                    <CardTitle>Financial Health</CardTitle>
+                    <CardDescription>Expanded metrics</CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <BarChart
-                        data={[
-                          { name: 'COGS', value: profitLoss.cogs },
-                          { name: 'Operating', value: profitLoss.operatingExpenses },
-                          { name: 'Personal', value: profitLoss.personalExpenses },
-                        ]}
-                        layout="vertical"
-                      >
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis type="number" tickFormatter={(v) => `$${v}`} />
-                        <YAxis type="category" dataKey="name" width={80} />
-                        <Tooltip
-                          formatter={(value: number) => formatCurrency(value)}
-                        />
-                        <Bar dataKey="value" fill={CHART_COLORS.primary} radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {healthCards.map(([label, value]) => (
+                        <div key={label} className="rounded border px-3 py-2">
+                          <p className="text-xs text-muted-foreground">{label}</p>
+                          <p className="font-semibold">{value}</p>
+                        </div>
+                      ))}
+                    </div>
                   </CardContent>
                 </Card>
 
-                {/* Financial Health Metrics */}
                 <Card className="lg:col-span-2">
                   <CardHeader>
-                    <CardTitle>Financial Health</CardTitle>
-                    <CardDescription>Key ratios and metrics — {dateRange.label}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                      <div className="rounded-lg border p-4">
-                        <p className="text-xs text-muted-foreground">Gross Margin</p>
-                        <p className={cn('text-2xl font-bold', profitLoss.grossMargin >= 0 ? 'text-foreground' : 'text-expense')}>
-                          {profitLoss.grossMargin.toFixed(1)}%
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">Revenue after COGS</p>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <CardTitle>By Category</CardTitle>
+                        <CardDescription>Sortable, aligned category lines</CardDescription>
                       </div>
-                      <div className="rounded-lg border p-4">
-                        <p className="text-xs text-muted-foreground">Operating Margin</p>
-                        <p className={cn('text-2xl font-bold', profitLoss.operatingMargin >= 0 ? 'text-foreground' : 'text-expense')}>
-                          {profitLoss.operatingMargin.toFixed(1)}%
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">Revenue after COGS + OpEx</p>
-                      </div>
-                      <div className="rounded-lg border p-4">
-                        <p className="text-xs text-muted-foreground">Net Margin</p>
-                        <p className={cn('text-2xl font-bold', profitLoss.netMargin >= 0 ? 'text-foreground' : 'text-expense')}>
-                          {profitLoss.netMargin.toFixed(1)}%
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">Revenue after all expenses</p>
-                      </div>
-                      <div className="rounded-lg border p-4">
-                        <p className="text-xs text-muted-foreground">Savings Rate</p>
-                        <p className={cn('text-2xl font-bold', profitLoss.savingsRate >= 0 ? 'text-income' : 'text-expense')}>
-                          {profitLoss.savingsRate.toFixed(1)}%
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">Income retained</p>
+                      <div className="flex gap-2">
+                        <Select value={categorySortBy} onValueChange={(v) => setCategorySortBy(v as CategorySort)}>
+                          <SelectTrigger className="h-8 w-[140px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="amount">Sort: Amount</SelectItem>
+                            <SelectItem value="share">Sort: Share</SelectItem>
+                            <SelectItem value="count">Sort: Tx Count</SelectItem>
+                            <SelectItem value="classification">Sort: Class</SelectItem>
+                            <SelectItem value="name">Sort: Name</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select value={categorySortOrder} onValueChange={(v) => setCategorySortOrder(v as SortOrder)}>
+                          <SelectTrigger className="h-8 w-[110px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="desc">Desc</SelectItem>
+                            <SelectItem value="asc">Asc</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
-                    {profitLoss.revenue > 0 && (
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                        <div className="flex justify-between items-center py-2 px-3 rounded bg-muted/50">
-                          <span className="text-sm text-muted-foreground">COGS Ratio</span>
-                          <span className="font-medium">{(profitLoss.cogs / profitLoss.revenue * 100).toFixed(1)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center py-2 px-3 rounded bg-muted/50">
-                          <span className="text-sm text-muted-foreground">OpEx Ratio</span>
-                          <span className="font-medium">{(profitLoss.operatingExpenses / profitLoss.revenue * 100).toFixed(1)}%</span>
-                        </div>
-                      </div>
-                    )}
+                  </CardHeader>
+                  <CardContent>
+                    <div className="border rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-muted/50 border-b">
+                            <th className="text-left p-2">Class</th>
+                            <th className="text-left p-2">Category</th>
+                            <th className="text-right p-2">Tx</th>
+                            <th className="text-right p-2">Share</th>
+                            <th className="text-right p-2">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pnlCategoryRows.map((row) => (
+                            <tr key={`${row.categoryId}-${row.classification}-${row.name}`} className="border-b last:border-0">
+                              <td className="p-2">
+                                <span className={cn('text-xs px-2 py-0.5 rounded border', CLASSIFICATION_STYLES[row.classification] ?? 'bg-slate-50 text-slate-700 border-slate-200')}>{row.classification}</span>
+                              </td>
+                              <td className="p-2 font-medium">{row.name}</td>
+                              <td className="p-2 text-right text-muted-foreground">{row.transactionCount}</td>
+                              <td className="p-2 text-right text-muted-foreground">{row.percentOfTotal.toFixed(1)}%</td>
+                              <td className="p-2 text-right font-semibold">{formatCurrency(row.amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </CardContent>
                 </Card>
-
-                {/* Category Breakdown for P&L */}
-                {profitLoss.byCategory.length > 0 && (
-                  <Card className="lg:col-span-2">
-                    <CardHeader>
-                      <CardTitle>By Category</CardTitle>
-                      <CardDescription>
-                        Breakdown of all transactions by category and classification
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        {profitLoss.byCategory.map((cat) => (
-                          <div key={cat.categoryId} className="flex items-center gap-3">
-                            <span
-                              className={cn(
-                                'text-xs font-medium px-2 py-0.5 rounded border',
-                                CLASSIFICATION_STYLES[cat.classification] ?? 'bg-slate-50 text-slate-700 border-slate-200'
-                              )}
-                            >
-                              {cat.classification}
-                            </span>
-                            <span className="flex-1 font-medium">{cat.name}</span>
-                            <span className="font-bold">{formatCurrency(cat.amount)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                No P&L data available
               </div>
             )}
           </TabsContent>
 
-          {/* Income vs Expense Tab */}
           <TabsContent value="income-vs-expense" className="mt-6">
             {cashflowLoading ? (
               <Skeleton className="h-96" />
-            ) : cashflow && cashflow.length > 0 ? (
+            ) : (
               <Card>
                 <CardHeader>
                   <CardTitle>Income vs Expenses</CardTitle>
-                  <CardDescription>Monthly comparison — {dateRange.label}</CardDescription>
+                  <CardDescription>{dateRange.label}</CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <ResponsiveContainer width="100%" height={400}>
-                    <BarChart data={cashflow}>
+                <CardContent className="space-y-4">
+                  <ResponsiveContainer width="100%" height={320}>
+                    <BarChart data={cashflow ?? []}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="date"
-                        tickFormatter={(v) => {
-                          const [year, month] = v.split('-');
-                          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                          return `${months[parseInt(month, 10) - 1]} ${year.slice(2)}`;
-                        }}
-                      />
-                      <YAxis tickFormatter={(v) => `$${Math.abs(v)}`} />
-                      <Tooltip
-                        formatter={(value: number, name: string) => [
-                          formatCurrency(value),
-                          name,
-                        ]}
-                      />
+                      <XAxis dataKey="date" />
+                      <YAxis tickFormatter={(v) => `$${v}`} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
                       <Legend />
-                      <Bar dataKey="income" name="Income" fill={CHART_COLORS.income} radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="expenses" name="Expenses" fill={CHART_COLORS.expense} radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="income" name="Income" fill={CHART_COLORS.income} />
+                      <Bar dataKey="expenses" name="Expenses" fill={CHART_COLORS.expense} />
                     </BarChart>
                   </ResponsiveContainer>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Income</p><p className="font-semibold text-income">{formatCurrency(cashflowTotals.income)}</p></div>
+                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Expenses</p><p className="font-semibold text-expense">{formatCurrency(cashflowTotals.expenses)}</p></div>
+                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Net</p><p className={cn('font-semibold', cashflowTotals.net >= 0 ? 'text-income' : 'text-expense')}>{formatCurrency(cashflowTotals.net)}</p></div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
 
-                  <div className="mt-6 grid gap-4 md:grid-cols-3">
-                    <div className="rounded-lg border p-4">
-                      <p className="text-xs text-muted-foreground">Total Income</p>
-                      <p className="text-xl font-bold text-income">
-                        {formatCurrency(cashflowTotals.income)}
-                      </p>
+          <TabsContent value="categories" className="mt-6">
+            {catLoading ? (
+              <Skeleton className="h-96" />
+            ) : (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <CardTitle>Expense Categories</CardTitle>
+                      <CardDescription>Split-aware category aggregation</CardDescription>
                     </div>
-                    <div className="rounded-lg border p-4">
-                      <p className="text-xs text-muted-foreground">Total Expenses</p>
-                      <p className="text-xl font-bold text-expense">
-                        {formatCurrency(cashflowTotals.expenses)}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border p-4">
-                      <p className="text-xs text-muted-foreground">Net Total</p>
-                      <p
-                        className={cn(
-                          'text-xl font-bold',
-                          cashflowTotals.net >= 0 ? 'text-income' : 'text-expense'
-                        )}
-                      >
-                        {formatCurrency(cashflowTotals.net)}
-                      </p>
+                    <div className="flex gap-2">
+                      <Select value={expenseSortBy} onValueChange={(v) => setExpenseSortBy(v as CategorySort)}>
+                        <SelectTrigger className="h-8 w-[140px]"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="amount">Sort: Amount</SelectItem>
+                          <SelectItem value="share">Sort: Share</SelectItem>
+                          <SelectItem value="count">Sort: Tx Count</SelectItem>
+                          <SelectItem value="name">Sort: Name</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select value={expenseSortOrder} onValueChange={(v) => setExpenseSortOrder(v as SortOrder)}>
+                        <SelectTrigger className="h-8 w-[110px]"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="desc">Desc</SelectItem>
+                          <SelectItem value="asc">Asc</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
-
-                  {/* Summary table below chart */}
-                  <div className="mt-6 border rounded-lg overflow-hidden">
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={expenseRows.slice(0, 10)} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" tickFormatter={(v) => `$${v}`} />
+                      <YAxis type="category" dataKey="displayName" width={180} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Bar dataKey="amount" fill={CHART_COLORS.primary} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div className="border rounded-lg overflow-hidden">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b bg-muted/50">
-                          <th className="text-left p-3 font-medium">Period</th>
-                          <th className="text-right p-3 font-medium text-income">Income</th>
-                          <th className="text-right p-3 font-medium text-expense">Expenses</th>
-                          <th className="text-right p-3 font-medium">Net</th>
+                        <tr className="bg-muted/50 border-b">
+                          <th className="text-left p-2">Category</th>
+                          <th className="text-right p-2">Tx</th>
+                          <th className="text-right p-2">Share</th>
+                          <th className="text-right p-2">Amount</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {cashflow.map((row) => (
-                          <tr key={row.date} className="border-b last:border-0">
-                            <td className="p-3 font-medium">{row.date}</td>
-                            <td className="p-3 text-right text-income">
-                              {formatCurrency(row.income)}
-                            </td>
-                            <td className="p-3 text-right text-expense">
-                              {formatCurrency(row.expenses)}
-                            </td>
-                            <td
-                              className={cn(
-                                'p-3 text-right font-bold',
-                                row.net >= 0 ? 'text-income' : 'text-expense'
-                              )}
-                            >
-                              {formatCurrency(row.net)}
-                            </td>
+                        {expenseRows.map((row) => (
+                          <tr key={`${row.categoryId}-${row.displayName}`} className="border-b last:border-0">
+                            <td className="p-2 font-medium">{row.displayName}</td>
+                            <td className="p-2 text-right text-muted-foreground">{row.transactionCount}</td>
+                            <td className="p-2 text-right text-muted-foreground">{row.percentOfTotal.toFixed(1)}%</td>
+                            <td className="p-2 text-right font-semibold">{formatCurrency(row.amount)}</td>
                           </tr>
                         ))}
                       </tbody>
-                      <tfoot>
-                        <tr className="border-t bg-muted/50 font-semibold">
-                          <td className="p-3">Total</td>
-                          <td className="p-3 text-right text-income">
-                            {formatCurrency(cashflowTotals.income)}
-                          </td>
-                          <td className="p-3 text-right text-expense">
-                            {formatCurrency(cashflowTotals.expenses)}
-                          </td>
-                          <td
-                            className={cn(
-                              'p-3 text-right',
-                              cashflowTotals.net >= 0 ? 'text-income' : 'text-expense'
-                            )}
-                          >
-                            {formatCurrency(cashflowTotals.net)}
-                          </td>
-                        </tr>
-                      </tfoot>
                     </table>
                   </div>
                 </CardContent>
               </Card>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                No cashflow data available for this period
-              </div>
             )}
           </TabsContent>
 
-          {/* Expense Categories Tab */}
-          <TabsContent value="categories" className="mt-6">
-            {catLoading ? (
-              <Skeleton className="h-96" />
-            ) : categorySpend && categorySpend.length > 0 ? (
-              <div className="grid gap-6 lg:grid-cols-2">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Expense Distribution</CardTitle>
-                    <CardDescription>{dateRange.label}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <PieChart>
-                        <Pie
-                          data={categorySpend.slice(0, 8)}
-                          dataKey="amount"
-                          nameKey="categoryName"
-                          cx="50%"
-                          cy="50%"
-                          outerRadius={100}
-                          label={({ categoryName, percentOfTotal }) =>
-                            `${categoryName}: ${percentOfTotal.toFixed(0)}%`
-                          }
-                        >
-                          {categorySpend.slice(0, 8).map((_, index) => (
-                            <Cell key={index} fill={CHART_PALETTE[index % CHART_PALETTE.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          formatter={(value: number) => formatCurrency(value)}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Top Expense Categories</CardTitle>
-                    <CardDescription>{dateRange.label}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {categorySpend.map((cat, i) => (
-                        <div key={cat.categoryId} className="flex items-center gap-3">
-                          <div
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length] }}
-                          />
-                          <span className="text-lg">{cat.icon}</span>
-                          <span className="flex-1 font-medium">{cat.categoryName}</span>
-                          <span className="text-muted-foreground text-sm">
-                            {cat.transactionCount} txn
-                          </span>
-                          <span className="font-bold">{formatCurrency(cat.amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                No expense category data available
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Income Sources Tab */}
           <TabsContent value="income-sources" className="mt-6">
             {incomeLoading ? (
               <Skeleton className="h-96" />
-            ) : incomeByCategory && incomeByCategory.length > 0 ? (
-              <div className="grid gap-6 lg:grid-cols-2">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Income Distribution</CardTitle>
-                    <CardDescription>{dateRange.label}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <PieChart>
-                        <Pie
-                          data={incomeByCategory.slice(0, 8)}
-                          dataKey="amount"
-                          nameKey="categoryName"
-                          cx="50%"
-                          cy="50%"
-                          outerRadius={100}
-                          label={({ categoryName, percentOfTotal }) =>
-                            `${categoryName}: ${percentOfTotal.toFixed(0)}%`
-                          }
-                        >
-                          {incomeByCategory.slice(0, 8).map((_, index) => (
-                            <Cell key={index} fill={CHART_PALETTE[index % CHART_PALETTE.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          formatter={(value: number) => formatCurrency(value)}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Income by Category</CardTitle>
-                    <CardDescription>{dateRange.label}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {incomeByCategory.map((cat, i) => (
-                        <div key={cat.categoryId} className="flex items-center gap-3">
-                          <div
-                            className="w-3 h-3 rounded-full shrink-0"
-                            style={{ backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length] }}
-                          />
-                          <span className="text-lg">{cat.icon}</span>
-                          <span className="flex-1 font-medium">{cat.categoryName}</span>
-                          <span className="text-muted-foreground text-sm">
-                            {cat.transactionCount} txn
-                          </span>
-                          <span className="font-bold text-income">
-                            {formatCurrency(cat.amount)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
             ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                No income data available for this period
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Entities Tab */}
-          <TabsContent value="entities" className="mt-6">
-            {entityLoading ? (
-              <Skeleton className="h-96" />
-            ) : entitySpend && entitySpend.length > 0 ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Spending by Entity</CardTitle>
-                  <CardDescription>
-                    Personal vs Business expense breakdown — {dateRange.label}
-                  </CardDescription>
+                  <CardTitle>Income Sources</CardTitle>
+                  <CardDescription>Category-level income for {dateRange.label}</CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={entitySpend}>
+                <CardContent className="space-y-4">
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={(incomeByCategory ?? []).slice(0, 10)} layout="vertical">
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" />
-                      <YAxis tickFormatter={(v) => `$${v}`} />
+                      <XAxis type="number" tickFormatter={(v) => `$${v}`} />
+                      <YAxis type="category" dataKey="categoryName" width={170} tick={{ fontSize: 11 }} />
                       <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                      <Legend />
-                      <Bar
-                        dataKey="totalSpend"
-                        name="Total Spend"
-                        fill={CHART_COLORS.primary}
-                        radius={[4, 4, 0, 0]}
-                      />
+                      <Bar dataKey="amount" fill={CHART_COLORS.income} />
                     </BarChart>
                   </ResponsiveContainer>
-
-                  <div className="mt-6 grid gap-4 md:grid-cols-3">
-                    {entitySpend.map((entity) => (
-                      <Card key={entity.id}>
-                        <CardContent className="pt-4">
-                          <p className="font-medium">{entity.name}</p>
-                          <p className="text-xs text-muted-foreground mb-2">
-                            {entity.type}
-                          </p>
-                          <p className="text-2xl font-bold">
-                            {formatCurrency(entity.totalSpend)}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {entity.transactionCount} transactions
-                          </p>
-                        </CardContent>
-                      </Card>
-                    ))}
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-muted/50 border-b">
+                          <th className="text-left p-2">Category</th>
+                          <th className="text-right p-2">Tx</th>
+                          <th className="text-right p-2">Share</th>
+                          <th className="text-right p-2">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(incomeByCategory ?? []).map((row) => (
+                          <tr key={`${row.categoryId}-${row.categoryName}`} className="border-b last:border-0">
+                            <td className="p-2 font-medium">
+                              {row.parentCategoryName
+                                ? `${row.parentCategoryName} > ${row.categoryName}`
+                                : row.categoryName}
+                            </td>
+                            <td className="p-2 text-right text-muted-foreground">{row.transactionCount}</td>
+                            <td className="p-2 text-right text-muted-foreground">{row.percentOfTotal.toFixed(1)}%</td>
+                            <td className="p-2 text-right font-semibold text-income">{formatCurrency(row.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </CardContent>
               </Card>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                No entity data available
-              </div>
             )}
           </TabsContent>
 
-          {/* Top Vendors Tab */}
           <TabsContent value="top-vendors" className="mt-6">
             {vendorLoading ? (
               <Skeleton className="h-96" />
-            ) : vendorData && vendorData.vendors.length > 0 ? (
-              <div className="grid gap-6 lg:grid-cols-2">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Top Vendors by Spending</CardTitle>
-                    <CardDescription>Top 10 vendors across all time</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <ResponsiveContainer width="100%" height={400}>
-                      <BarChart
-                        data={vendorData.vendors}
-                        layout="vertical"
-                        margin={{ left: 20 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis type="number" tickFormatter={(v) => `$${v}`} />
-                        <YAxis
-                          type="category"
-                          dataKey="name"
-                          width={120}
-                          tick={{ fontSize: 12 }}
-                        />
-                        <Tooltip
-                          formatter={(value: number) => formatCurrency(value)}
-                        />
-                        <Bar
-                          dataKey="totalSpending"
-                          name="Total Spending"
-                          fill={CHART_COLORS.purple}
-                          radius={[0, 4, 4, 0]}
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Vendor Details</CardTitle>
-                    <CardDescription>
-                      {vendorData.total} vendors total
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {vendorData.vendors.map((vendor, i) => (
-                        <div key={vendor.name} className="flex items-center gap-3">
-                          <span className="text-sm font-bold text-muted-foreground w-6">
-                            {i + 1}.
-                          </span>
-                          <span className="flex-1 font-medium">{vendor.name}</span>
-                          <span className="text-muted-foreground text-sm">
-                            {vendor.count} txn
-                          </span>
-                          <span className="font-bold">
-                            {formatCurrency(vendor.totalSpending)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
             ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                No vendor data available
-              </div>
+              <Card>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <CardTitle>Top Vendors</CardTitle>
+                      <CardDescription>Date-scoped vendor spend ({dateRange.label})</CardDescription>
+                    </div>
+                    <div className="flex gap-2">
+                      <Select value={vendorSortBy} onValueChange={(v) => setVendorSortBy(v as VendorSort)}>
+                        <SelectTrigger className="h-8 w-[140px]"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="spending">Sort: Spending</SelectItem>
+                          <SelectItem value="count">Sort: Tx Count</SelectItem>
+                          <SelectItem value="name">Sort: Name</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select value={vendorSortOrder} onValueChange={(v) => setVendorSortOrder(v as SortOrder)}>
+                        <SelectTrigger className="h-8 w-[110px]"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="desc">Desc</SelectItem>
+                          <SelectItem value="asc">Asc</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={vendorRows.slice(0, 12)} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" tickFormatter={(v) => `$${v}`} />
+                      <YAxis type="category" dataKey="name" width={180} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Bar dataKey="totalSpending" fill={CHART_COLORS.primary} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div className="border rounded-lg overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-muted/50 border-b">
+                          <th className="text-left p-2">Vendor</th>
+                          <th className="text-right p-2">Tx</th>
+                          <th className="text-right p-2">Spend</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {vendorRows.map((row) => (
+                          <tr key={row.name} className="border-b last:border-0">
+                            <td className="p-2 font-medium">{row.name}</td>
+                            <td className="p-2 text-right text-muted-foreground">{row.spendingCount ?? row.count}</td>
+                            <td className="p-2 text-right font-semibold">{formatCurrency(row.totalSpending)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </TabsContent>
         </Tabs>

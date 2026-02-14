@@ -11,15 +11,19 @@ export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
   stats: protectedProcedure
     .input(
-      z.object({
-        startDate: z.date().optional(),
-        endDate: z.date().optional(),
-      }).optional()
+      z
+        .object({
+          startDate: z.date().optional(),
+          endDate: z.date().optional(),
+        })
+        .optional()
     )
     .query(async ({ ctx, input }) => {
       const now = new Date();
       const startDate = input?.startDate ?? new Date(now.getFullYear(), now.getMonth(), 1);
-      const endDate = input?.endDate ?? new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      const endDate =
+        input?.endDate ??
+        new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
       // Calculate previous period of equal duration for trend comparison
       const periodMs = endDate.getTime() - startDate.getTime();
@@ -32,10 +36,7 @@ export const dashboardRouter = createTRPCRouter({
         select: { currentBalance: true, type: true },
       });
 
-      const totalBalance = accounts.reduce(
-        (sum, acc) => sum + Number(acc.currentBalance),
-        0
-      );
+      const totalBalance = accounts.reduce((sum, acc) => sum + Number(acc.currentBalance), 0);
 
       // Current period transactions
       const currentTransactions = await ctx.db.transaction.findMany({
@@ -100,7 +101,10 @@ export const dashboardRouter = createTRPCRouter({
       // Get pending counts (not date-filtered)
       const [pendingReceipts, unreviewedTransactions] = await Promise.all([
         ctx.db.receipt.count({
-          where: { userId: ctx.session.user.id, status: { in: ['PENDING', 'PROCESSING'] } },
+          where: {
+            userId: ctx.session.user.id,
+            status: { in: ['PENDING', 'PROCESSING'] },
+          },
         }),
         ctx.db.transaction.count({
           where: { account: { userId: ctx.session.user.id }, isReviewed: false },
@@ -122,11 +126,13 @@ export const dashboardRouter = createTRPCRouter({
   // Get cashflow over time
   cashflow: protectedProcedure
     .input(
-      z.object({
-        period: z.enum(['daily', 'weekly', 'monthly']).default('daily'),
-        startDate: z.date().optional(),
-        endDate: z.date().optional(),
-      }).optional()
+      z
+        .object({
+          period: z.enum(['daily', 'weekly', 'monthly']).default('daily'),
+          startDate: z.date().optional(),
+          endDate: z.date().optional(),
+        })
+        .optional()
     )
     .query(async ({ ctx, input }) => {
       const now = new Date();
@@ -169,19 +175,22 @@ export const dashboardRouter = createTRPCRouter({
         }
       };
 
-      const grouped = new Map<string, {
-        date: string;
-        income: number;
-        expenses: number;
-        net: number;
-        cogs: number;
-        operating: number;
-        personal: number;
-      }>();
+      const grouped = new Map<
+        string,
+        {
+          date: string;
+          income: number;
+          expenses: number;
+          net: number;
+          cogs: number;
+          operating: number;
+          personal: number;
+        }
+      >();
 
       for (const tx of transactions) {
         const dateKey = getDateKey(tx.date);
-        
+
         if (!grouped.has(dateKey)) {
           grouped.set(dateKey, {
             date: dateKey,
@@ -202,7 +211,7 @@ export const dashboardRouter = createTRPCRouter({
           day.income += amount;
         } else if (isExpenseForSpending(tx)) {
           day.expenses += Math.abs(amount);
-          
+
           switch (classification) {
             case 'COGS':
               day.cogs += Math.abs(amount);
@@ -225,10 +234,12 @@ export const dashboardRouter = createTRPCRouter({
   // Get P&L summary
   profitLoss: protectedProcedure
     .input(
-      z.object({
-        startDate: z.date().optional(),
-        endDate: z.date().optional(),
-      }).optional()
+      z
+        .object({
+          startDate: z.date().optional(),
+          endDate: z.date().optional(),
+        })
+        .optional()
     )
     .query(async ({ ctx, input }) => {
       const now = new Date();
@@ -240,8 +251,26 @@ export const dashboardRouter = createTRPCRouter({
           account: { userId: ctx.session.user.id },
           date: { gte: startDate, lte: endDate },
         },
-        include: {
+        select: {
+          id: true,
+          amount: true,
+          type: true,
+          classification: true,
+          categoryId: true,
           category: { select: { id: true, name: true, defaultClassification: true } },
+          splits: {
+            select: {
+              amount: true,
+              classification: true,
+              category: {
+                select: {
+                  id: true,
+                  name: true,
+                  defaultClassification: true,
+                },
+              },
+            },
+          },
         },
       });
 
@@ -251,38 +280,105 @@ export const dashboardRouter = createTRPCRouter({
       let personalExpenses = 0;
       let reimbursableExpenses = 0;
       let reimbursementIncome = 0;
-      const byCategory = new Map<string, { name: string; classification: string; amount: number }>();
+      let uncategorizedAmount = 0;
+      let uncategorizedCount = 0;
+      let totalTransactionsConsidered = 0;
 
-      for (const tx of transactions) {
-        const amount = Number(tx.amount);
-        const categoryKey = tx.categoryId ?? 'uncategorized';
-        const categoryName = tx.category?.name ?? 'Uncategorized';
-        const classification = getEffectiveClassification(tx);
-
-        if (classification === 'INCOME') {
-          revenue += amount;
-        } else if (classification === 'REIMBURSEMENT') {
-          // Money coming back — type is INCOME, amount is negative in DB
-          reimbursementIncome += Math.abs(amount);
-        } else if (classification === 'COGS') {
-          cogs += Math.abs(amount);
-        } else if (classification === 'OPERATING') {
-          operatingExpenses += Math.abs(amount);
-        } else if (classification === 'REIMBURSABLE') {
-          // Money paid out expecting reimbursement — type is EXPENSE
-          reimbursableExpenses += Math.abs(amount);
-        } else if (classification === 'PERSONAL') {
-          personalExpenses += Math.abs(amount);
+      const byCategory = new Map<
+        string,
+        {
+          categoryId: string | null;
+          name: string;
+          classification: string;
+          amount: number;
+          transactionCount: number;
         }
+      >();
 
-        if (!byCategory.has(categoryKey)) {
-          byCategory.set(categoryKey, {
+      const addCategory = (
+        categoryId: string | null,
+        categoryName: string,
+        classification: string,
+        amount: number
+      ) => {
+        const key = `${categoryId ?? 'uncategorized'}::${classification}`;
+        if (!byCategory.has(key)) {
+          byCategory.set(key, {
+            categoryId,
             name: categoryName,
             classification,
             amount: 0,
+            transactionCount: 0,
           });
         }
-        byCategory.get(categoryKey)!.amount += Math.abs(amount);
+
+        const row = byCategory.get(key)!;
+        row.amount += amount;
+        row.transactionCount += 1;
+      };
+
+      const applyLine = (
+        amount: number,
+        classification: string,
+        categoryId: string | null,
+        categoryName: string
+      ) => {
+        if (classification === 'TRANSFER') return;
+
+        totalTransactionsConsidered += 1;
+        const absAmount = Math.abs(amount);
+
+        if (classification === 'INCOME') {
+          revenue += absAmount;
+        } else if (classification === 'REIMBURSEMENT') {
+          reimbursementIncome += absAmount;
+        } else if (classification === 'COGS') {
+          cogs += absAmount;
+        } else if (classification === 'OPERATING') {
+          operatingExpenses += absAmount;
+        } else if (classification === 'REIMBURSABLE') {
+          reimbursableExpenses += absAmount;
+        } else {
+          personalExpenses += absAmount;
+        }
+
+        addCategory(categoryId, categoryName, classification, absAmount);
+
+        if (!categoryId) {
+          uncategorizedAmount += absAmount;
+          uncategorizedCount += 1;
+        }
+      };
+
+      for (const tx of transactions) {
+        const txClassification = getEffectiveClassification(tx);
+
+        if (tx.splits.length > 0) {
+          for (const split of tx.splits) {
+            const splitClassification =
+              split.classification ??
+              split.category?.defaultClassification ??
+              txClassification;
+            const splitCategoryId = split.category?.id ?? tx.categoryId ?? null;
+            const splitCategoryName =
+              split.category?.name ?? tx.category?.name ?? 'Uncategorized';
+
+            applyLine(
+              Number(split.amount),
+              String(splitClassification),
+              splitCategoryId,
+              splitCategoryName
+            );
+          }
+          continue;
+        }
+
+        applyLine(
+          Number(tx.amount),
+          txClassification,
+          tx.categoryId ?? null,
+          tx.category?.name ?? 'Uncategorized'
+        );
       }
 
       // Reimbursements are income-like (money returned), add to revenue
@@ -295,6 +391,27 @@ export const dashboardRouter = createTRPCRouter({
       const netIncome = totalRevenue - totalExpenses;
       const netMargin = totalRevenue > 0 ? (netIncome / totalRevenue) * 100 : 0;
       const savingsRate = totalRevenue > 0 ? ((totalRevenue - totalExpenses) / totalRevenue) * 100 : 0;
+
+      const totalPnlVolume = totalRevenue + totalExpenses;
+      const daysInPeriod = Math.max(
+        1,
+        Math.ceil((endDate.getTime() - startDate.getTime() + 1) / 86_400_000)
+      );
+      const monthsInPeriod = Math.max(daysInPeriod / 30.4375, 1 / 30.4375);
+      const averageMonthlyRevenue = totalRevenue / monthsInPeriod;
+      const averageMonthlyExpenses = totalExpenses / monthsInPeriod;
+      const averageMonthlyNet = netIncome / monthsInPeriod;
+      const operatingBurnRate = (cogs + operatingExpenses + reimbursableExpenses) / monthsInPeriod;
+      const expenseCoverageRatio =
+        totalExpenses > 0 ? totalRevenue / totalExpenses : totalRevenue > 0 ? Infinity : 0;
+
+      const topExpenseCategoryAmount = Array.from(byCategory.values())
+        .filter((row) =>
+          ['COGS', 'OPERATING', 'PERSONAL', 'REIMBURSABLE'].includes(row.classification)
+        )
+        .reduce((max, row) => Math.max(max, row.amount), 0);
+      const topExpenseCategoryShare =
+        totalExpenses > 0 ? (topExpenseCategoryAmount / totalExpenses) * 100 : 0;
 
       return {
         period: { start: startDate, end: endDate },
@@ -311,10 +428,29 @@ export const dashboardRouter = createTRPCRouter({
         netIncome,
         netMargin,
         savingsRate,
-        byCategory: Array.from(byCategory.entries()).map(([id, data]) => ({
-          categoryId: id,
-          ...data,
-        })),
+        totalExpenses,
+        totalPnlVolume,
+        daysInPeriod,
+        monthsInPeriod,
+        averageMonthlyRevenue,
+        averageMonthlyExpenses,
+        averageMonthlyNet,
+        operatingBurnRate,
+        expenseCoverageRatio,
+        topExpenseCategoryShare,
+        uncategorizedAmount,
+        uncategorizedCount,
+        totalTransactionsConsidered,
+        byCategory: Array.from(byCategory.values())
+          .map((row) => ({
+            categoryId: row.categoryId,
+            name: row.name,
+            classification: row.classification,
+            amount: row.amount,
+            transactionCount: row.transactionCount,
+            percentOfTotal: totalPnlVolume > 0 ? (row.amount / totalPnlVolume) * 100 : 0,
+          }))
+          .sort((a, b) => b.amount - a.amount),
       };
     }),
 
@@ -333,7 +469,10 @@ export const dashboardRouter = createTRPCRouter({
       });
 
       const receipts = await ctx.db.receipt.findMany({
-        where: { userId: ctx.session.user.id, status: { in: ['PENDING', 'PROCESSING', 'PROCESSED'] } },
+        where: {
+          userId: ctx.session.user.id,
+          status: { in: ['PENDING', 'PROCESSING', 'PROCESSED'] },
+        },
         take: 5,
         orderBy: { createdAt: 'desc' },
       });
