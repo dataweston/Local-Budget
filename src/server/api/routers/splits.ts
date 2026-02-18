@@ -2,20 +2,20 @@ import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 
+const classificationEnum = z.enum([
+  'COGS',
+  'OPERATING',
+  'PERSONAL',
+  'INCOME',
+  'TRANSFER',
+  'REIMBURSABLE',
+  'REIMBURSEMENT',
+]);
+
 const splitItemSchema = z.object({
   amount: z.number(),
   categoryId: z.string().optional(),
-  classification: z
-    .enum([
-      'COGS',
-      'OPERATING',
-      'PERSONAL',
-      'INCOME',
-      'TRANSFER',
-      'REIMBURSABLE',
-      'REIMBURSEMENT',
-    ])
-    .optional(),
+  classification: classificationEnum.optional(),
   incurredById: z.string().optional(),
   description: z.string().optional(),
 });
@@ -124,6 +124,183 @@ export const splitsRouter = createTRPCRouter({
       });
 
       return result;
+    }),
+
+  // Apply a 2-way split template to many transactions
+  bulkApplyTemplate: protectedProcedure
+    .input(
+      z.object({
+        transactionIds: z.array(z.string()).min(1),
+        template: z.discriminatedUnion('kind', [
+          z.object({
+            kind: z.literal('PERSONAL_BUSINESS'),
+            businessPercent: z.number().gt(0).lt(100),
+            businessCategoryId: z.string().optional(),
+            personalCategoryId: z.string().optional(),
+          }),
+          z.object({
+            kind: z.literal('CATEGORY_PAIR'),
+            firstCategoryId: z.string(),
+            secondCategoryId: z.string(),
+            firstPercent: z.number().gt(0).lt(100),
+            firstClassification: classificationEnum.optional(),
+            secondClassification: classificationEnum.optional(),
+          }),
+        ]),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const transactionIds = Array.from(new Set(input.transactionIds));
+
+      const transactions = await ctx.db.transaction.findMany({
+        where: {
+          id: { in: transactionIds },
+          account: { userId: ctx.session.user.id },
+        },
+        select: {
+          id: true,
+          amount: true,
+          categoryId: true,
+        },
+      });
+
+      if (transactions.length !== transactionIds.length) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Some transactions not found',
+        });
+      }
+
+      if (
+        input.template.kind === 'CATEGORY_PAIR' &&
+        input.template.firstCategoryId === input.template.secondCategoryId
+      ) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Select two different categories.',
+        });
+      }
+
+      const categoryIdsToValidate = new Set<string>();
+      if (input.template.kind === 'PERSONAL_BUSINESS') {
+        if (input.template.businessCategoryId) {
+          categoryIdsToValidate.add(input.template.businessCategoryId);
+        }
+        if (input.template.personalCategoryId) {
+          categoryIdsToValidate.add(input.template.personalCategoryId);
+        }
+      } else {
+        categoryIdsToValidate.add(input.template.firstCategoryId);
+        categoryIdsToValidate.add(input.template.secondCategoryId);
+      }
+
+      if (categoryIdsToValidate.size > 0) {
+        const categories = await ctx.db.category.findMany({
+          where: {
+            id: { in: Array.from(categoryIdsToValidate) },
+            userId: ctx.session.user.id,
+          },
+          select: { id: true },
+        });
+        if (categories.length !== categoryIdsToValidate.size) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'One or more selected categories were not found.',
+          });
+        }
+      }
+
+      const getSplitAmounts = (rawAmount: number, firstPercent: number) => {
+        const absAmount = Math.abs(rawAmount);
+        const firstAmount = Number(((absAmount * firstPercent) / 100).toFixed(2));
+        const secondAmount = Number((absAmount - firstAmount).toFixed(2));
+        if (firstAmount <= 0 || secondAmount <= 0) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              'One or more transactions are too small to split with this percentage.',
+          });
+        }
+        return { firstAmount, secondAmount };
+      };
+
+      await ctx.db.$transaction(async (tx) => {
+        for (const transaction of transactions) {
+          if (input.template.kind === 'PERSONAL_BUSINESS') {
+            const { firstAmount: businessAmount, secondAmount: personalAmount } =
+              getSplitAmounts(
+                Number(transaction.amount),
+                input.template.businessPercent
+              );
+
+            await tx.transactionSplit.deleteMany({
+              where: { transactionId: transaction.id },
+            });
+
+            await tx.transactionSplit.createMany({
+              data: [
+                {
+                  transactionId: transaction.id,
+                  amount: businessAmount,
+                  categoryId:
+                    input.template.businessCategoryId ??
+                    transaction.categoryId ??
+                    null,
+                  classification: 'OPERATING',
+                  description: 'Business portion',
+                },
+                {
+                  transactionId: transaction.id,
+                  amount: personalAmount,
+                  categoryId:
+                    input.template.personalCategoryId ??
+                    transaction.categoryId ??
+                    null,
+                  classification: 'PERSONAL',
+                  description: 'Personal portion',
+                },
+              ],
+            });
+          } else {
+            const { firstAmount, secondAmount } = getSplitAmounts(
+              Number(transaction.amount),
+              input.template.firstPercent
+            );
+
+            await tx.transactionSplit.deleteMany({
+              where: { transactionId: transaction.id },
+            });
+
+            await tx.transactionSplit.createMany({
+              data: [
+                {
+                  transactionId: transaction.id,
+                  amount: firstAmount,
+                  categoryId: input.template.firstCategoryId,
+                  classification:
+                    (input.template.firstClassification as any) ?? null,
+                  description: 'Bulk category split',
+                },
+                {
+                  transactionId: transaction.id,
+                  amount: secondAmount,
+                  categoryId: input.template.secondCategoryId,
+                  classification:
+                    (input.template.secondClassification as any) ?? null,
+                  description: 'Bulk category split',
+                },
+              ],
+            });
+          }
+
+          await tx.transaction.update({
+            where: { id: transaction.id },
+            data: { isReviewed: true },
+          });
+        }
+      });
+
+      return { success: true, count: transactionIds.length };
     }),
 
   // Generate transaction splits from linked receipt/invoice line items

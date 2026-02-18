@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { api } from '@/lib/trpc';
 import { Header } from '@/components/dashboard/header';
@@ -40,6 +40,12 @@ export default function CategoryDetailPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [newSubcategoryName, setNewSubcategoryName] = useState('');
   const [newSubcategoryIcon, setNewSubcategoryIcon] = useState('');
+  const [businessPercent, setBusinessPercent] = useState('50');
+  const [businessCategoryId, setBusinessCategoryId] = useState('');
+  const [personalCategoryId, setPersonalCategoryId] = useState('');
+  const [firstSplitCategoryId, setFirstSplitCategoryId] = useState('');
+  const [secondSplitCategoryId, setSecondSplitCategoryId] = useState('');
+  const [firstSplitPercent, setFirstSplitPercent] = useState('50');
 
   const utils = api.useUtils();
 
@@ -52,6 +58,9 @@ export default function CategoryDetailPage() {
     { parentId: categoryId ?? null },
     { enabled: !!categoryId }
   );
+  const { data: allCategories } = api.categories.list.useQuery(undefined, {
+    enabled: !!categoryId,
+  });
 
   const { data: txData, isLoading: txLoading } = api.transactions.list.useQuery(
     {
@@ -78,11 +87,46 @@ export default function CategoryDetailPage() {
       errorTitle: 'Failed to create subcategory',
     })
   );
+  const bulkSplitTemplate = api.splits.bulkApplyTemplate.useMutation(
+    useToastCallbacks({
+      successTitle: 'Bulk Split Applied',
+      successDescription: 'Selected transactions were split successfully.',
+      errorTitle: 'Failed to split transactions',
+    })
+  );
 
   const transactions = txData?.data ?? [];
+  const categories = allCategories ?? [];
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const allOnPageSelected =
     transactions.length > 0 && transactions.every((tx) => selectedSet.has(tx.id));
+  const businessPercentValue = Number(businessPercent);
+  const firstSplitPercentValue = Number(firstSplitPercent);
+  const personalPercentLabel = Number.isFinite(businessPercentValue)
+    ? (100 - businessPercentValue).toFixed(2)
+    : '--';
+  const secondSplitPercentLabel = Number.isFinite(firstSplitPercentValue)
+    ? (100 - firstSplitPercentValue).toFixed(2)
+    : '--';
+  const canSplitPersonalBusiness =
+    selectedIds.length > 0 &&
+    businessPercentValue > 0 &&
+    businessPercentValue < 100 &&
+    !bulkSplitTemplate.isLoading;
+  const canSplitBetweenCategories =
+    selectedIds.length > 0 &&
+    !!firstSplitCategoryId &&
+    !!secondSplitCategoryId &&
+    firstSplitCategoryId !== secondSplitCategoryId &&
+    firstSplitPercentValue > 0 &&
+    firstSplitPercentValue < 100 &&
+    !bulkSplitTemplate.isLoading;
+
+  useEffect(() => {
+    if (categoryId && !firstSplitCategoryId) {
+      setFirstSplitCategoryId(categoryId);
+    }
+  }, [categoryId, firstSplitCategoryId]);
 
   const refreshData = async () => {
     await Promise.all([
@@ -142,6 +186,40 @@ export default function CategoryDetailPage() {
 
     setNewSubcategoryName('');
     setNewSubcategoryIcon('');
+    await refreshData();
+  };
+
+  const handleSplitPersonalBusiness = async () => {
+    if (!canSplitPersonalBusiness) return;
+
+    await bulkSplitTemplate.mutateAsync({
+      transactionIds: selectedIds,
+      template: {
+        kind: 'PERSONAL_BUSINESS',
+        businessPercent: businessPercentValue,
+        businessCategoryId: businessCategoryId || undefined,
+        personalCategoryId: personalCategoryId || undefined,
+      },
+    });
+
+    setSelectedIds([]);
+    await refreshData();
+  };
+
+  const handleSplitBetweenCategories = async () => {
+    if (!canSplitBetweenCategories) return;
+
+    await bulkSplitTemplate.mutateAsync({
+      transactionIds: selectedIds,
+      template: {
+        kind: 'CATEGORY_PAIR',
+        firstCategoryId: firstSplitCategoryId,
+        secondCategoryId: secondSplitCategoryId,
+        firstPercent: firstSplitPercentValue,
+      },
+    });
+
+    setSelectedIds([]);
     await refreshData();
   };
 
@@ -261,6 +339,99 @@ export default function CategoryDetailPage() {
                 Assign {selectedIds.length > 0 ? `(${selectedIds.length})` : ''} to Subcategory
               </Button>
             </div>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="space-y-3 rounded-md border p-3">
+                <p className="text-sm font-medium">Split Selected: Personal vs Business</p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Input
+                    type="number"
+                    min="0.01"
+                    max="99.99"
+                    step="0.01"
+                    value={businessPercent}
+                    onChange={(e) => setBusinessPercent(e.target.value)}
+                    placeholder="Business %"
+                  />
+                  <Select
+                    value={businessCategoryId}
+                    onChange={(e) => setBusinessCategoryId(e.target.value)}
+                  >
+                    <option value="">Business category (optional)</option>
+                    {categories.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.icon ? `${option.icon} ` : ''}
+                        {option.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={personalCategoryId}
+                    onChange={(e) => setPersonalCategoryId(e.target.value)}
+                  >
+                    <option value="">Personal category (optional)</option>
+                    {categories.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.icon ? `${option.icon} ` : ''}
+                        {option.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Business: {Number.isFinite(businessPercentValue) ? businessPercentValue.toFixed(2) : '--'}%
+                  {' '}| Personal: {personalPercentLabel}%
+                </p>
+                <Button onClick={handleSplitPersonalBusiness} disabled={!canSplitPersonalBusiness}>
+                  Split {selectedIds.length > 0 ? `(${selectedIds.length})` : ''} Personal/Business
+                </Button>
+              </div>
+
+              <div className="space-y-3 rounded-md border p-3">
+                <p className="text-sm font-medium">Split Selected Between Two Categories</p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Select
+                    value={firstSplitCategoryId}
+                    onChange={(e) => setFirstSplitCategoryId(e.target.value)}
+                  >
+                    <option value="">First category</option>
+                    {categories.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.icon ? `${option.icon} ` : ''}
+                        {option.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={secondSplitCategoryId}
+                    onChange={(e) => setSecondSplitCategoryId(e.target.value)}
+                  >
+                    <option value="">Second category</option>
+                    {categories.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.icon ? `${option.icon} ` : ''}
+                        {option.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Input
+                    type="number"
+                    min="0.01"
+                    max="99.99"
+                    step="0.01"
+                    value={firstSplitPercent}
+                    onChange={(e) => setFirstSplitPercent(e.target.value)}
+                    placeholder="First category %"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  First category: {Number.isFinite(firstSplitPercentValue) ? firstSplitPercentValue.toFixed(2) : '--'}%
+                  {' '}| Second category: {secondSplitPercentLabel}%
+                </p>
+                <Button onClick={handleSplitBetweenCategories} disabled={!canSplitBetweenCategories}>
+                  Split {selectedIds.length > 0 ? `(${selectedIds.length})` : ''} Across Categories
+                </Button>
+              </div>
+            </div>
 
             {txLoading ? (
               <div className="space-y-2">
@@ -311,7 +482,7 @@ export default function CategoryDetailPage() {
                             {tx.merchantName || tx.description}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {formatDate(tx.date)} • {tx.account?.name || 'Unknown account'}
+                            {formatDate(tx.date)} | {tx.account?.name || 'Unknown account'}
                           </p>
                         </div>
                         <Badge variant="outline">{tx.type}</Badge>
@@ -356,3 +527,4 @@ export default function CategoryDetailPage() {
     </div>
   );
 }
+
