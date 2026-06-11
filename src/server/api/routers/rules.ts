@@ -188,6 +188,7 @@ export const rulesRouter = createTRPCRouter({
         where: transactionWhere,
         select: {
           id: true,
+          type: true,
           description: true,
           merchantName: true,
           amount: true,
@@ -208,6 +209,14 @@ export const rulesRouter = createTRPCRouter({
         for (const rule of rules) {
           const fieldValue = getFieldValue(transaction, rule.matchField);
           if (!fieldValue) continue;
+
+          // A customer payment is never an internal transfer. ACH invoice
+          // payments carry "bank transfer" wording in their descriptions and
+          // were getting reclassified to TRANSFER by description rules,
+          // silently removing revenue from the P&L.
+          if (rule.classification === 'TRANSFER' && transaction.type === 'INCOME') {
+            continue;
+          }
 
           const matches = matchRule(fieldValue, rule.matchType, rule.matchValue);
           if (matches) {

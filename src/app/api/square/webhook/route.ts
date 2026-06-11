@@ -53,13 +53,16 @@ export async function POST(request: NextRequest) {
     const payload = await request.text();
     const signature = request.headers.get('x-square-hmacsha256-signature') || '';
     
-    // In production, verify the webhook signature
-    // You need to set SQUARE_WEBHOOK_SIGNATURE_KEY env variable
     const signatureKey = process.env.SQUARE_WEBHOOK_SIGNATURE_KEY;
     const notificationUrl = process.env.SQUARE_WEBHOOK_URL || '';
     const squareEnv = process.env.SQUARE_ENV || process.env.SQUARE_ENVIRONMENT;
-    
-    if (signatureKey && squareEnv !== 'sandbox') {
+
+    // Fail closed outside sandbox: an unverified webhook can mutate financial data.
+    if (squareEnv !== 'sandbox') {
+      if (!signatureKey) {
+        console.error('SQUARE_WEBHOOK_SIGNATURE_KEY is not set; rejecting webhook');
+        return NextResponse.json({ error: 'Webhook verification not configured' }, { status: 503 });
+      }
       const isValid = verifySquareSignature(payload, signature, signatureKey, notificationUrl);
       if (!isValid) {
         console.error('Invalid Square webhook signature');
@@ -143,6 +146,8 @@ async function handlePaymentEvent(
     note?: string;
     receipt_number?: string;
     order_id?: string;
+    customer_id?: string;
+    buyer_email_address?: string;
   } | undefined;
 
   if (!payment) {
@@ -179,20 +184,28 @@ async function handlePaymentEvent(
     (t) => t.externalId === legacyExternalId
   );
 
+  // Keep field shapes identical to the sync route so the same payment looks
+  // the same regardless of which path recorded it first.
   const transactionData = {
     accountId: account.id,
     amount: amountInDollars,
     type: 'INCOME' as const, // Square payments are typically income
     status: mapSquareStatus(payment.status),
     date: new Date(payment.created_at || new Date()),
-    description: payment.note || `Square Payment ${payment.receipt_number || payment.id}`,
-    merchantName: 'Square',
+    description:
+      payment.note ||
+      (payment.buyer_email_address
+        ? `Square payment from ${payment.buyer_email_address}`
+        : `Square Payment ${payment.receipt_number || payment.id.slice(-6)}`),
+    merchantName: 'Square Payment',
     externalId: canonicalExternalId,
     metadata: {
       source: 'square',
-      source_type: payment.source_type,
-      order_id: payment.order_id,
-      receipt_number: payment.receipt_number,
+      source_type: payment.source_type ?? null,
+      order_id: payment.order_id ?? null,
+      customer_id: payment.customer_id ?? null,
+      receipt_number: payment.receipt_number ?? null,
+      buyer_email: payment.buyer_email_address ?? null,
     },
   };
 
