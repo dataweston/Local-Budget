@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import {
   listSquarePayments,
   listSquareRefunds,
+  batchGetSquareOrders,
   mapSquarePayment,
   mapSquareRefund,
   refreshSquareToken,
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { accountId, syncOrders = false } = await request.json();
+    const { accountId } = await request.json();
     
     if (!accountId) {
       return NextResponse.json({ error: 'Account ID is required' }, { status: 400 });
@@ -94,15 +95,67 @@ export async function POST(request: NextRequest) {
       accessToken,
       beginTime: startTime,
       endTime,
-      limit: 500, // Get up to 500 payments
+      limit: 5000,
     });
-    
+
     console.log(`[Square Sync] Found ${payments.length} payments from Square`);
+
+    // Fetch the orders behind these payments so invoice and payment-link
+    // sales carry their line items and sales channel instead of an opaque
+    // "Square Payment xxxxxx" row.
+    const orderById = new Map<string, any>();
+    const paymentOrderIds = Array.from(
+      new Set(
+        payments
+          .filter((p: any) => p.status === 'COMPLETED' && p.orderId)
+          .map((p: any) => p.orderId as string)
+      )
+    );
+    if (paymentOrderIds.length > 0) {
+      try {
+        const { orders } = await batchGetSquareOrders({ accessToken, orderIds: paymentOrderIds });
+        for (const order of orders) {
+          if (order?.id) orderById.set(order.id, order);
+        }
+      } catch (orderError) {
+        console.log('[Square Sync] Order enrichment failed (non-fatal):', orderError);
+      }
+    }
 
     for (const payment of payments) {
       if (payment.status !== 'COMPLETED') continue;
 
       const mapped = mapSquarePayment(payment);
+      const order = mapped.orderId ? orderById.get(mapped.orderId) : undefined;
+      const orderSource: string | undefined = order?.source?.name;
+      const lineItemSummary: string | undefined = order?.lineItems
+        ?.map((item: any) => item?.name)
+        .filter(Boolean)
+        .join(', ');
+
+      // Sales channel: invoices set the order source to "Invoices"; payment
+      // links and Square Online set their own source names.
+      const channel = orderSource
+        ? /invoice/i.test(orderSource)
+          ? 'invoice'
+          : 'payment_link'
+        : 'pos_or_other';
+
+      const description =
+        payment.note ||
+        lineItemSummary ||
+        mapped.description;
+
+      const paymentMetadata = {
+        source: 'square',
+        channel,
+        source_type: mapped.sourceType ?? null,
+        order_id: mapped.orderId ?? null,
+        order_source: orderSource ?? null,
+        customer_id: mapped.customerId ?? null,
+        receipt_number: mapped.receiptNumber ?? null,
+        buyer_email: mapped.buyerEmail ?? null,
+      };
 
       const canonicalExternalId = squarePaymentExternalId(mapped.id);
       const legacyExternalId = mapped.id;
@@ -150,18 +203,20 @@ export async function POST(request: NextRequest) {
           type: 'INCOME',
           status: 'POSTED',
           date: new Date(mapped.date),
-          description: mapped.description,
+          description,
           merchantName: 'Square Payment',
           externalId: canonicalExternalId,
           isReviewed: false,
+          metadata: paymentMetadata,
         },
         update: {
           amount: mapped.amount,
           type: 'INCOME',
           status: 'POSTED',
           date: new Date(mapped.date),
-          description: mapped.description,
+          description,
           merchantName: 'Square Payment',
+          metadata: paymentMetadata,
         },
       });
 
@@ -217,66 +272,23 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Optionally sync orders for more detailed transaction info
-    if (syncOrders && connection.locationIds && connection.locationIds.length > 0) {
-      try {
-        const { listSquareOrders, mapSquareOrder } = await import('@/lib/square');
-        const { orders } = await listSquareOrders({
-          accessToken,
-          locationIds: connection.locationIds,
-          limit: 200,
-        });
-        
-        console.log(`Found ${orders.length} orders from Square`);
-        
-        for (const order of orders) {
-          if (order.state !== 'COMPLETED') continue;
-          
-          const mapped = mapSquareOrder(order);
-          const externalId = squareOrderExternalId(mapped.id);
-
-          const existing = await db.transaction.findUnique({
-            where: {
-              accountId_externalId: {
-                accountId: account.id,
-                externalId,
-              },
-            },
-            select: { id: true },
-          });
-          
-          await db.transaction.upsert({
-            where: {
-              accountId_externalId: {
-                accountId: account.id,
-                externalId,
-              },
-            },
-            create: {
-              accountId: account.id,
-              amount: mapped.amount,
-              type: 'INCOME',
-              status: 'POSTED',
-              date: new Date(mapped.date),
-              description: mapped.description,
-              merchantName: 'Square Order',
-              externalId,
-              isReviewed: false,
-            },
-            update: {
-              amount: mapped.amount,
-              type: 'INCOME',
-              status: 'POSTED',
-              date: new Date(mapped.date),
-              description: mapped.description,
-              merchantName: 'Square Order',
-            },
-          });
-
-          if (!existing) added++;
-        }
-      } catch (orderError) {
-        console.log('Error syncing orders (non-fatal):', orderError);
+    // Orders are no longer written as their own INCOME transactions: every
+    // completed order is already counted by its payment, so the old
+    // syncOrders path double-counted revenue. Orders now only enrich payment
+    // descriptions/metadata (above). Remove any leftover duplicates from
+    // earlier syncs for orders we know are covered by a payment.
+    let orderDuplicatesRemoved = 0;
+    if (paymentOrderIds.length > 0) {
+      const duplicateOrderIds = paymentOrderIds.map((orderId) => squareOrderExternalId(orderId));
+      const removed = await db.transaction.deleteMany({
+        where: {
+          accountId: account.id,
+          externalId: { in: duplicateOrderIds },
+        },
+      });
+      orderDuplicatesRemoved = removed.count;
+      if (orderDuplicatesRemoved > 0) {
+        console.log(`[Square Sync] Removed ${orderDuplicatesRemoved} duplicate order transactions`);
       }
     }
 
@@ -473,7 +485,10 @@ export async function POST(request: NextRequest) {
       added,
       feesAdded,
       payoutsAdded,
-      message: `Synced ${added} new transactions, ${feesAdded} processing fees, and ${payoutsAdded} payouts from Square`,
+      orderDuplicatesRemoved,
+      message: `Synced ${added} new transactions, ${feesAdded} processing fees, and ${payoutsAdded} payouts from Square${
+        orderDuplicatesRemoved > 0 ? `; removed ${orderDuplicatesRemoved} duplicate order rows` : ''
+      }`,
     });
   } catch (error) {
     console.error('[Square Sync] Error syncing Square transactions:', error);

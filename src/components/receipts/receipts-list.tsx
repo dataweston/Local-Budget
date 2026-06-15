@@ -52,7 +52,6 @@ import {
 interface ReceiptData {
   id: string;
   fileName: string;
-  fileUrl?: string | null;
   fileType: string;
   vendorName?: string | null;
   totalAmount?: any;
@@ -1492,10 +1491,10 @@ export function ReceiptsList() {
             </DialogHeader>
             {selectedReceipt && (
               <div className="space-y-4">
-                {selectedReceipt.fileUrl && selectedReceipt.fileType.includes('image') && (
+                {selectedReceipt.fileType.includes('image') && (
                   <div className="rounded-lg overflow-hidden border">
                     <img
-                      src={selectedReceipt.fileUrl}
+                      src={`/api/receipts/file/${selectedReceipt.id}`}
                       alt="Receipt"
                       className="w-full h-auto max-h-64 object-contain"
                     />

@@ -46,6 +46,11 @@ export const config = {
     /*
      * Match all request paths except for the ones starting with:
      * - api/auth (auth API routes)
+     * - api/plaid/webhook, api/square/webhook, api/email/inbound (machine callers;
+     *   each verifies its own signature/secret — a session cookie or browser
+     *   user-agent can never be present on these requests)
+     * - api/integration (bearer-token service API)
+     * - api/jobs (cron-invoked, secret-protected)
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
@@ -53,6 +58,6 @@ export const config = {
      * - sitemap.xml (crawler index hints)
      * - public folder
      */
-    "/((?!api/auth|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|public).*)",
+    "/((?!api/auth|api/plaid/webhook|api/square/webhook|api/email/inbound|api/integration|api/jobs|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|public).*)",
   ],
 };

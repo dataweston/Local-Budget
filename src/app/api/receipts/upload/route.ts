@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { processReceiptDocument } from '@/lib/ocr';
 import { storeReceiptFile } from '@/lib/receipt-storage';
+import { runReceiptOcr } from '@/lib/receipt-processing';
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
         userId: session.user.id,
         fileName: file.name,
         fileType: stored.fileType,
-        filePath: stored.publicPath,
+        filePath: stored.filePath,
         fileSize: stored.fileSize,
         source: 'upload',
         status: 'PROCESSING',
@@ -90,63 +90,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Process OCR in background (for now, do it synchronously)
-    // In production, you'd use a job queue like Bull or similar
+    // OCR runs synchronously here because the uploader is waiting on the
+    // extracted fields in the review modal. Email-sourced receipts go through
+    // the background worker instead.
     try {
-      const ocrResult = await processReceiptDocument({
+      const ocrResult = await runReceiptOcr({
+        receiptId: receipt.id,
         buffer: stored.ocrBuffer,
         mimeType: file.type,
+        baseExtractedData: { storage: stored.storageMeta },
       });
-
-      const lineItems = (ocrResult.items ?? [])
-        .map((item) => {
-          const rawPrice = typeof item.price === 'number' ? Math.abs(item.price) : 0;
-          if (rawPrice <= 0) return null;
-          const prefix =
-            item.kind && item.kind !== 'item'
-              ? `[${item.kind.charAt(0).toUpperCase()}${item.kind.slice(1)}] `
-              : '';
-          return {
-            receiptId: receipt.id,
-            description: `${prefix}${item.name}`.slice(0, 500),
-            totalPrice: rawPrice,
-            classification: item.classificationHint ?? null,
-          };
-        })
-        .filter((item): item is {
-          receiptId: string;
-          description: string;
-          totalPrice: number;
-          classification: 'COGS' | 'OPERATING' | 'PERSONAL' | null;
-        } => !!item);
-
-      // Update receipt with OCR results
-      await db.receipt.update({
-        where: { id: receipt.id },
-        data: {
-          status: 'PROCESSED',
-          vendorName: ocrResult.vendorName,
-          totalAmount: ocrResult.totalAmount,
-          subtotal: ocrResult.subtotal,
-          tax: ocrResult.tax,
-          tip: ocrResult.tip,
-          receiptDate: ocrResult.date,
-          rawOcrText: ocrResult.rawText,
-          ocrConfidence: ocrResult.confidence,
-          extractedData: {
-            storage: stored.storageMeta,
-            items: ocrResult.items,
-            paymentMethod: ocrResult.paymentMethod,
-            lastFourDigits: ocrResult.lastFourDigits,
-          },
-        },
-      });
-
-      if (lineItems.length > 0) {
-        await db.lineItem.createMany({
-          data: lineItems,
-        });
-      }
 
       // Fetch updated receipt
       const updatedReceipt = await db.receipt.findUnique({
@@ -179,16 +132,8 @@ export async function POST(request: NextRequest) {
         },
       });
     } catch (ocrError) {
+      // runReceiptOcr already marked the receipt FAILED.
       console.error('OCR processing failed:', ocrError);
-
-      // Update status to FAILED
-      await db.receipt.update({
-        where: { id: receipt.id },
-        data: {
-          status: 'FAILED',
-          notes: `OCR failed: ${ocrError instanceof Error ? ocrError.message : 'Unknown error'}`,
-        },
-      });
 
       return NextResponse.json({
         success: true,

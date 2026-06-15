@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, writeFile, readFile } from 'fs/promises';
 import path from 'path';
 import { randomUUID } from 'crypto';
 
@@ -18,6 +18,7 @@ type StoreReceiptFileResult = {
   ocrBuffer: Buffer;
   storageMeta: {
     source: string;
+    storage: 'blob' | 'local';
     optimized: boolean;
     originalFileName: string;
     originalMimeType: string;
@@ -95,11 +96,15 @@ async function optimizeImageForArchive(buffer: Buffer): Promise<{
   }
 }
 
-export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<StoreReceiptFileResult> {
-  const uploadRoot = path.join(process.cwd(), 'public', 'receipts');
-  const userDir = path.join(uploadRoot, input.userId);
-  await mkdir(userDir, { recursive: true });
+function localUploadRoot(): string {
+  return path.join(process.cwd(), 'uploads', 'receipts');
+}
 
+function usingBlobStorage(): boolean {
+  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+}
+
+export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<StoreReceiptFileResult> {
   const originalSize = input.buffer.length;
   let storedBuffer = input.buffer;
   let storedMimeType = input.mimeType;
@@ -116,21 +121,41 @@ export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<St
   const safeBaseName = sanitizeFileSegment(path.parse(input.originalName).name || 'invoice');
   const ext = extensionForMimeType(storedMimeType);
   const fileName = `${safeBaseName}_${now}_${randomUUID().slice(0, 8)}.${ext}`;
-  const filePath = path.join(userDir, fileName);
-  await writeFile(filePath, storedBuffer);
-
-  const relativePath = path.relative(path.join(process.cwd(), 'public'), filePath).replace(/\\/g, '/');
-  const publicPath = relativePath.startsWith('..') ? `/receipts/${input.userId}/${fileName}` : `/${relativePath}`;
   const storedSize = storedBuffer.length;
+
+  let filePath: string;
+  let storage: 'blob' | 'local';
+
+  if (usingBlobStorage()) {
+    const { put } = await import('@vercel/blob');
+    const blob = await put(`receipts/${input.userId}/${fileName}`, storedBuffer, {
+      access: 'public',
+      contentType: storedMimeType,
+      addRandomSuffix: true,
+    });
+    filePath = blob.url;
+    storage = 'blob';
+  } else {
+    const userDir = path.join(localUploadRoot(), input.userId);
+    await mkdir(userDir, { recursive: true });
+    const absolutePath = path.join(userDir, fileName);
+    await writeFile(absolutePath, storedBuffer);
+    // Store a relative key so records survive a move of the project directory.
+    filePath = path.join('uploads', 'receipts', input.userId, fileName).replace(/\\/g, '/');
+    storage = 'local';
+  }
 
   return {
     filePath,
-    publicPath,
+    // Files are no longer placed under public/; they are served with an
+    // ownership check via /api/receipts/file/[id].
+    publicPath: filePath,
     fileType: storedMimeType,
     fileSize: storedSize,
     ocrBuffer: storedBuffer,
     storageMeta: {
       source: input.source,
+      storage,
       optimized,
       originalFileName: input.originalName,
       originalMimeType: input.mimeType,
@@ -140,4 +165,40 @@ export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<St
       compressionRatio: originalSize > 0 ? Number((storedSize / originalSize).toFixed(4)) : 1,
     },
   };
+}
+
+/**
+ * Read back a stored receipt file from whichever backend holds it.
+ * Supports blob URLs, the relative local key written by storeReceiptFile,
+ * and the legacy absolute/public paths written by earlier versions.
+ */
+export async function readReceiptFile(filePath: string): Promise<Buffer> {
+  if (/^https?:\/\//i.test(filePath)) {
+    const response = await fetch(filePath);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch receipt file (${response.status})`);
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  const candidates: string[] = [];
+  if (path.isAbsolute(filePath)) {
+    candidates.push(filePath);
+  } else {
+    candidates.push(path.join(process.cwd(), filePath));
+    // Legacy publicPath values look like "/receipts/<userId>/<file>".
+    const trimmed = filePath.replace(/^[/\\]+/, '');
+    candidates.push(path.join(process.cwd(), 'public', trimmed));
+    candidates.push(path.join(process.cwd(), 'uploads', trimmed));
+  }
+
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      return await readFile(candidate);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Receipt file not found: ${filePath}`);
 }

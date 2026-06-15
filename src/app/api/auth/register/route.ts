@@ -9,7 +9,22 @@ const registerSchema = z.object({
   name: z.string().min(1, "Name is required").optional(),
 });
 
+function registrationEnabled(): boolean {
+  // Personal-finance instance: closed by default in production. Set
+  // ALLOW_REGISTRATION=true to open sign-ups (e.g. to create your account
+  // after a fresh deploy), then unset it.
+  if (process.env.ALLOW_REGISTRATION === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
+}
+
 export async function POST(request: NextRequest) {
+  if (!registrationEnabled()) {
+    return NextResponse.json(
+      { error: 'Registration is disabled on this instance' },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await request.json();
     const { email, password, name } = registerSchema.parse(body);
