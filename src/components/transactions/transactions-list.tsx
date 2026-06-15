@@ -33,6 +33,7 @@ import { formatCurrency, formatDate, cn, classificationColor } from '@/lib/utils
 import { AddTransactionModal } from './AddTransactionModal';
 import { SplitTransactionModal } from './SplitTransactionModal';
 import { LinkTransactionModal } from './LinkTransactionModal';
+import { RevenueRecoveryPanel } from './RevenueRecoveryPanel';
 import { UploadReceiptModal } from '@/components/receipts/UploadReceiptModal';
 import {
   Search,
@@ -169,6 +170,7 @@ export function TransactionsList() {
       />
 
       <main className="flex-1 container mx-auto px-4 py-6">
+        <RevenueRecoveryPanel />
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>

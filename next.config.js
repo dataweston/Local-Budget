@@ -2,7 +2,9 @@
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    serverComponentsExternalPackages: ['@prisma/client', 'bcryptjs'],
+    // @vercel/blob (and its undici dep) are server-only; bundling them makes
+    // webpack parse undici's modern syntax and fail. Keep them external.
+    serverComponentsExternalPackages: ['@prisma/client', 'bcryptjs', '@vercel/blob'],
   },
   async headers() {
     return [

@@ -6,6 +6,7 @@ import {
   transactionFiltersSchema,
 } from '@/lib/schemas';
 import { Prisma } from '@prisma/client';
+import { looksLikeMisclassifiedRevenue } from '@/lib/reclassify';
 
 export const transactionsRouter = createTRPCRouter({
   // List transactions with filters
@@ -318,6 +319,72 @@ export const transactionsRouter = createTRPCRouter({
         },
       });
       return { success: true, count: input.transactionIds.length };
+    }),
+
+  // Retroactive revenue recovery: INCOME transactions classified TRANSFER that
+  // look like real revenue (customer/processor payments), not internal moves.
+  // These were excluded from the P&L by the bug the rules.ts INCOME/TRANSFER
+  // guard now prevents. Surfaced for review; the UI clears the TRANSFER
+  // classification via bulkCategorize (classification falls back to revenue).
+  misclassifiedRevenue: protectedProcedure
+    .input(z.object({ limit: z.number().min(1).max(1000).default(500) }).optional())
+    .query(async ({ ctx, input }) => {
+      const candidates = await ctx.db.transaction.findMany({
+        where: {
+          account: { userId: ctx.session.user.id },
+          type: 'INCOME',
+          classification: 'TRANSFER',
+        },
+        select: {
+          id: true,
+          date: true,
+          amount: true,
+          type: true,
+          classification: true,
+          merchantName: true,
+          description: true,
+          account: { select: { id: true, name: true } },
+        },
+        orderBy: { amount: 'desc' },
+      });
+
+      const suspects = candidates.filter(looksLikeMisclassifiedRevenue);
+      const limited = suspects.slice(0, input?.limit ?? 500);
+
+      return {
+        transactions: limited,
+        totalMarkedTransfer: candidates.length,
+        suspectCount: suspects.length,
+        suspectAmount: Number(
+          suspects.reduce((sum, t) => sum + Number(t.amount), 0).toFixed(2)
+        ),
+      };
+    }),
+
+  // Retroactive revenue recovery action: clear the TRANSFER classification on
+  // confirmed-revenue rows so getEffectiveClassification falls back to revenue
+  // (INCOME). Re-validates server-side that each target really is INCOME+TRANSFER
+  // — a stale client must not be able to wipe classification off other rows.
+  clearTransferClassification: protectedProcedure
+    .input(z.object({ transactionIds: z.array(z.string()).min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const eligible = await ctx.db.transaction.findMany({
+        where: {
+          id: { in: input.transactionIds },
+          account: { userId: ctx.session.user.id },
+          type: 'INCOME',
+          classification: 'TRANSFER',
+        },
+        select: { id: true },
+      });
+
+      if (eligible.length === 0) return { cleared: 0 };
+
+      const result = await ctx.db.transaction.updateMany({
+        where: { id: { in: eligible.map((t) => t.id) } },
+        data: { classification: null, isReviewed: true },
+      });
+      return { cleared: result.count };
     }),
 
   // Mark as reviewed

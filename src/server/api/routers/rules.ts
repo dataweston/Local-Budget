@@ -160,6 +160,11 @@ export const rulesRouter = createTRPCRouter({
     .input(
       z.object({
         transactionIds: z.array(z.string()).optional(),
+        // 'uncategorized' (default) keeps the original behavior. 'all' re-runs
+        // the now-fixed rule logic over every transaction so existing data can
+        // benefit retroactively from the INCOME/TRANSFER guard — pair it with
+        // dryRun to preview before writing.
+        scope: z.enum(['uncategorized', 'all']).default('uncategorized'),
         dryRun: z.boolean().default(false),
       }).optional()
     )
@@ -177,11 +182,16 @@ export const rulesRouter = createTRPCRouter({
         return { matched: 0, updated: 0, results: [] };
       }
 
-      // Get transactions to process
+      // Get transactions to process. Explicit IDs win; otherwise scope decides
+      // whether we touch only uncategorized rows or re-evaluate everything.
+      const scope = input?.scope ?? 'uncategorized';
       const transactionWhere = {
         account: { userId: ctx.session.user.id },
-        ...(input?.transactionIds && { id: { in: input.transactionIds } }),
-        ...(!input?.transactionIds && { categoryId: null }), // Only uncategorized if no specific IDs
+        ...(input?.transactionIds
+          ? { id: { in: input.transactionIds } }
+          : scope === 'uncategorized'
+            ? { categoryId: null }
+            : {}),
       };
 
       const transactions = await ctx.db.transaction.findMany({
@@ -202,7 +212,11 @@ export const rulesRouter = createTRPCRouter({
         ruleName: string;
         categoryId?: string | null;
         classification?: string | null;
+        changed: boolean;
       }> = [];
+      // INCOME rows a TRANSFER rule wanted to claim but the guard protected.
+      // Worth surfacing in retroactive runs: this is the revenue the bug hid.
+      let transferGuardSkips = 0;
 
       // Apply rules
       for (const transaction of transactions) {
@@ -215,19 +229,29 @@ export const rulesRouter = createTRPCRouter({
           // were getting reclassified to TRANSFER by description rules,
           // silently removing revenue from the P&L.
           if (rule.classification === 'TRANSFER' && transaction.type === 'INCOME') {
+            if (matchRule(fieldValue, rule.matchType, rule.matchValue)) {
+              transferGuardSkips++;
+            }
             continue;
           }
 
           const matches = matchRule(fieldValue, rule.matchType, rule.matchValue);
           if (matches) {
+            // In 'all' scope most matches just re-confirm the existing state;
+            // flag whether the rule would actually change category/classification.
+            const changed =
+              (!!rule.categoryId && rule.categoryId !== transaction.categoryId) ||
+              (!!rule.classification && rule.classification !== transaction.classification);
+
             results.push({
               transactionId: transaction.id,
               ruleName: rule.name,
               categoryId: rule.categoryId,
               classification: rule.classification,
+              changed,
             });
 
-            if (!input?.dryRun) {
+            if (!input?.dryRun && changed) {
               // Update transaction
               await ctx.db.transaction.update({
                 where: { id: transaction.id },
@@ -253,9 +277,13 @@ export const rulesRouter = createTRPCRouter({
         }
       }
 
+      const changedCount = results.filter((r) => r.changed).length;
       return {
         matched: results.length,
-        updated: input?.dryRun ? 0 : results.length,
+        // Rows the rules would change (dry run) or did change (live run).
+        wouldChange: changedCount,
+        updated: input?.dryRun ? 0 : changedCount,
+        transferGuardSkips,
         results,
       };
     }),

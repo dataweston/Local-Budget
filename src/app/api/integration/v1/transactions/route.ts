@@ -1,33 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { authorizeServiceRequest } from '@/lib/service-auth';
-import { getEffectiveClassification, type EffectiveClassification } from '@/lib/pnl';
+import {
+  getEffectiveClassification,
+  directionFor,
+  type EffectiveClassification,
+  type Direction,
+} from '@/lib/pnl';
 
 export const dynamic = 'force-dynamic';
 
 const MAX_LIMIT = 2000;
 const DEFAULT_LIMIT = 500;
-
-type Direction = 'outflow' | 'inflow' | 'transfer';
-
-/**
- * Money direction derived from the effective classification. TRANSFER is its
- * own bucket — it is internal movement, not a payment, so it is neither an
- * outflow nor an inflow. The brain's payment.completed consumers want
- * direction=outflow (vendor payments) and must never see transfers as payments.
- */
-export function directionFor(classification: EffectiveClassification): Direction {
-  switch (classification) {
-    case 'INCOME':
-    case 'REIMBURSEMENT':
-      return 'inflow';
-    case 'TRANSFER':
-      return 'transfer';
-    default:
-      // COGS, OPERATING, REIMBURSABLE, PERSONAL — money leaving the business.
-      return 'outflow';
-  }
-}
 
 type TransactionRow = {
   id: string;
