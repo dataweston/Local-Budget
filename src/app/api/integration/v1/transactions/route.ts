@@ -8,6 +8,27 @@ export const dynamic = 'force-dynamic';
 const MAX_LIMIT = 2000;
 const DEFAULT_LIMIT = 500;
 
+type Direction = 'outflow' | 'inflow' | 'transfer';
+
+/**
+ * Money direction derived from the effective classification. TRANSFER is its
+ * own bucket — it is internal movement, not a payment, so it is neither an
+ * outflow nor an inflow. The brain's payment.completed consumers want
+ * direction=outflow (vendor payments) and must never see transfers as payments.
+ */
+export function directionFor(classification: EffectiveClassification): Direction {
+  switch (classification) {
+    case 'INCOME':
+    case 'REIMBURSEMENT':
+      return 'inflow';
+    case 'TRANSFER':
+      return 'transfer';
+    default:
+      // COGS, OPERATING, REIMBURSABLE, PERSONAL — money leaving the business.
+      return 'outflow';
+  }
+}
+
 type TransactionRow = {
   id: string;
   date: string;
@@ -18,6 +39,7 @@ type TransactionRow = {
   merchantName: string | null;
   classification: string | null;
   effectiveClassification: EffectiveClassification;
+  direction: Direction;
   categoryId: string | null;
   categoryName: string | null;
   accountId: string;
@@ -41,6 +63,7 @@ function toCsv(rows: TransactionRow[]): string {
     'merchantName',
     'classification',
     'effectiveClassification',
+    'direction',
     'categoryName',
     'accountName',
     'externalId',
@@ -67,6 +90,10 @@ function toCsv(rows: TransactionRow[]): string {
  *   from, to          — ISO dates (inclusive)
  *   classification    — comma-separated effective classifications
  *                       (e.g. COGS,OPERATING); applied after category fallback
+ *   direction         — outflow | inflow | transfer (comma-separated). Derived
+ *                       from the effective classification. The brain's
+ *                       payment.completed feed uses direction=outflow (vendor
+ *                       payments) — see docs/integration-local-effort.md.
  *   merchant          — case-insensitive substring match on merchantName
  *   format            — json (default) | csv
  *   limit             — page size, default 500, max 2000
@@ -91,6 +118,15 @@ export async function GET(req: NextRequest) {
           .get('classification')!
           .split(',')
           .map((c) => c.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    : null;
+  const directionFilter = params.get('direction')
+    ? new Set(
+        params
+          .get('direction')!
+          .split(',')
+          .map((d) => d.trim().toLowerCase())
           .filter(Boolean)
       )
     : null;
@@ -150,6 +186,8 @@ export async function GET(req: NextRequest) {
     for (const tx of batch) {
       const effective = getEffectiveClassification(tx);
       if (classificationFilter && !classificationFilter.has(effective)) continue;
+      const direction = directionFor(effective);
+      if (directionFilter && !directionFilter.has(direction)) continue;
       rows.push({
         id: tx.id,
         date: tx.date.toISOString(),
@@ -160,6 +198,7 @@ export async function GET(req: NextRequest) {
         merchantName: tx.merchantName,
         classification: tx.classification,
         effectiveClassification: effective,
+        direction,
         categoryId: tx.categoryId,
         categoryName: tx.category?.name ?? null,
         accountId: tx.accountId,

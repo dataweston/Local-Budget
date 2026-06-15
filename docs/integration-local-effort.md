@@ -17,7 +17,7 @@ the token is unconfigured. They bypass session middleware by design.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to`, `classification` (effective, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries `effectiveClassification` (explicit → category default → type fallback), category/account names, and splits. |
+| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to`, `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries `effectiveClassification` (explicit → category default → type fallback), `direction`, category/account names, and splits. |
 | `GET /api/integration/v1/vendors` | Vendor spend rollups (canonical name, aliases, txCount, totalSpend, avg, first/last seen, primaryClassification). Default filter `COGS,OPERATING`. This is the feed `seed-brain.js` needs. |
 | `GET /api/integration/v1/pnl?year=YYYY` | P&L using the same method as `generate-local-budget-pnl.cjs`, so both repos report identical numbers. |
 
@@ -36,6 +36,40 @@ above so Local Budget schema migrations can't silently break them:
 | `prisma/seed-brain.js` | COGS/OPERATING transactions with merchant names (vendor seeding) | `/v1/vendors` |
 | `scripts/generate-local-budget-pnl.cjs` | full transaction set + categories/splits | `/v1/pnl` |
 | `backend/api/brain/squareIngest.js` | disabled — Local Budget owns Square ingest | stays disabled |
+
+## Feeding the brain's `payment.completed` inference jobs
+
+The brain's inference engine (`backend/api/brain/inferenceEngine.js`) has three
+vendor jobs — PREFERS, AVOIDS, PRICE_DRIFT — that read `payment.completed`
+ledger events. They produce nothing until those events exist, and the brain
+deliberately delegated vendor payments to Local Budget (this repo also touches
+bank accounts Square never sees).
+
+**Resolution (Weston, 2026-06-14): Option A — Local Budget exports vendor
+*outflows* only.** `payment.completed` = "we paid a vendor $X". Square *revenue*
+stays the brain's direct `order.placed` sync (the 02:30 UTC job), so the two
+sets are disjoint and nothing double-counts. Do **not** export Square revenue as
+`payment.completed`.
+
+**Delivery: pull.** The brain runs a nightly GET against
+`/api/integration/v1/transactions?direction=outflow&from=<cursor>` and writes
+one `payment.completed` LedgerEvent per row. This keeps Local Budget a clean
+data source; the ledger-write logic lives in the brain.
+
+Mapping a transaction row → the brain's `payment.completed` payload:
+
+| Brain field | Local Budget source |
+|---|---|
+| `source` | constant `"local_budget"` |
+| `sourceId` | row `id` (stable cuid — brain dedupes on `eventType+source+sourceId`) |
+| `occurredAt` | row `date` |
+| `payload.merchantName` | row `merchantName` (**must match a Vendor alias** — reconcile via `/v1/vendors` `rawNames` first, or inferences silently write nothing) |
+| `payload.amountCents` | `Math.round(Math.abs(amount) * 100)` |
+| `payload.direction` | row `direction` (always `outflow` for this feed) |
+
+Reconcile merchant names against the brain's 149 Vendor aliases before bulk
+ingest — name mismatches are the #1 reason inferences stay empty. The `/v1/vendors`
+`rawNames` array is the basis for that reconciliation.
 
 ## Rules of the relationship
 
