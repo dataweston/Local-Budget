@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { directionFor } from '@/app/api/integration/v1/transactions/route';
+import { directionFor } from '@/lib/pnl';
 
 describe('directionFor', () => {
   it('treats vendor/expense classifications as outflow', () => {

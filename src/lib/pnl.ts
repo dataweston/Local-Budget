@@ -33,6 +33,27 @@ export function getEffectiveClassification(tx: ClassifiableTransaction): Effecti
   return 'PERSONAL';
 }
 
+export type Direction = 'outflow' | 'inflow' | 'transfer';
+
+/**
+ * Money direction derived from the effective classification. TRANSFER is its
+ * own bucket — it is internal movement, not a payment, so it is neither an
+ * outflow nor an inflow. The brain's payment.completed consumers want
+ * direction=outflow (vendor payments) and must never see transfers as payments.
+ */
+export function directionFor(classification: EffectiveClassification): Direction {
+  switch (classification) {
+    case 'INCOME':
+    case 'REIMBURSEMENT':
+      return 'inflow';
+    case 'TRANSFER':
+      return 'transfer';
+    default:
+      // COGS, OPERATING, REIMBURSABLE, PERSONAL — money leaving the business.
+      return 'outflow';
+  }
+}
+
 export type PnlCategoryRow = {
   categoryId: string | null;
   name: string;
