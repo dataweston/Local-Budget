@@ -174,6 +174,22 @@ interface SquarePaymentRecord {
   customerId?: string;
 }
 
+// Drain a paginated SDK response up to `limit` items. The Page object only
+// holds the first page in `.data`; stopping there silently drops older
+// records once volume passes one page (~100 items).
+async function collectAllPages<T>(
+  page: { data: T[]; hasNextPage: () => boolean; getNextPage: () => Promise<any> },
+  limit: number
+): Promise<T[]> {
+  const items: T[] = [...(page.data || [])];
+  let current = page;
+  while (items.length < limit && current.hasNextPage()) {
+    current = await current.getNextPage();
+    items.push(...(current.data || []));
+  }
+  return items.slice(0, limit);
+}
+
 // List payments (transactions) with pagination
 export async function listSquarePayments(options: {
   accessToken?: string;
@@ -184,16 +200,33 @@ export async function listSquarePayments(options: {
 }) {
   const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
 
-  // SDK v43 returns a Page object with data property
   const page = await client.payments.list({
     beginTime: options.beginTime,
     endTime: options.endTime,
     locationId: options.locationId,
   });
 
-  const payments = (page.data || []).slice(0, options.limit || 100);
+  const payments = await collectAllPages(page, options.limit || 1000);
 
   return { payments };
+}
+
+// Fetch full order objects (line items, source) for a set of order IDs.
+// Used to enrich payment descriptions; batched per the API's 100-id cap.
+export async function batchGetSquareOrders(options: {
+  accessToken?: string;
+  orderIds: string[];
+}) {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+  const orders: any[] = [];
+
+  for (let i = 0; i < options.orderIds.length; i += 100) {
+    const batch = options.orderIds.slice(i, i + 100);
+    const response = await client.orders.batchGet({ orderIds: batch });
+    orders.push(...(response.orders || []));
+  }
+
+  return { orders };
 }
 
 // List orders with items for detailed transaction info
@@ -236,7 +269,7 @@ export async function listSquarePayouts(options: {
     endTime: options.endTime,
   });
 
-  const payouts = (page.data || []).slice(0, options.limit || 100);
+  const payouts = await collectAllPages(page, options.limit || 1000);
 
   return { payouts };
 }
@@ -257,7 +290,7 @@ export async function listSquareRefunds(options: {
     endTime: options.endTime,
   });
 
-  const refunds = (page.data || []).slice(0, options.limit || 100);
+  const refunds = await collectAllPages(page, options.limit || 1000);
 
   return { refunds };
 }
@@ -276,20 +309,35 @@ export interface SquareTransactionData {
   status: string;
   sourceType?: string;
   customerId?: string;
+  orderId?: string;
+  receiptNumber?: string;
+  buyerEmail?: string;
 }
 
 // Map Square payment to our format
 export function mapSquarePayment(payment: any): SquareTransactionData {
+  // Prefer human-meaningful descriptions: the seller's note, then the buyer's
+  // email (present on invoice and payment-link payments), then the receipt
+  // number. Invoice and link payments rarely carry a note, which is why they
+  // used to land as opaque "Square Payment xxxxxx" rows.
+  const description =
+    payment.note ||
+    (payment.buyerEmailAddress ? `Square payment from ${payment.buyerEmailAddress}` : '') ||
+    `Square Payment ${payment.receiptNumber || payment.id.slice(-6)}`;
+
   return {
     id: payment.id,
     locationId: payment.locationId,
     amount: Number(payment.amountMoney?.amount || 0) / 100, // Square uses cents
     currency: payment.amountMoney?.currency || 'USD',
     date: payment.createdAt,
-    description: payment.note || `Square Payment ${payment.id.slice(-6)}`,
+    description,
     status: payment.status,
     sourceType: payment.sourceType,
     customerId: payment.customerId,
+    orderId: payment.orderId,
+    receiptNumber: payment.receiptNumber,
+    buyerEmail: payment.buyerEmailAddress,
   };
 }
 

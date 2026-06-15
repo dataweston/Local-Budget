@@ -334,7 +334,12 @@ function getComparableReferences(
 ): CategorizedReference[] {
   if (!type) return references;
   const matchingType = references.filter((r) => r.type === type);
-  return matchingType.length > 0 ? matchingType : references;
+  if (matchingType.length > 0) return matchingType;
+  // Never borrow expense/transfer history for INCOME (or vice versa): that
+  // fallback is how Square revenue ended up suggested into transfer/expense
+  // categories. With no same-type history, suggest nothing.
+  if (type === 'INCOME' || type === 'TRANSFER') return [];
+  return references;
 }
 
 async function buildSuggestionContext(userId: string): Promise<SuggestionContext> {

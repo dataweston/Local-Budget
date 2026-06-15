@@ -1,14 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { parseInboundEmail, extractUserIdFromEmail, isReceiptAttachment } from '@/lib/email/parser';
-import { processReceiptDocument } from '@/lib/ocr';
 import { storeReceiptFile } from '@/lib/receipt-storage';
+import { enqueueReceiptOcrJob } from '@/lib/receipt-processing';
+import { authorizeServiceRequest } from '@/lib/service-auth';
 
 /**
- * Webhook endpoint for inbound receipt emails
- * Accepts POST requests from SendGrid or Mailgun
+ * Webhook endpoint for inbound receipt emails (SendGrid/Mailgun).
+ *
+ * Authentication: the provider must present INBOUND_EMAIL_WEBHOOK_SECRET as a
+ * bearer token, x-webhook-token header, or ?token= query parameter (set it in
+ * the webhook URL you configure at the provider). Requests are rejected when
+ * the secret is unset — this endpoint creates financial records.
+ *
+ * OCR runs asynchronously via the background-job worker so the provider gets
+ * a fast 200 and webhook delivery never times out on Tesseract.
  */
 export async function POST(req: NextRequest) {
+  const auth = authorizeServiceRequest(
+    req,
+    process.env.INBOUND_EMAIL_WEBHOOK_SECRET,
+    'INBOUND_EMAIL_WEBHOOK_SECRET'
+  );
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
   try {
     const contentType = req.headers.get('content-type') || '';
     let payload: any;
@@ -61,10 +78,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Process each attachment
+    // Store each attachment and queue OCR
     const receipts = [];
     for (const attachment of receiptAttachments) {
-      let createdReceiptId: string | null = null;
       try {
         const contentBuffer = Buffer.from(attachment.content, 'base64');
         const stored = await storeReceiptFile({
@@ -75,14 +91,13 @@ export async function POST(req: NextRequest) {
           source: 'email',
         });
 
-        // Create receipt record
         const receipt = await db.receipt.create({
           data: {
             userId,
-            status: 'PROCESSING',
+            status: 'PENDING',
             fileName: attachment.filename,
             fileType: stored.fileType,
-            filePath: stored.publicPath,
+            filePath: stored.filePath,
             fileSize: stored.fileSize,
             source: 'email',
             sourceId: email.from,
@@ -96,77 +111,11 @@ export async function POST(req: NextRequest) {
             },
           },
         });
-        createdReceiptId = receipt.id;
 
-        const ocrResult = await processReceiptDocument({
-          buffer: stored.ocrBuffer,
-          mimeType: attachment.contentType,
-        });
-
-        const lineItems = (ocrResult.items ?? [])
-          .map((item) => {
-            const rawPrice = typeof item.price === 'number' ? Math.abs(item.price) : 0;
-            if (rawPrice <= 0) return null;
-            const prefix =
-              item.kind && item.kind !== 'item'
-                ? `[${item.kind.charAt(0).toUpperCase()}${item.kind.slice(1)}] `
-                : '';
-            return {
-              receiptId: receipt.id,
-              description: `${prefix}${item.name}`.slice(0, 500),
-              totalPrice: rawPrice,
-              classification: item.classificationHint ?? null,
-            };
-          })
-          .filter((item): item is {
-            receiptId: string;
-            description: string;
-            totalPrice: number;
-            classification: 'COGS' | 'OPERATING' | 'PERSONAL' | null;
-          } => !!item);
-
-        await db.receipt.update({
-          where: { id: receipt.id },
-          data: {
-            status: 'PROCESSED',
-            vendorName: ocrResult.vendorName,
-            totalAmount: ocrResult.totalAmount,
-            subtotal: ocrResult.subtotal,
-            tax: ocrResult.tax,
-            tip: ocrResult.tip,
-            receiptDate: ocrResult.date,
-            rawOcrText: ocrResult.rawText,
-            ocrConfidence: ocrResult.confidence,
-            extractedData: {
-              storage: stored.storageMeta,
-              email: {
-                from: email.from,
-                subject: email.subject,
-                receivedAt: email.receivedAt.toISOString(),
-              },
-              items: ocrResult.items,
-              paymentMethod: ocrResult.paymentMethod,
-              lastFourDigits: ocrResult.lastFourDigits,
-            },
-          },
-        });
-
-        if (lineItems.length > 0) {
-          await db.lineItem.createMany({ data: lineItems });
-        }
-
+        await enqueueReceiptOcrJob(receipt.id);
         receipts.push(receipt);
       } catch (error) {
-        console.error('Failed to process attachment:', attachment.filename, error);
-        if (createdReceiptId) {
-          await db.receipt.update({
-            where: { id: createdReceiptId },
-            data: {
-              status: 'FAILED',
-              notes: `OCR failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            },
-          });
-        }
+        console.error('Failed to store attachment:', attachment.filename, error);
         // Continue with other attachments
       }
     }

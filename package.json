@@ -20,7 +20,8 @@
     "venmo:crossref": "tsx scripts/crossref-venmo-statements.ts",
     "venmo:crossref:apply": "tsx scripts/crossref-venmo-statements.ts --apply",
     "venmo:sync": "tsx scripts/sync-venmo-statements.ts",
-    "venmo:sync:apply": "tsx scripts/sync-venmo-statements.ts --apply"
+    "venmo:sync:apply": "tsx scripts/sync-venmo-statements.ts --apply",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
@@ -43,6 +44,7 @@
     "@trpc/next": "^10.45.0",
     "@trpc/react-query": "^10.45.0",
     "@trpc/server": "^10.45.0",
+    "@vercel/blob": "^2.4.0",
     "bcryptjs": "^2.4.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
@@ -77,6 +79,7 @@
     "prisma": "^5.9.1",
     "tailwindcss": "^3.4.1",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.8"
   }
 }
