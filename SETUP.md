@@ -20,7 +20,9 @@
 
    Create a `.env` file with your credentials:
    ```env
-   DATABASE_URL="postgresql://postgres:password@localhost:5432/local_budget"
+   # Use the pooled and direct URLs from Prisma Console.
+   DATABASE_URL="postgres://USER:PASSWORD@pooled.db.prisma.io:5432/postgres?sslmode=require"
+   DIRECT_URL="postgres://USER:PASSWORD@db.prisma.io:5432/postgres?sslmode=require"
    NEXTAUTH_SECRET="generate-with: openssl rand -base64 32"
    NEXTAUTH_URL="http://localhost:3000"
 
@@ -39,11 +41,12 @@
    UPLOAD_DIR="./uploads"
    ```
 
-3. **Initialize the database:**
+3. **Initialize the database from committed migrations:**
    ```bash
    npm run db:generate    # Generate Prisma client
-   npm run db:push        # Push schema to database
-   npm run db:seed        # Seed with demo data
+   npm run db:deploy      # Apply committed migrations
+   npm run db:status      # Verify migration state
+   npm run db:seed        # Optional; development/demo databases only
    ```
 
 4. **Start the development server:**
@@ -135,8 +138,9 @@ npm run lint         # Run ESLint
 
 # Database
 npm run db:generate  # Generate Prisma client
-npm run db:push      # Push schema changes
-npm run db:migrate   # Run migrations
+npm run db:migrate   # Create/apply a migration in development
+npm run db:deploy    # Apply committed migrations
+npm run db:status    # Check migration state
 npm run db:studio    # Open Prisma Studio
 npm run db:seed      # Seed database
 ```
@@ -144,6 +148,10 @@ npm run db:seed      # Seed database
 ---
 
 ## Deployment
+
+See [Database operations](docs/database-operations.md) for Prisma Postgres
+provisioning, production baselining, and sharing the database with another
+repository.
 
 ### Vercel (Recommended)
 
@@ -155,7 +163,8 @@ npm run db:seed      # Seed database
 ### Environment Variables for Production
 
 ```env
-DATABASE_URL=postgresql://...
+DATABASE_URL=postgres://...@pooled.db.prisma.io:5432/postgres?sslmode=require
+DIRECT_URL=postgres://...@db.prisma.io:5432/postgres?sslmode=require
 NEXTAUTH_SECRET=...
 NEXTAUTH_URL=https://your-domain.com
 PLAID_CLIENT_ID=...

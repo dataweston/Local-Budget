@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
   experimental: {
     // @vercel/blob (and its undici dep) are server-only; bundling them makes
     // webpack parse undici's modern syntax and fail. Keep them external.
