@@ -51,6 +51,7 @@ export const createAccountSchema = z.object({
   accountNumber: z.string().max(4).optional(),
   currentBalance: z.number().default(0),
   currency: z.string().length(3).default('USD'),
+  isInternal: z.boolean().default(true),
 });
 
 export const updateAccountSchema = createAccountSchema.partial();

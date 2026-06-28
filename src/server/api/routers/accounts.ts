@@ -65,6 +65,7 @@ export const accountsRouter = createTRPCRouter({
           accountNumber: input.accountNumber,
           currentBalance: input.currentBalance,
           currency: input.currency,
+          isInternal: input.isInternal,
         },
       });
       return account;

@@ -27,6 +27,10 @@
     "square:backfill:apply": "tsx scripts/backfill-square-customers.ts --apply",
     "vendors:populate": "tsx scripts/populate-vendors.ts",
     "vendors:populate:apply": "tsx scripts/populate-vendors.ts --apply",
+    "classify:nulls": "tsx scripts/classify-null-bucket.ts",
+    "classify:nulls:apply": "tsx scripts/classify-null-bucket.ts --apply",
+    "transfers:reconcile": "tsx scripts/reconcile-transfers.ts",
+    "transfers:reconcile:apply": "tsx scripts/reconcile-transfers.ts --apply",
     "test": "vitest run"
   },
   "dependencies": {

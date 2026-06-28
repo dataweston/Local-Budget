@@ -138,6 +138,12 @@ model FinancialAccount {
   currency         String      @default("USD")
   isActive         Boolean     @default(true)
 
+  // Part of the owner's internal money pool (own/spouse/business accounts +
+  // Venmo). Transfers BETWEEN internal accounts are reconciled and cancelled
+  // out; transfers crossing the internal boundary (or unmatched ones) are
+  // surfaced as exceptions (owner draws, investor funds, true income).
+  isInternal       Boolean     @default(true)
+
   // Plaid integration
   plaidAccountId String?   @unique
   plaidItemId    String?

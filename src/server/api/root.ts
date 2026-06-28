@@ -10,6 +10,7 @@ import { transactionLinksRouter } from './routers/transactionLinks';
 import { suggestionsRouter } from './routers/suggestions';
 import { vendorsRouter } from './routers/vendors';
 import { splitsRouter } from './routers/splits';
+import { transfersRouter } from './routers/transfers';
 
 /**
  * This is the primary router for the Local Budget API.
@@ -28,6 +29,7 @@ export const appRouter = createTRPCRouter({
   suggestions: suggestionsRouter,
   vendors: vendorsRouter,
   splits: splitsRouter,
+  transfers: transfersRouter,
 });
 
 // Export type definition of API

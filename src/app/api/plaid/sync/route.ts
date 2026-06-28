@@ -119,7 +119,12 @@ export async function POST(request: NextRequest) {
             externalId: m.transactionId,
             isReviewed: false,
             ...(venmoRouting
-              ? { classification: venmoRouting.classification }
+              ? {
+                  classification: venmoRouting.classification,
+                  // Plaid sign: positive = money out, negative = money in.
+                  // Record direction so the transfer matcher can pair this leg.
+                  metadata: { transferDirection: m.amount > 0 ? 'out' : 'in' },
+                }
               : amazonCategoryId
                 ? {
                     categoryId: amazonCategoryId,
@@ -272,7 +277,10 @@ export async function POST(request: NextRequest) {
                     externalId: mappedTx.transactionId,
                     isReviewed: false,
                     ...(venmoRouting
-                      ? { classification: venmoRouting.classification }
+                      ? {
+                          classification: venmoRouting.classification,
+                          metadata: { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' },
+                        }
                       : amazonCategoryId
                         ? {
                             categoryId: amazonCategoryId,
