@@ -41,6 +41,8 @@ export interface ParsedReceiptData {
   items?: Array<{
     name: string;
     quantity?: number;
+    unitOfMeasure?: string;
+    unitPrice?: number;
     price?: number;
     kind?: 'item' | 'shipping' | 'fee' | 'tax' | 'tip' | 'discount' | 'other';
     classificationHint?: 'COGS' | 'OPERATING' | 'PERSONAL';
@@ -53,6 +55,39 @@ function parseAmountToken(input: string): number | null {
   const match = input.match(/-?\$?\s*(\d+[.,]\d{2})/);
   if (!match) return null;
   return Number.parseFloat(match[1].replace(',', '.'));
+}
+
+// Units of measure that matter for recipe/ingredient costing. Matched as whole
+// tokens so "lb"/"oz"/"kg"/"each"/"case" etc. are pulled off an item line. The
+// brain's food-cost subsystem needs quantity + unit + price per ingredient.
+const UNIT_PATTERN =
+  /\b(\d+(?:\.\d+)?)\s*(lbs?|pounds?|oz|ounces?|kgs?|g|grams?|ml|l|liters?|gal|gallons?|qt|quarts?|pt|pints?|ea|each|cases?|cs|dz|dozen|ct|count|pk|packs?|bx|box|bags?|btls?|bottles?)\b/i;
+
+function normalizeUnit(unit: string): string {
+  const u = unit.toLowerCase().replace(/s$/, '');
+  const map: Record<string, string> = {
+    lb: 'lb', pound: 'lb',
+    oz: 'oz', ounce: 'oz',
+    kg: 'kg', g: 'g', gram: 'g',
+    ml: 'ml', l: 'L', liter: 'L',
+    gal: 'gal', gallon: 'gal',
+    qt: 'qt', quart: 'qt', pt: 'pt', pint: 'pt',
+    ea: 'each', each: 'each',
+    case: 'case', cs: 'case',
+    dz: 'dozen', dozen: 'dozen',
+    ct: 'count', count: 'count',
+    pk: 'pack', pack: 'pack',
+    bx: 'box', box: 'box', bag: 'bag',
+    btl: 'bottle', bottle: 'bottle',
+  };
+  return map[u] ?? u;
+}
+
+// Pull a quantity + unit-of-measure out of an item name, if present.
+function extractUnit(name: string): { quantity?: number; unitOfMeasure?: string } {
+  const m = name.match(UNIT_PATTERN);
+  if (!m) return {};
+  return { quantity: Number.parseFloat(m[1]), unitOfMeasure: normalizeUnit(m[2]) };
 }
 
 function inferItemKind(name: string): NonNullable<NonNullable<ParsedReceiptData['items']>[number]['kind']> {
@@ -184,9 +219,12 @@ export function parseReceiptText(text: string): ParsedReceiptData {
       const price = parseAmountToken(qtyMatch[3]);
       if (!Number.isNaN(qty) && price !== null) {
         const kind = inferItemKind(name);
+        const unit = extractUnit(name);
         items.push({
           name,
           quantity: qty,
+          unitOfMeasure: unit.unitOfMeasure,
+          unitPrice: qty > 0 ? Number((price / qty).toFixed(4)) : undefined,
           price,
           kind,
           classificationHint: classificationHintForKind(kind),
@@ -201,8 +239,15 @@ export function parseReceiptText(text: string): ParsedReceiptData {
       const price = parseAmountToken(match[2]);
       if (price === null) continue;
       const kind = inferItemKind(name);
+      const unit = extractUnit(name);
       items.push({
         name,
+        quantity: unit.quantity,
+        unitOfMeasure: unit.unitOfMeasure,
+        unitPrice:
+          unit.quantity && unit.quantity > 0
+            ? Number((price / unit.quantity).toFixed(4))
+            : undefined,
         price,
         kind,
         classificationHint: classificationHintForKind(kind),

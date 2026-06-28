@@ -1,12 +1,30 @@
 # Margin Edge-Style Build Plan
 
 ## Status
-- Date: 2026-02-14
+- Date: 2026-02-14 (updated 2026-06-27)
 - Existing equivalent capabilities:
 1. Multi-source receipt ingestion (upload + inbound email)
 2. OCR with structured extraction
 3. Transaction splitting and classification
 4. Category and vendor reporting
+
+## 2026-06-27 progress (Phase C kickoff)
+Delivered the data foundation the analytics layer needs:
+- `LineItem.lineType` enum (ITEM/SHIPPING/FEE/TAX/TIP/DISCOUNT/OTHER) +
+  `sourceUid` for idempotent re-sync (Data Model Extensions #3 partial).
+- OCR now extracts **quantity + unit of measure + derived unit price**
+  ("Carrots 25 lb $50" → qty 25, unit lb, $2/lb) and persists structured
+  `LineItem`s linked to a catalog `Item` carrying `unitOfMeasure`
+  (Phase 1.3, Phase 3.2 seed).
+- Square order line items persisted as `LineItem`s (Phase 1.3 for sales side).
+- Normalized vendor catalog with aliases + bank-truncation merge + stable
+  `vendorId` (Phase 3.1 done).
+- Integration API: `/v1/items` (line-item export) and `/v1/price-drift`
+  (per-item unit-price trend) — Phase 4.1/4.3 read path for the brain.
+
+Still open: AP-style review queue (Phase 2), invoice fields
+(`invoiceNumber`/`dueDate`/`poNumber` — Data Model Extensions #2), landed-cost
+view, contribution-margin views (Phase 4.2/4.4), automation (Phase 5).
 
 ## Target Outcome
 - Deliver invoice-to-margin workflows that behave like Margin Edge-style ops tooling:
