@@ -36,6 +36,7 @@ model User {
   squareConnections SquareConnection[]
   squareCustomers   SquareCustomer[]
   plaidItems        PlaidItem[]
+  categoryFeedback  CategoryFeedback[]
 
   @@map("users")
 }
@@ -419,10 +420,39 @@ model Category {
   transactions Transaction[]
   splits       TransactionSplit[]
   rules        ClassificationRule[]
+  feedback     CategoryFeedback[]
 
   @@unique([userId, name, parentId])
   @@index([userId])
   @@map("categories")
+}
+
+// Categorization feedback: every time a user accepts a suggestion or overrides
+// it with a different category, we record the (merchant, description, type) ->
+// category outcome. The categorizer reads these as a learned, high-weight
+// signal so the same merchant is suggested correctly next time — turning the
+// static similarity matcher into one that improves from corrections.
+model CategoryFeedback {
+  id              String   @id @default(cuid())
+  userId          String
+  merchantKey     String // normalized merchant key ('' if none)
+  descriptionKey  String // normalized description key
+  type            String // INCOME | EXPENSE | TRANSFER
+  categoryId      String
+  // True when the user picked a category different from the top suggestion
+  // (a correction) — a stronger signal than a plain acceptance.
+  wasCorrection   Boolean  @default(false)
+  // Running count of times this (key -> category) outcome was observed.
+  timesConfirmed  Int      @default(1)
+  lastConfirmedAt DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, merchantKey, descriptionKey, type, categoryId])
+  @@index([userId, merchantKey])
+  @@map("category_feedback")
 }
 
 // ============================================================================
