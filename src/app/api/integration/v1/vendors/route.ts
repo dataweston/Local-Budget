@@ -7,9 +7,11 @@ import { normalizeVendorName } from '@/lib/normalization/vendors';
 export const dynamic = 'force-dynamic';
 
 type VendorRollup = {
+  vendorId: string | null;
   name: string;
   normalizedName: string;
   rawNames: string[];
+  aliases: string[];
   txCount: number;
   totalSpend: number;
   avgAmount: number;
@@ -64,6 +66,8 @@ export async function GET(req: NextRequest) {
       type: true,
       merchantName: true,
       classification: true,
+      vendorId: true,
+      vendor: { select: { id: true, name: true, aliases: true } },
       category: { select: { defaultClassification: true } },
     },
     orderBy: { date: 'asc' },
@@ -79,15 +83,20 @@ export async function GET(req: NextRequest) {
     if (!classifications.has(effective)) continue;
 
     const raw = tx.merchantName as string;
-    const normalized = normalizeVendorName(raw);
-    if (!normalized) continue;
+    // Prefer the stable materialized vendor (resolves bank-truncation splits);
+    // fall back to on-the-fly normalization for rows not yet linked.
+    const canonicalName = tx.vendor?.name ?? normalizeVendorName(raw);
+    if (!canonicalName) continue;
+    const groupKey = tx.vendorId ?? `name:${canonicalName.toLowerCase()}`;
 
-    let rollup = rollups.get(normalized);
+    let rollup = rollups.get(groupKey);
     if (!rollup) {
       rollup = {
-        name: raw,
-        normalizedName: normalized,
+        vendorId: tx.vendorId ?? null,
+        name: canonicalName,
+        normalizedName: canonicalName.toLowerCase(),
         rawNames: [],
+        aliases: tx.vendor?.aliases ?? [],
         txCount: 0,
         totalSpend: 0,
         avgAmount: 0,
@@ -97,7 +106,7 @@ export async function GET(req: NextRequest) {
         rawNameCounts: new Map(),
         classificationCounts: new Map(),
       };
-      rollups.set(normalized, rollup);
+      rollups.set(groupKey, rollup);
     }
 
     rollup.txCount += 1;
@@ -117,10 +126,13 @@ export async function GET(req: NextRequest) {
       const primary = classificationCounts.has('COGS')
         ? 'COGS'
         : Array.from(classificationCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'OPERATING';
+      const rawNames = Array.from(rawNameCounts.keys());
+      const mergedAliases = Array.from(new Set([...(rest.aliases ?? []), ...rawNames]));
       return {
         ...rest,
         name: canonical,
-        rawNames: Array.from(rawNameCounts.keys()),
+        rawNames,
+        aliases: mergedAliases,
         avgAmount: rest.txCount > 0 ? Number((rest.totalSpend / rest.txCount).toFixed(2)) : 0,
         totalSpend: Number(rest.totalSpend.toFixed(2)),
         primaryClassification: primary,

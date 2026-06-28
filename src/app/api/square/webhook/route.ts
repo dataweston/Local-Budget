@@ -1,6 +1,59 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import crypto from 'crypto';
+import {
+  bulkRetrieveSquareCustomers,
+  squareCustomerDisplayName,
+} from '@/lib/square';
+
+// Resolve a single Square customer id to a stored SquareCustomer row, using the
+// connection's access token. Returns the row id + display name, or nulls if the
+// id is absent or resolution fails (guest sales, transient API errors).
+async function resolveWebhookCustomer(
+  connection: { id: string; userId: string; accessToken: string },
+  customerId: string | null | undefined
+): Promise<{ rowId: string | null; displayName: string | null }> {
+  if (!customerId) return { rowId: null, displayName: null };
+  try {
+    const resolved = await bulkRetrieveSquareCustomers({
+      accessToken: connection.accessToken,
+      customerIds: [customerId],
+    });
+    const data = resolved.get(customerId);
+    if (!data) return { rowId: null, displayName: null };
+    const row = await db.squareCustomer.upsert({
+      where: {
+        squareConnectionId_squareCustomerId: {
+          squareConnectionId: connection.id,
+          squareCustomerId: customerId,
+        },
+      },
+      create: {
+        userId: connection.userId,
+        squareConnectionId: connection.id,
+        squareCustomerId: customerId,
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        companyName: data.companyName,
+        firstSeen: data.createdAt ? new Date(data.createdAt) : null,
+        lastSeen: new Date(),
+      },
+      update: {
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        companyName: data.companyName,
+        lastSeen: new Date(),
+      },
+      select: { id: true },
+    });
+    return { rowId: row.id, displayName: squareCustomerDisplayName(data) };
+  } catch (error) {
+    console.log('[Square Webhook] Customer resolution failed (non-fatal):', error);
+    return { rowId: null, displayName: null };
+  }
+}
 
 function squarePaymentExternalId(paymentId: string) {
   return `square_${paymentId}`;
@@ -134,7 +187,7 @@ export async function POST(request: NextRequest) {
 async function handlePaymentEvent(
   eventType: string,
   data: { type: string; id: string; object?: Record<string, unknown> },
-  connection: { id: string; userId: string; accounts: { id: string }[] }
+  connection: { id: string; userId: string; accessToken: string; accounts: { id: string }[] }
 ) {
   const payment = data.object as {
     id: string;
@@ -164,6 +217,9 @@ async function handlePaymentEvent(
 
   const amount = payment.amount_money?.amount ?? 0;
   const amountInDollars = amount / 100; // Square amounts are in cents
+
+  const { rowId: customerRowId, displayName: customerName } =
+    await resolveWebhookCustomer(connection, payment.customer_id);
 
   const canonicalExternalId = squarePaymentExternalId(payment.id);
   const legacyExternalId = payment.id;
@@ -197,13 +253,18 @@ async function handlePaymentEvent(
       (payment.buyer_email_address
         ? `Square payment from ${payment.buyer_email_address}`
         : `Square Payment ${payment.receipt_number || payment.id.slice(-6)}`),
-    merchantName: 'Square Payment',
+    // Prefer the resolved customer name; fall back to buyer email, then a
+    // generic label — never the old constant "Square Payment" when we know who.
+    merchantName:
+      customerName || payment.buyer_email_address || 'Square Payment',
+    squareCustomerId: customerRowId,
     externalId: canonicalExternalId,
     metadata: {
       source: 'square',
       source_type: payment.source_type ?? null,
       order_id: payment.order_id ?? null,
       customer_id: payment.customer_id ?? null,
+      customer_name: customerName ?? null,
       receipt_number: payment.receipt_number ?? null,
       buyer_email: payment.buyer_email_address ?? null,
     },
