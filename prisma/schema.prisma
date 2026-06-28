@@ -6,8 +6,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -26,15 +26,16 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   // Relations
-  accounts      Account[]
-  sessions      Session[]
-  entities      Entity[]
+  accounts          Account[]
+  sessions          Session[]
+  entities          Entity[]
   financialAccounts FinancialAccount[]
-  categories    Category[]
-  rules         ClassificationRule[]
-  receipts      Receipt[]
+  categories        Category[]
+  rules             ClassificationRule[]
+  receipts          Receipt[]
   squareConnections SquareConnection[]
-  plaidItems    PlaidItem[]
+  squareCustomers   SquareCustomer[]
+  plaidItems        PlaidItem[]
 
   @@map("users")
 }
@@ -96,15 +97,15 @@ model Entity {
   name        String
   description String?
   isDefault   Boolean    @default(false)
-  metadata    Json?      // Flexible storage for entity-specific data
+  metadata    Json? // Flexible storage for entity-specific data
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
   // Relations
-  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  financialAccounts FinancialAccount[]
-  transactionsAsPayer    Transaction[] @relation("TransactionPayer")
-  transactionsAsIncurred Transaction[] @relation("TransactionIncurred")
+  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  financialAccounts      FinancialAccount[]
+  transactionsAsPayer    Transaction[]      @relation("TransactionPayer")
+  transactionsAsIncurred Transaction[]      @relation("TransactionIncurred")
 
   @@index([userId])
   @@map("entities")
@@ -125,31 +126,31 @@ enum AccountType {
 }
 
 model FinancialAccount {
-  id              String      @id @default(cuid())
-  userId          String
-  entityId        String?     // Optional: which entity owns this account
-  name            String
-  type            AccountType
-  institution     String?
-  accountNumber   String?     // Last 4 digits only for display
-  currentBalance  Decimal     @default(0) @db.Decimal(19, 4)
-  availableBalance Decimal?   @db.Decimal(19, 4)
-  currency        String      @default("USD")
-  isActive        Boolean     @default(true)
-  
+  id               String      @id @default(cuid())
+  userId           String
+  entityId         String? // Optional: which entity owns this account
+  name             String
+  type             AccountType
+  institution      String?
+  accountNumber    String? // Last 4 digits only for display
+  currentBalance   Decimal     @default(0) @db.Decimal(19, 4)
+  availableBalance Decimal?    @db.Decimal(19, 4)
+  currency         String      @default("USD")
+  isActive         Boolean     @default(true)
+
   // Plaid integration
-  plaidAccountId  String?     @unique
-  plaidItemId     String?
-  lastSyncedAt    DateTime?
-  
+  plaidAccountId String?   @unique
+  plaidItemId    String?
+  lastSyncedAt   DateTime?
+
   // Square integration
   squareConnectionId String?
-  
-  // Generic metadata for external providers
-  providerData    Json?       // Stores provider-specific data (tokens, IDs, etc.)
 
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  // Generic metadata for external providers
+  providerData Json? // Stores provider-specific data (tokens, IDs, etc.)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -169,36 +170,36 @@ model PlaidItem {
   id              String    @id @default(cuid())
   userId          String
   itemId          String    @unique
-  accessToken     String    // Encrypted
+  accessToken     String // Encrypted
   institutionId   String?
   institutionName String?
   status          String    @default("active")
   errorCode       String?
   lastSyncedAt    DateTime?
-  cursor          String?   // For incremental sync
+  cursor          String? // For incremental sync
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   // Relations
-  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  accounts       FinancialAccount[]
-  plaidAccounts  PlaidAccount[]
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts      FinancialAccount[]
+  plaidAccounts PlaidAccount[]
 
   @@index([userId])
   @@map("plaid_items")
 }
 
 model PlaidAccount {
-  id                 String    @id @default(cuid())
+  id                 String   @id @default(cuid())
   plaidItemId        String
-  accountId          String    @unique  // Plaid's account_id
+  accountId          String   @unique // Plaid's account_id
   name               String
   mask               String?
   type               String
   subtype            String?
-  financialAccountId String?   @unique
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  financialAccountId String?  @unique
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   // Relations
   plaidItem        PlaidItem         @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
@@ -209,25 +210,55 @@ model PlaidAccount {
 }
 
 model SquareConnection {
-  id              String    @id @default(cuid())
-  userId          String
-  merchantId      String?
-  accessToken     String    // Should be encrypted in production
-  refreshToken    String?
-  expiresAt       DateTime?
-  locationIds     String[]  @default([])
-  status          String    @default("active")
-  lastSyncedAt    DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id           String    @id @default(cuid())
+  userId       String
+  merchantId   String?
+  accessToken  String // Should be encrypted in production
+  refreshToken String?
+  expiresAt    DateTime?
+  locationIds  String[]  @default([])
+  status       String    @default("active")
+  lastSyncedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   // Relations
-  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  accounts FinancialAccount[]
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts  FinancialAccount[]
+  customers SquareCustomer[]
 
   @@unique([userId, merchantId])
   @@index([userId])
   @@map("square_connections")
+}
+
+// Resolved Square customer directory entries. Square payments only carry an
+// opaque customer_id; we resolve it once via the Customers API and store the
+// human-meaningful fields so revenue can be grouped/reported by customer.
+model SquareCustomer {
+  id                 String    @id @default(cuid())
+  userId             String
+  squareConnectionId String
+  squareCustomerId   String // Square's customer id
+  name               String?
+  email              String?
+  phone              String?
+  companyName        String?
+  firstSeen          DateTime?
+  lastSeen           DateTime?
+  metadata           Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Relations
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection   SquareConnection @relation(fields: [squareConnectionId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([squareConnectionId, squareCustomerId])
+  @@index([userId])
+  @@index([email])
+  @@map("square_customers")
 }
 
 // ============================================================================
@@ -247,80 +278,85 @@ enum TransactionStatus {
 }
 
 enum ClassificationType {
-  COGS           // Cost of Goods Sold
-  OPERATING      // Operating expenses
-  PERSONAL       // Personal spending
-  INCOME         // Revenue
-  TRANSFER       // Internal transfers
-  REIMBURSABLE   // To be reimbursed
-  REIMBURSEMENT  // Reimbursement payment
+  COGS // Cost of Goods Sold
+  OPERATING // Operating expenses
+  PERSONAL // Personal spending
+  INCOME // Revenue
+  TRANSFER // Internal transfers
+  REIMBURSABLE // To be reimbursed
+  REIMBURSEMENT // Reimbursement payment
 }
 
 model Transaction {
-  id                String              @id @default(cuid())
-  accountId         String
-  amount            Decimal             @db.Decimal(19, 4)
-  type              TransactionType
-  status            TransactionStatus   @default(POSTED)
-  
+  id        String            @id @default(cuid())
+  accountId String
+  amount    Decimal           @db.Decimal(19, 4)
+  type      TransactionType
+  status    TransactionStatus @default(POSTED)
+
   // Core fields
-  date              DateTime
-  description       String
-  merchantName      String?
-  
+  date         DateTime
+  description  String
+  merchantName String?
+
   // Classification
-  categoryId        String?
-  classification    ClassificationType?
-  
+  categoryId     String?
+  classification ClassificationType?
+
   // Entity tracking (who paid vs who incurred)
-  payerId           String?             // Entity that paid
-  incurredById      String?             // Entity that incurred the expense
-  
+  payerId      String? // Entity that paid
+  incurredById String? // Entity that incurred the expense
+
   // External references
-  externalId        String?             // Bank/Plaid transaction ID
-  checkNumber       String?
-  
+  externalId  String? // Bank/Plaid transaction ID
+  checkNumber String?
+
+  // Square customer (resolved from payment.customer_id)
+  squareCustomerId String?
+
   // User modifications
-  userDescription   String?             // User-provided description
-  notes             String?
-  isReviewed        Boolean             @default(false)
-  isReconciled      Boolean             @default(false)
-  
+  userDescription String? // User-provided description
+  notes           String?
+  isReviewed      Boolean @default(false)
+  isReconciled    Boolean @default(false)
+
   // Metadata
-  metadata          Json?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  account           FinancialAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  category          Category?           @relation(fields: [categoryId], references: [id])
-  payer             Entity?             @relation("TransactionPayer", fields: [payerId], references: [id])
-  incurredBy        Entity?             @relation("TransactionIncurred", fields: [incurredById], references: [id])
-  
-  lineItems         LineItem[]
-  receiptLinks      ReceiptTransaction[]
-  linkedFrom        TransactionLink[]   @relation("LinkedFrom")
-  linkedTo          TransactionLink[]   @relation("LinkedTo")
-  splits            TransactionSplit[]
+  account        FinancialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category       Category?        @relation(fields: [categoryId], references: [id])
+  payer          Entity?          @relation("TransactionPayer", fields: [payerId], references: [id])
+  incurredBy     Entity?          @relation("TransactionIncurred", fields: [incurredById], references: [id])
+  squareCustomer SquareCustomer?  @relation(fields: [squareCustomerId], references: [id])
+
+  lineItems    LineItem[]
+  receiptLinks ReceiptTransaction[]
+  linkedFrom   TransactionLink[]    @relation("LinkedFrom")
+  linkedTo     TransactionLink[]    @relation("LinkedTo")
+  splits       TransactionSplit[]
 
   @@unique([accountId, externalId])
   @@index([accountId])
   @@index([date])
   @@index([categoryId])
   @@index([classification])
+  @@index([squareCustomerId])
   @@map("transactions")
 }
 
 // For splitting transactions across categories/entities
 model TransactionSplit {
-  id              String              @id @default(cuid())
-  transactionId   String
-  amount          Decimal             @db.Decimal(19, 4)
-  categoryId      String?
-  classification  ClassificationType?
-  incurredById    String?
-  description     String?
-  createdAt       DateTime            @default(now())
+  id             String              @id @default(cuid())
+  transactionId  String
+  amount         Decimal             @db.Decimal(19, 4)
+  categoryId     String?
+  classification ClassificationType?
+  incurredById   String?
+  description    String?
+  createdAt      DateTime            @default(now())
 
   transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   category    Category?   @relation(fields: [categoryId], references: [id])
@@ -331,13 +367,13 @@ model TransactionSplit {
 
 // Links between related transactions (e.g., payment ↔ reimbursement)
 model TransactionLink {
-  id            String   @id @default(cuid())
-  fromId        String
-  toId          String
-  linkType      String   // "reimbursement", "transfer", "refund", etc.
-  amount        Decimal? @db.Decimal(19, 4) // For partial links
-  notes         String?
-  createdAt     DateTime @default(now())
+  id        String   @id @default(cuid())
+  fromId    String
+  toId      String
+  linkType  String // "reimbursement", "transfer", "refund", etc.
+  amount    Decimal? @db.Decimal(19, 4) // For partial links
+  notes     String?
+  createdAt DateTime @default(now())
 
   fromTransaction Transaction @relation("LinkedFrom", fields: [fromId], references: [id], onDelete: Cascade)
   toTransaction   Transaction @relation("LinkedTo", fields: [toId], references: [id], onDelete: Cascade)
@@ -353,22 +389,22 @@ model TransactionLink {
 // ============================================================================
 
 model Category {
-  id              String              @id @default(cuid())
-  userId          String
-  name            String
-  icon            String?
-  color           String?
-  parentId        String?
+  id                    String              @id @default(cuid())
+  userId                String
+  name                  String
+  icon                  String?
+  color                 String?
+  parentId              String?
   defaultClassification ClassificationType?
-  isSystem        Boolean             @default(false)
-  sortOrder       Int                 @default(0)
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
+  isSystem              Boolean             @default(false)
+  sortOrder             Int                 @default(0)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 
   // Relations
-  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent       Category?          @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children     Category[]         @relation("CategoryHierarchy")
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent       Category?            @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children     Category[]           @relation("CategoryHierarchy")
   transactions Transaction[]
   splits       TransactionSplit[]
   rules        ClassificationRule[]
@@ -383,14 +419,14 @@ model Category {
 // ============================================================================
 
 model Vendor {
-  id              String   @id @default(cuid())
-  name            String   @unique
-  normalizedName  String   // Lowercase, trimmed
-  aliases         String[] // Other names this vendor appears as
+  id                String   @id @default(cuid())
+  name              String   @unique
+  normalizedName    String // Lowercase, trimmed
+  aliases           String[] // Other names this vendor appears as
   defaultCategoryId String?
-  metadata        Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   // Relations
   lineItems LineItem[]
@@ -400,14 +436,14 @@ model Vendor {
 }
 
 model Item {
-  id              String   @id @default(cuid())
-  name            String
-  normalizedName  String
+  id                String   @id @default(cuid())
+  name              String
+  normalizedName    String
   defaultCategoryId String?
-  unitOfMeasure   String?
-  metadata        Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  unitOfMeasure     String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   // Relations
   lineItems LineItem[]
@@ -420,23 +456,41 @@ model Item {
 // LINE ITEMS (Receipt-level detail)
 // ============================================================================
 
+// What a line represents. Lets the same table hold revenue items, fees, tax,
+// discounts, etc. — shared by Square order ingest and the Margin Edge invoice
+// tooling.
+enum LineItemType {
+  ITEM
+  SHIPPING
+  FEE
+  TAX
+  TIP
+  DISCOUNT
+  OTHER
+}
+
 model LineItem {
-  id              String   @id @default(cuid())
-  transactionId   String?
-  receiptId       String?
-  vendorId        String?
-  itemId          String?
-  
-  description     String
-  quantity        Decimal? @db.Decimal(10, 4)
-  unitPrice       Decimal? @db.Decimal(19, 4)
-  totalPrice      Decimal  @db.Decimal(19, 4)
-  
-  categoryId      String?
-  classification  ClassificationType?
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id            String  @id @default(cuid())
+  transactionId String?
+  receiptId     String?
+  vendorId      String?
+  itemId        String?
+
+  description String
+  quantity    Decimal? @db.Decimal(10, 4)
+  unitPrice   Decimal? @db.Decimal(19, 4)
+  totalPrice  Decimal  @db.Decimal(19, 4)
+
+  lineType       LineItemType        @default(ITEM)
+  categoryId     String?
+  classification ClassificationType?
+
+  // Stable id from the source system (e.g. Square order line uid) so re-syncs
+  // upsert instead of duplicating.
+  sourceUid String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
@@ -444,6 +498,7 @@ model LineItem {
   vendor      Vendor?      @relation(fields: [vendorId], references: [id])
   item        Item?        @relation(fields: [itemId], references: [id])
 
+  @@unique([transactionId, sourceUid])
   @@index([transactionId])
   @@index([receiptId])
   @@map("line_items")
@@ -454,48 +509,48 @@ model LineItem {
 // ============================================================================
 
 enum ReceiptStatus {
-  PENDING      // Just uploaded
-  PROCESSING   // OCR in progress
-  PROCESSED    // OCR complete
-  FAILED       // OCR failed
-  REVIEWED     // User has reviewed
+  PENDING // Just uploaded
+  PROCESSING // OCR in progress
+  PROCESSED // OCR complete
+  FAILED // OCR failed
+  REVIEWED // User has reviewed
 }
 
 model Receipt {
-  id              String        @id @default(cuid())
-  userId          String
-  status          ReceiptStatus @default(PENDING)
-  
+  id     String        @id @default(cuid())
+  userId String
+  status ReceiptStatus @default(PENDING)
+
   // File info
-  fileName        String
-  fileType        String
-  filePath        String
-  fileSize        Int
-  
+  fileName String
+  fileType String
+  filePath String
+  fileSize Int
+
   // Extracted data
-  vendorName      String?
-  totalAmount     Decimal?      @db.Decimal(19, 4)
-  subtotal        Decimal?      @db.Decimal(19, 4)
-  tax             Decimal?      @db.Decimal(19, 4)
-  tip             Decimal?      @db.Decimal(19, 4)
-  receiptDate     DateTime?
-  
+  vendorName  String?
+  totalAmount Decimal?  @db.Decimal(19, 4)
+  subtotal    Decimal?  @db.Decimal(19, 4)
+  tax         Decimal?  @db.Decimal(19, 4)
+  tip         Decimal?  @db.Decimal(19, 4)
+  receiptDate DateTime?
+
   // OCR metadata
-  rawOcrText      String?       @db.Text
-  ocrConfidence   Float?
-  extractedData   Json?         // Full structured extraction
-  
+  rawOcrText    String? @db.Text
+  ocrConfidence Float?
+  extractedData Json? // Full structured extraction
+
   // Source tracking
-  source          String?       // "upload", "email", "api"
-  sourceId        String?       // Email ID, etc.
-  
-  notes           String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  source   String? // "upload", "email", "api"
+  sourceId String? // Email ID, etc.
+
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  lineItems       LineItem[]
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lineItems        LineItem[]
   transactionLinks ReceiptTransaction[]
 
   @@index([userId])
@@ -505,12 +560,12 @@ model Receipt {
 
 // Many-to-many: Receipts ↔ Transactions
 model ReceiptTransaction {
-  id            String   @id @default(cuid())
-  receiptId     String
-  transactionId String
-  matchConfidence Float?   // How confident the auto-match was
-  isManual      Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  id              String   @id @default(cuid())
+  receiptId       String
+  transactionId   String
+  matchConfidence Float? // How confident the auto-match was
+  isManual        Boolean  @default(false)
+  createdAt       DateTime @default(now())
 
   receipt     Receipt     @relation(fields: [receiptId], references: [id], onDelete: Cascade)
   transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
@@ -533,28 +588,28 @@ enum RuleMatchType {
 }
 
 model ClassificationRule {
-  id              String        @id @default(cuid())
-  userId          String
-  name            String
-  isActive        Boolean       @default(true)
-  priority        Int           @default(0)
-  
+  id       String  @id @default(cuid())
+  userId   String
+  name     String
+  isActive Boolean @default(true)
+  priority Int     @default(0)
+
   // Match conditions
-  matchField      String        // "merchantName", "description", "amount", etc.
-  matchType       RuleMatchType
-  matchValue      String
-  
+  matchField String // "merchantName", "description", "amount", etc.
+  matchType  RuleMatchType
+  matchValue String
+
   // Actions
-  categoryId      String?
-  classification  ClassificationType?
-  incurredById    String?
-  
+  categoryId     String?
+  classification ClassificationType?
+  incurredById   String?
+
   // Stats
-  timesApplied    Int           @default(0)
-  lastAppliedAt   DateTime?
-  
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  timesApplied  Int       @default(0)
+  lastAppliedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -579,7 +634,7 @@ enum JobStatus {
 
 model BackgroundJob {
   id          String    @id @default(cuid())
-  type        String    // "plaid_sync", "ocr_receipt", "apply_rules", etc.
+  type        String // "plaid_sync", "ocr_receipt", "apply_rules", etc.
   status      JobStatus @default(PENDING)
   payload     Json?
   result      Json?

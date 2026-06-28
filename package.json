@@ -23,6 +23,8 @@
     "venmo:crossref:apply": "tsx scripts/crossref-venmo-statements.ts --apply",
     "venmo:sync": "tsx scripts/sync-venmo-statements.ts",
     "venmo:sync:apply": "tsx scripts/sync-venmo-statements.ts --apply",
+    "square:backfill": "tsx scripts/backfill-square-customers.ts",
+    "square:backfill:apply": "tsx scripts/backfill-square-customers.ts --apply",
     "test": "vitest run"
   },
   "dependencies": {

@@ -274,6 +274,32 @@ export async function listSquarePayouts(options: {
   return { payouts };
 }
 
+// Resolve opaque customer ids to profiles via the Customers API. Square's
+// BulkRetrieveCustomers returns a map keyed by customer id, each value a
+// GetCustomerResponse carrying `.customer`. Batched to be safe on large id sets.
+export async function bulkRetrieveSquareCustomers(options: {
+  accessToken?: string;
+  customerIds: string[];
+}): Promise<Map<string, SquareCustomerData>> {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+  const result = new Map<string, SquareCustomerData>();
+
+  const uniqueIds = Array.from(new Set(options.customerIds.filter(Boolean)));
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const batch = uniqueIds.slice(i, i + 100);
+    const response = await client.customers.bulkRetrieveCustomers({ customerIds: batch });
+    const responses = response.responses || {};
+    for (const [customerId, entry] of Object.entries(responses)) {
+      const customer = (entry as any)?.customer;
+      if (customer) {
+        result.set(customerId, mapSquareCustomer(customer));
+      }
+    }
+  }
+
+  return result;
+}
+
 // List refunds (money flowing out of Square due to refunds)
 export async function listSquareRefunds(options: {
   accessToken?: string;
@@ -312,6 +338,80 @@ export interface SquareTransactionData {
   orderId?: string;
   receiptNumber?: string;
   buyerEmail?: string;
+}
+
+export interface SquareCustomerData {
+  id: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  companyName: string | null;
+  createdAt: string | null;
+}
+
+// Build a display name from a Square customer profile, falling back through the
+// fields people actually fill in (given/family → company → nickname → email).
+export function squareCustomerDisplayName(c: SquareCustomerData): string | null {
+  const full = [c.name].filter(Boolean).join(' ').trim();
+  return (
+    (full || null) ||
+    c.companyName ||
+    c.email ||
+    null
+  );
+}
+
+// Map a Square customer profile to our format.
+export function mapSquareCustomer(customer: any): SquareCustomerData {
+  const given = customer.givenName ?? '';
+  const family = customer.familyName ?? '';
+  const name = `${given} ${family}`.trim() || customer.nickname || null;
+  return {
+    id: customer.id,
+    name,
+    email: customer.emailAddress ?? null,
+    phone: customer.phoneNumber ?? null,
+    companyName: customer.companyName ?? null,
+    createdAt: customer.createdAt ?? null,
+  };
+}
+
+export interface SquareLineItemData {
+  uid: string | null;
+  name: string;
+  quantity: number;
+  unitPrice: number | null;
+  totalPrice: number;
+  variationName: string | null;
+  catalogObjectId: string | null;
+  note: string | null;
+}
+
+// Extract structured line items from a Square order so they can be persisted
+// as LineItem rows (instead of being flattened into a description string).
+// gross/total money are already net of item-level discounts; base price is the
+// per-unit list price.
+export function mapSquareOrderLineItems(order: any): SquareLineItemData[] {
+  const lineItems: any[] = order?.lineItems || [];
+  return lineItems
+    .map((li): SquareLineItemData | null => {
+      const name = li?.name || li?.variationName || null;
+      if (!name) return null;
+      const quantity = Number(li?.quantity || 1);
+      const unitCents = li?.basePriceMoney?.amount;
+      const totalCents = li?.totalMoney?.amount ?? li?.grossSalesMoney?.amount ?? 0;
+      return {
+        uid: li?.uid ?? null,
+        name,
+        quantity: Number.isFinite(quantity) ? quantity : 1,
+        unitPrice: unitCents != null ? Number(unitCents) / 100 : null,
+        totalPrice: Number(totalCents) / 100,
+        variationName: li?.variationName ?? null,
+        catalogObjectId: li?.catalogObjectId ?? null,
+        note: li?.note ?? null,
+      };
+    })
+    .filter((li): li is SquareLineItemData => li !== null);
 }
 
 // Map Square payment to our format

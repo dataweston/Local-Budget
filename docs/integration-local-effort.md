@@ -17,9 +17,20 @@ the token is unconfigured. They bypass session middleware by design.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to`, `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries `effectiveClassification` (explicit → category default → type fallback), `direction`, category/account names, and splits. |
+| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to` (on date), `updatedSince` (ISO timestamp — incremental sync that re-reads corrected rows), `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries `updatedAt`, `effectiveClassification` (explicit → category default → type fallback), `direction`, `categoryId`+`categoryName`, `customerName`+`customerEmail` (resolved Square customer — the income counterparty), account names, and splits. |
 | `GET /api/integration/v1/vendors` | Vendor spend rollups (canonical name, aliases, txCount, totalSpend, avg, first/last seen, primaryClassification). Default filter `COGS,OPERATING`. This is the feed `seed-brain.js` needs. |
+| `GET /api/integration/v1/items` | Line-item export for recipe/margin costing. One row per `LineItem` with parent date/merchant/customer, `quantity`, `unitPrice`, `totalPrice`, `unitOfMeasure`, `lineType`, `vendorId`/`itemId`. Filters: `from`, `to`, `updatedSince`, `lineType` (default `ITEM`), `source` (`square\|receipt`), `limit`, `cursor`. |
 | `GET /api/integration/v1/pnl?year=YYYY` | P&L using the same method as `generate-local-budget-pnl.cjs`, so both repos report identical numbers. |
+
+### Income counterparty (resolves the brain's "415 blank INCOME rows" gap)
+
+Square income rows now carry a resolved customer: `merchantName` is set to the
+customer/company name (or buyer email), `customerName`/`customerEmail` expose the
+resolved [Square] `SquareCustomer`, and `squareCustomerId` links the row. Guest /
+quick-sale payments have no customer and fall back to a channel label
+(`Square Invoice` / `Square Online` / `Square Payment`). Non-Square income
+(Zelle, farmers market, catering) still needs a payer captured in Local Budget —
+tracked separately.
 
 Auth styles accepted: `Authorization: Bearer <token>`, `x-webhook-token`
 header, or `?token=` query param.
