@@ -14,6 +14,10 @@ import {
   refreshSquareToken,
   type SquareCustomerData,
 } from '@/lib/square';
+import {
+  resolveVendorId,
+  createVendorResolverCache,
+} from '@/lib/normalization/vendor-resolver';
 
 function squarePaymentExternalId(paymentId: string) {
   return `square_${paymentId}`;
@@ -93,6 +97,7 @@ export async function POST(request: NextRequest) {
 
     let feesAdded = 0;
     let itemsAdded = 0;
+    const vendorCache = createVendorResolverCache();
 
     // Sync payments
     console.log('[Square Sync] Syncing payments from', startTime, 'to', endTime);
@@ -235,6 +240,8 @@ export async function POST(request: NextRequest) {
         buyer_email: mapped.buyerEmail ?? null,
       };
 
+      const vendorId = await resolveVendorId(db, merchantName, vendorCache);
+
       const canonicalExternalId = squarePaymentExternalId(mapped.id);
       const legacyExternalId = mapped.id;
 
@@ -284,6 +291,7 @@ export async function POST(request: NextRequest) {
           description,
           merchantName,
           squareCustomerId: customerRowId,
+          vendorId,
           externalId: canonicalExternalId,
           isReviewed: false,
           metadata: paymentMetadata,
@@ -296,6 +304,7 @@ export async function POST(request: NextRequest) {
           description,
           merchantName,
           squareCustomerId: customerRowId,
+          vendorId,
           metadata: paymentMetadata,
         },
         select: { id: true },

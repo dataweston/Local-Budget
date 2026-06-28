@@ -25,6 +25,8 @@
     "venmo:sync:apply": "tsx scripts/sync-venmo-statements.ts --apply",
     "square:backfill": "tsx scripts/backfill-square-customers.ts",
     "square:backfill:apply": "tsx scripts/backfill-square-customers.ts --apply",
+    "vendors:populate": "tsx scripts/populate-vendors.ts",
+    "vendors:populate:apply": "tsx scripts/populate-vendors.ts --apply",
     "test": "vitest run"
   },
   "dependencies": {

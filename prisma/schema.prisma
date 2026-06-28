@@ -314,6 +314,9 @@ model Transaction {
   // Square customer (resolved from payment.customer_id)
   squareCustomerId String?
 
+  // Resolved canonical vendor (stable id for the brain's vendor graph)
+  vendorId String?
+
   // User modifications
   userDescription String? // User-provided description
   notes           String?
@@ -331,6 +334,7 @@ model Transaction {
   payer          Entity?          @relation("TransactionPayer", fields: [payerId], references: [id])
   incurredBy     Entity?          @relation("TransactionIncurred", fields: [incurredById], references: [id])
   squareCustomer SquareCustomer?  @relation(fields: [squareCustomerId], references: [id])
+  vendor         Vendor?          @relation(fields: [vendorId], references: [id])
 
   lineItems    LineItem[]
   receiptLinks ReceiptTransaction[]
@@ -344,6 +348,7 @@ model Transaction {
   @@index([categoryId])
   @@index([classification])
   @@index([squareCustomerId])
+  @@index([vendorId])
   @@map("transactions")
 }
 
@@ -419,17 +424,19 @@ model Category {
 // ============================================================================
 
 model Vendor {
-  id                String   @id @default(cuid())
-  name              String   @unique
-  normalizedName    String // Lowercase, trimmed
-  aliases           String[] // Other names this vendor appears as
-  defaultCategoryId String?
-  metadata          Json?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                    String              @id @default(cuid())
+  name                  String              @unique
+  normalizedName        String // Lowercase, trimmed canonical key
+  aliases               String[] // Other raw names this vendor appears as
+  defaultCategoryId     String?
+  defaultClassification ClassificationType? // Learned dominant classification
+  metadata              Json?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 
   // Relations
-  lineItems LineItem[]
+  lineItems    LineItem[]
+  transactions Transaction[]
 
   @@index([normalizedName])
   @@map("vendors")

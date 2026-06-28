@@ -27,6 +27,8 @@ type TransactionRow = {
   direction: Direction;
   categoryId: string | null;
   categoryName: string | null;
+  vendorId: string | null;
+  vendorName: string | null;
   customerName: string | null;
   customerEmail: string | null;
   accountId: string;
@@ -53,6 +55,8 @@ function toCsv(rows: TransactionRow[]): string {
     'effectiveClassification',
     'direction',
     'categoryName',
+    'vendorId',
+    'vendorName',
     'customerName',
     'customerEmail',
     'accountName',
@@ -163,8 +167,10 @@ export async function GET(req: NextRequest) {
         categoryId: true,
         externalId: true,
         accountId: true,
+        vendorId: true,
         account: { select: { name: true } },
         category: { select: { name: true, defaultClassification: true } },
+        vendor: { select: { name: true } },
         squareCustomer: { select: { name: true, companyName: true, email: true } },
         splits: {
           select: {
@@ -204,6 +210,8 @@ export async function GET(req: NextRequest) {
         direction,
         categoryId: tx.categoryId,
         categoryName: tx.category?.name ?? null,
+        vendorId: tx.vendorId,
+        vendorName: tx.vendor?.name ?? null,
         customerName:
           tx.squareCustomer?.name ?? tx.squareCustomer?.companyName ?? null,
         customerEmail: tx.squareCustomer?.email ?? null,
