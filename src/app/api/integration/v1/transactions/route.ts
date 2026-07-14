@@ -7,6 +7,12 @@ import {
   type EffectiveClassification,
   type Direction,
 } from '@/lib/pnl';
+import {
+  costBucketFor,
+  dollarsToCents,
+  effectiveCashflowClassification,
+  type CostBucket,
+} from '@/lib/cashflow';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,8 +21,10 @@ const DEFAULT_LIMIT = 500;
 
 type TransactionRow = {
   id: string;
+  updatedAt: string;
   date: string;
   amount: number;
+  amountCents: number;
   type: string;
   status: string;
   description: string;
@@ -24,23 +32,59 @@ type TransactionRow = {
   classification: string | null;
   effectiveClassification: EffectiveClassification;
   direction: Direction;
+  costBucket: CostBucket;
+  costSubcategory: string | null;
   categoryId: string | null;
   categoryName: string | null;
   accountId: string;
   accountName: string | null;
   externalId: string | null;
+  category: { id: string; name: string } | null;
+  vendor: { id: null; name: string } | null;
+  squareCustomerId: string | null;
   splits: {
+    id: string;
     amount: number;
+    amountCents: number;
     classification: string | null;
+    effectiveClassification: string | null;
+    costBucket: CostBucket;
+    costSubcategory: string | null;
+    category: { id: string; name: string } | null;
     categoryName: string | null;
   }[];
 };
 
+type ChangeCursor = { updatedAt: string; id: string };
+
+function encodeCursor(cursor: ChangeCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+function decodeCursor(value: string | null): ChangeCursor | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as ChangeCursor;
+    if (!parsed.id || Number.isNaN(new Date(parsed.updatedAt).getTime())) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function getSquareCustomerId(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>).customer_id;
+  return typeof value === 'string' && value ? value : null;
+}
+
 function toCsv(rows: TransactionRow[]): string {
   const headers = [
     'id',
+    'updatedAt',
     'date',
     'amount',
+    'amountCents',
     'type',
     'status',
     'description',
@@ -95,7 +139,7 @@ export async function GET(req: NextRequest) {
   const merchant = params.get('merchant');
   const format = params.get('format') ?? 'json';
   const limit = Math.min(Math.max(Number(params.get('limit')) || DEFAULT_LIMIT, 1), MAX_LIMIT);
-  const cursor = params.get('cursor');
+  const cursorParam = params.get('cursor');
   const classificationFilter = params.get('classification')
     ? new Set(
         params
@@ -127,15 +171,37 @@ export async function GET(req: NextRequest) {
   }
 
   const rows: TransactionRow[] = [];
-  let nextCursor: string | null = cursor;
+  let cursor = decodeCursor(cursorParam);
+  // Keep accepting the original id-only cursor during the v1 transition.
+  if (cursorParam && !cursor) {
+    const legacy = await db.transaction.findUnique({
+      where: { id: cursorParam },
+      select: { id: true, updatedAt: true },
+    });
+    if (legacy) cursor = { id: legacy.id, updatedAt: legacy.updatedAt.toISOString() };
+  }
+  let nextCursor: ChangeCursor | null = cursor;
 
   // Effective classification depends on the category fallback, so filtering
   // happens after the fetch; keep paging until the requested page is full.
   while (rows.length < limit) {
     const batch = await db.transaction.findMany({
-      where,
+      where: nextCursor
+        ? {
+            AND: [
+              where,
+              {
+                OR: [
+                  { updatedAt: { gt: new Date(nextCursor.updatedAt) } },
+                  { updatedAt: new Date(nextCursor.updatedAt), id: { gt: nextCursor.id } },
+                ],
+              },
+            ],
+          }
+        : where,
       select: {
         id: true,
+        updatedAt: true,
         date: true,
         amount: true,
         type: true,
@@ -145,37 +211,51 @@ export async function GET(req: NextRequest) {
         classification: true,
         categoryId: true,
         externalId: true,
+        metadata: true,
         accountId: true,
         account: { select: { name: true } },
-        category: { select: { name: true, defaultClassification: true } },
+        category: { select: { id: true, name: true, defaultClassification: true } },
         splits: {
           select: {
+            id: true,
             amount: true,
             classification: true,
-            category: { select: { name: true } },
+            category: { select: { id: true, name: true, defaultClassification: true } },
           },
         },
       },
-      orderBy: { id: 'asc' },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
       take: limit,
-      ...(nextCursor ? { cursor: { id: nextCursor }, skip: 1 } : {}),
     });
 
     if (batch.length === 0) {
       nextCursor = null;
       break;
     }
-    nextCursor = batch[batch.length - 1].id;
+    nextCursor = {
+      updatedAt: batch[batch.length - 1].updatedAt.toISOString(),
+      id: batch[batch.length - 1].id,
+    };
 
     for (const tx of batch) {
       const effective = getEffectiveClassification(tx);
       if (classificationFilter && !classificationFilter.has(effective)) continue;
       const direction = directionFor(effective);
       if (directionFilter && !directionFilter.has(direction)) continue;
+      const rawEffective = effectiveCashflowClassification(tx);
+      const bucket = costBucketFor({
+        classification: rawEffective,
+        categoryName: tx.category?.name,
+        merchantName: tx.merchantName,
+        description: tx.description,
+        type: tx.type,
+      });
       rows.push({
         id: tx.id,
+        updatedAt: tx.updatedAt.toISOString(),
         date: tx.date.toISOString(),
         amount: Number(tx.amount),
+        amountCents: dollarsToCents(tx.amount),
         type: tx.type,
         status: tx.status,
         description: tx.description,
@@ -183,16 +263,35 @@ export async function GET(req: NextRequest) {
         classification: tx.classification,
         effectiveClassification: effective,
         direction,
+        ...bucket,
         categoryId: tx.categoryId,
         categoryName: tx.category?.name ?? null,
         accountId: tx.accountId,
         accountName: tx.account?.name ?? null,
         externalId: tx.externalId,
-        splits: tx.splits.map((s) => ({
-          amount: Number(s.amount),
-          classification: s.classification,
-          categoryName: s.category?.name ?? null,
-        })),
+        category: tx.category ? { id: tx.category.id, name: tx.category.name } : null,
+        vendor: tx.merchantName ? { id: null, name: tx.merchantName } : null,
+        squareCustomerId: getSquareCustomerId(tx.metadata),
+        splits: tx.splits.map((s) => {
+          const splitEffective = effectiveCashflowClassification(s, tx);
+          const splitBucket = costBucketFor({
+            classification: splitEffective,
+            categoryName: s.category?.name ?? tx.category?.name,
+            merchantName: tx.merchantName,
+            description: tx.description,
+            type: tx.type,
+          });
+          return {
+            id: s.id,
+            amount: Number(s.amount),
+            amountCents: dollarsToCents(s.amount),
+            classification: s.classification,
+            effectiveClassification: splitEffective,
+            ...splitBucket,
+            category: s.category ? { id: s.category.id, name: s.category.name } : null,
+            categoryName: s.category?.name ?? null,
+          };
+        }),
       });
       if (rows.length >= limit) break;
     }
@@ -209,13 +308,13 @@ export async function GET(req: NextRequest) {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': 'attachment; filename="transactions.csv"',
-        ...(nextCursor ? { 'X-Next-Cursor': nextCursor } : {}),
+        ...(nextCursor ? { 'X-Next-Cursor': encodeCursor(nextCursor) } : {}),
       },
     });
   }
 
   return NextResponse.json({
     transactions: rows,
-    nextCursor,
+    nextCursor: nextCursor ? encodeCursor(nextCursor) : null,
   });
 }

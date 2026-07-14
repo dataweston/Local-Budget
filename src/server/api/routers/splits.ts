@@ -120,6 +120,13 @@ export const splitsRouter = createTRPCRouter({
           )
         );
 
+        // Child writes do not touch Transaction.updatedAt by themselves. The
+        // integration change cursor relies on this parent update.
+        await tx.transaction.update({
+          where: { id: input.transactionId },
+          data: { isReviewed: true },
+        });
+
         return splits;
       });
 
@@ -410,6 +417,11 @@ export const splitsRouter = createTRPCRouter({
           created.push(split);
         }
 
+        await tx.transaction.update({
+          where: { id: input.transactionId },
+          data: { isReviewed: true },
+        });
+
         return created;
       });
 
@@ -435,8 +447,14 @@ export const splitsRouter = createTRPCRouter({
         });
       }
 
-      await ctx.db.transactionSplit.deleteMany({
-        where: { transactionId: input.transactionId },
+      await ctx.db.$transaction(async (tx) => {
+        await tx.transactionSplit.deleteMany({
+          where: { transactionId: input.transactionId },
+        });
+        await tx.transaction.update({
+          where: { id: input.transactionId },
+          data: { isReviewed: true },
+        });
       });
 
       return { success: true };

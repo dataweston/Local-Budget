@@ -17,7 +17,8 @@ the token is unconfigured. They bypass session middleware by design.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to`, `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries `effectiveClassification` (explicit → category default → type fallback), `direction`, category/account names, and splits. |
+| `GET /api/integration/v1/cashflow-actuals?from=YYYY-MM-DD&to=YYYY-MM-DD&grain=month` | Posted, split-aware monthly actuals. `to` is exclusive. Contract version 1; method `cashflow-actuals-v1`; USD amounts are integer cents. Includes labor, excluded and unresolved buckets plus freshness/quality metadata. |
+| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to`, `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries integer `amountCents`, `updatedAt`, cashflow bucket fields, stable category/Square customer identity where available, and splits. The opaque cursor is ordered by `(updatedAt,id)`, so corrected history is replayed. |
 | `GET /api/integration/v1/vendors` | Vendor spend rollups (canonical name, aliases, txCount, totalSpend, avg, first/last seen, primaryClassification). Default filter `COGS,OPERATING`. This is the feed `seed-brain.js` needs. |
 | `GET /api/integration/v1/pnl?year=YYYY` | P&L using the same method as `generate-local-budget-pnl.cjs`, so both repos report identical numbers. |
 
@@ -52,7 +53,7 @@ sets are disjoint and nothing double-counts. Do **not** export Square revenue as
 `payment.completed`.
 
 **Delivery: pull.** The brain runs a nightly GET against
-`/api/integration/v1/transactions?direction=outflow&from=<cursor>` and writes
+`/api/integration/v1/transactions?direction=outflow&cursor=<cursor>` and writes
 one `payment.completed` LedgerEvent per row. This keeps Local Budget a clean
 data source; the ledger-write logic lives in the brain.
 
@@ -64,7 +65,7 @@ Mapping a transaction row → the brain's `payment.completed` payload:
 | `sourceId` | row `id` (stable cuid — brain dedupes on `eventType+source+sourceId`) |
 | `occurredAt` | row `date` |
 | `payload.merchantName` | row `merchantName` (**must match a Vendor alias** — reconcile via `/v1/vendors` `rawNames` first, or inferences silently write nothing) |
-| `payload.amountCents` | `Math.round(Math.abs(amount) * 100)` |
+| `payload.amountCents` | row `amountCents` |
 | `payload.direction` | row `direction` (always `outflow` for this feed) |
 
 Reconcile merchant names against the brain's 149 Vendor aliases before bulk
@@ -85,6 +86,80 @@ ingest — name mismatches are the #1 reason inferences stay empty. The `/v1/ven
 4. **Classification semantics**: consumers should use
    `effectiveClassification`, not raw `classification` — raw is null for
    anything inheriting from its category default.
+5. **Forecast ownership**: Local Budget exports accounting actuals and quality
+   evidence. The consumer owns projections and must keep unclassified money
+   visible rather than folding it into operating expense.
+
+## Cashflow actuals semantics
+
+`GET /api/integration/v1/cashflow-actuals?from=2026-01-01&to=2026-07-01&grain=month`
+returns six closed month rows. Authentication uses `INTEGRATION_API_TOKEN`.
+Consumers normally configure that same secret as `LOCAL_BUDGET_API_TOKEN` and
+the deployment origin as `LOCAL_BUDGET_API_URL`.
+
+- Only `POSTED` rows enter actuals. Pending rows are counted in `quality`.
+- Splits replace the parent amount. A difference greater than one cent is
+  reported as a split mismatch.
+- Classification precedence is split explicit, split category default,
+  transaction explicit, transaction category default, then unresolved.
+- Labor is a cashflow bucket independent of the accounting enum. Explicit
+  Labor/Payroll/Wages/Contractor/Staff categories and Square/Block Payroll
+  evidence enter labor. An arbitrary person-to-person transfer does not.
+- Unresolved expense money enters `unclassifiedCents`; it is never silently
+  treated as operating expense.
+- `sourceMaxDate` is the latest posted transaction date. Bank freshness is the
+  newest active Plaid-backed account sync. A sync older than 48 hours warns.
+- A month is complete only when the requested range covers the calendar month
+  and `sourceMaxDate` reaches that month's final date.
+
+The API does not currently expose recurring Square invoice series. Local
+Budget stores completed Square payments and order enrichment, but it neither
+persists a recurrence/series identity nor requests the Square invoice scope.
+Building a recurring-revenue endpoint from the current tables would guess from
+payment cadence and could double-count scheduled invoices. Add invoice-series
+ingestion and stable customer/series identifiers before publishing that
+contract.
+
+### Example response (abridged)
+
+```json
+{
+  "contractVersion": 1,
+  "methodVersion": "cashflow-actuals-v1",
+  "currency": "USD",
+  "timezone": "America/Chicago",
+  "sourceMaxDate": "2026-07-12",
+  "range": {
+    "from": "2026-01-01",
+    "toExclusive": "2026-07-01",
+    "completeMonthsOnly": true
+  },
+  "months": [
+    {
+      "month": "2026-01",
+      "incomeCents": 0,
+      "inventoryCents": 0,
+      "operatingCents": 0,
+      "laborCents": 0,
+      "reimbursableCents": 0,
+      "personalExcludedCents": 0,
+      "transferExcludedCents": 0,
+      "unclassifiedCents": 0,
+      "transactionCount": 0,
+      "splitLineCount": 0,
+      "complete": true
+    }
+  ],
+  "quality": {
+    "unclassifiedTransactionCount": 0,
+    "unclassifiedCents": 0,
+    "splitMismatchCount": 0,
+    "pendingTransactionCount": 0,
+    "latestBankSyncAt": "2026-07-14T03:01:06.671Z",
+    "warnings": []
+  }
+}
+```
 
 ## Setup
 
