@@ -6,10 +6,18 @@ import {
   listSquarePayments,
   listSquareRefunds,
   batchGetSquareOrders,
+  bulkRetrieveSquareCustomers,
   mapSquarePayment,
   mapSquareRefund,
+  mapSquareOrderLineItems,
+  squareCustomerDisplayName,
   refreshSquareToken,
+  type SquareCustomerData,
 } from '@/lib/square';
+import {
+  resolveVendorId,
+  createVendorResolverCache,
+} from '@/lib/normalization/vendor-resolver';
 
 function squarePaymentExternalId(paymentId: string) {
   return `square_${paymentId}`;
@@ -88,6 +96,8 @@ export async function POST(request: NextRequest) {
     let added = 0;
 
     let feesAdded = 0;
+    let itemsAdded = 0;
+    const vendorCache = createVendorResolverCache();
 
     // Sync payments
     console.log('[Square Sync] Syncing payments from', startTime, 'to', endTime);
@@ -122,6 +132,62 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Resolve customer ids to real profiles so revenue can be reported by
+    // customer instead of an opaque id. Payments without a customer_id (guest
+    // / quick sales) simply have no entry here — that's expected.
+    const customerById = new Map<string, SquareCustomerData>();
+    const customerRowIdBySquareId = new Map<string, string>();
+    let customersResolved = 0;
+    const paymentCustomerIds = Array.from(
+      new Set(
+        payments
+          .filter((p: any) => p.status === 'COMPLETED' && p.customerId)
+          .map((p: any) => p.customerId as string)
+      )
+    );
+    if (paymentCustomerIds.length > 0) {
+      try {
+        const resolved = await bulkRetrieveSquareCustomers({
+          accessToken,
+          customerIds: paymentCustomerIds,
+        });
+        for (const [squareCustomerId, data] of Array.from(resolved.entries())) {
+          customerById.set(squareCustomerId, data);
+          const row = await db.squareCustomer.upsert({
+            where: {
+              squareConnectionId_squareCustomerId: {
+                squareConnectionId: connection.id,
+                squareCustomerId,
+              },
+            },
+            create: {
+              userId: account.userId,
+              squareConnectionId: connection.id,
+              squareCustomerId,
+              name: data.name,
+              email: data.email,
+              phone: data.phone,
+              companyName: data.companyName,
+              firstSeen: data.createdAt ? new Date(data.createdAt) : null,
+              lastSeen: new Date(),
+            },
+            update: {
+              name: data.name,
+              email: data.email,
+              phone: data.phone,
+              companyName: data.companyName,
+              lastSeen: new Date(),
+            },
+            select: { id: true },
+          });
+          customerRowIdBySquareId.set(squareCustomerId, row.id);
+          customersResolved++;
+        }
+      } catch (customerError) {
+        console.log('[Square Sync] Customer resolution failed (non-fatal):', customerError);
+      }
+    }
+
     for (const payment of payments) {
       if (payment.status !== 'COMPLETED') continue;
 
@@ -146,6 +212,22 @@ export async function POST(request: NextRequest) {
         lineItemSummary ||
         mapped.description;
 
+      const customer = mapped.customerId ? customerById.get(mapped.customerId) : undefined;
+      const customerRowId = mapped.customerId
+        ? customerRowIdBySquareId.get(mapped.customerId) ?? null
+        : null;
+      // merchantName drives vendor/customer rollups. Prefer the resolved
+      // customer name; fall back to the buyer email, then the sales channel —
+      // anything but the old constant "Square Payment".
+      const merchantName =
+        (customer && squareCustomerDisplayName(customer)) ||
+        mapped.buyerEmail ||
+        (channel === 'invoice'
+          ? 'Square Invoice'
+          : channel === 'payment_link'
+          ? 'Square Online'
+          : 'Square Payment');
+
       const paymentMetadata = {
         source: 'square',
         channel,
@@ -153,9 +235,12 @@ export async function POST(request: NextRequest) {
         order_id: mapped.orderId ?? null,
         order_source: orderSource ?? null,
         customer_id: mapped.customerId ?? null,
+        customer_name: (customer && squareCustomerDisplayName(customer)) ?? null,
         receipt_number: mapped.receiptNumber ?? null,
         buyer_email: mapped.buyerEmail ?? null,
       };
+
+      const vendorId = await resolveVendorId(db, merchantName, vendorCache);
 
       const canonicalExternalId = squarePaymentExternalId(mapped.id);
       const legacyExternalId = mapped.id;
@@ -190,7 +275,7 @@ export async function POST(request: NextRequest) {
         });
       }
       
-      await db.transaction.upsert({
+      const upsertedTx = await db.transaction.upsert({
         where: {
           accountId_externalId: {
             accountId: account.id,
@@ -204,7 +289,9 @@ export async function POST(request: NextRequest) {
           status: 'POSTED',
           date: new Date(mapped.date),
           description,
-          merchantName: 'Square Payment',
+          merchantName,
+          squareCustomerId: customerRowId,
+          vendorId,
           externalId: canonicalExternalId,
           isReviewed: false,
           metadata: paymentMetadata,
@@ -215,12 +302,56 @@ export async function POST(request: NextRequest) {
           status: 'POSTED',
           date: new Date(mapped.date),
           description,
-          merchantName: 'Square Payment',
+          merchantName,
+          squareCustomerId: customerRowId,
+          vendorId,
           metadata: paymentMetadata,
         },
+        select: { id: true },
       });
 
       if (isNew) added++;
+
+      // Persist order line items so revenue is reportable per item. Idempotent
+      // via the (transactionId, sourceUid) unique key; lines without a stable
+      // uid are re-created each sync (cleared first) to avoid duplicates.
+      if (order) {
+        const orderLines = mapSquareOrderLineItems(order);
+        if (orderLines.length > 0) {
+          await db.lineItem.deleteMany({
+            where: { transactionId: upsertedTx.id, sourceUid: null },
+          });
+          for (const line of orderLines) {
+            const data = {
+              transactionId: upsertedTx.id,
+              description: line.variationName
+                ? `${line.name} (${line.variationName})`
+                : line.name,
+              quantity: line.quantity,
+              unitPrice: line.unitPrice,
+              totalPrice: line.totalPrice,
+              lineType: 'ITEM' as const,
+              classification: 'INCOME' as const,
+              sourceUid: line.uid,
+            };
+            if (line.uid) {
+              await db.lineItem.upsert({
+                where: {
+                  transactionId_sourceUid: {
+                    transactionId: upsertedTx.id,
+                    sourceUid: line.uid,
+                  },
+                },
+                create: data,
+                update: data,
+              });
+            } else {
+              await db.lineItem.create({ data });
+            }
+          }
+          itemsAdded += orderLines.length;
+        }
+      }
 
       // Extract and sync processing fees as separate expense transactions
       if (payment.processingFee && Array.isArray(payment.processingFee)) {
@@ -478,13 +609,15 @@ export async function POST(request: NextRequest) {
       data: { lastSyncedAt: new Date() },
     });
 
-    console.log(`[Square Sync] Complete: ${added} transactions added, ${feesAdded} processing fees added, ${payoutsAdded} payouts added`);
+    console.log(`[Square Sync] Complete: ${added} transactions added, ${feesAdded} processing fees added, ${payoutsAdded} payouts added, ${customersResolved} customers resolved, ${itemsAdded} line items`);
 
     return NextResponse.json({
       success: true,
       added,
       feesAdded,
       payoutsAdded,
+      customersResolved,
+      itemsAdded,
       orderDuplicatesRemoved,
       message: `Synced ${added} new transactions, ${feesAdded} processing fees, and ${payoutsAdded} payouts from Square${
         orderDuplicatesRemoved > 0 ? `; removed ${orderDuplicatesRemoved} duplicate order rows` : ''

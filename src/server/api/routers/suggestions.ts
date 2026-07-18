@@ -2,6 +2,7 @@ import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { suggestCategory, suggestCategoriesForUncategorized } from '@/lib/ml/categorizer';
+import { recordCategoryFeedback } from '@/lib/ml/feedback';
 
 export const suggestionsRouter = createTRPCRouter({
   // Get category suggestions for a single transaction
@@ -81,6 +82,9 @@ export const suggestionsRouter = createTRPCRouter({
       z.object({
         transactionId: z.string(),
         categoryId: z.string(),
+        // True when the user overrode the top suggestion with a different
+        // category — a stronger learning signal than a plain acceptance.
+        wasCorrection: z.boolean().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -138,6 +142,16 @@ export const suggestionsRouter = createTRPCRouter({
             },
           },
         },
+      });
+
+      // Learn from this choice so the same merchant is suggested next time.
+      await recordCategoryFeedback(ctx.db, {
+        userId: ctx.session.user.id,
+        merchantName: transaction.merchantName,
+        description: transaction.description,
+        type: transaction.type,
+        categoryId: input.categoryId,
+        wasCorrection: input.wasCorrection,
       });
 
       return updated;
@@ -216,6 +230,21 @@ export const suggestionsRouter = createTRPCRouter({
             });
           }
         )
+      );
+
+      // Learn from each accepted suggestion.
+      await Promise.all(
+        input.suggestions.map((suggestion) => {
+          const tx = transactionMap.get(suggestion.transactionId);
+          if (!tx) return Promise.resolve();
+          return recordCategoryFeedback(ctx.db, {
+            userId: ctx.session.user.id,
+            merchantName: tx.merchantName,
+            description: tx.description,
+            type: tx.type,
+            categoryId: suggestion.categoryId,
+          });
+        })
       );
 
       return {

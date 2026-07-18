@@ -21,8 +21,8 @@ const DEFAULT_LIMIT = 500;
 
 type TransactionRow = {
   id: string;
-  updatedAt: string;
   date: string;
+  updatedAt: string;
   amount: number;
   amountCents: number;
   type: string;
@@ -36,11 +36,15 @@ type TransactionRow = {
   costSubcategory: string | null;
   categoryId: string | null;
   categoryName: string | null;
+  vendorId: string | null;
+  vendorName: string | null;
+  customerName: string | null;
+  customerEmail: string | null;
   accountId: string;
   accountName: string | null;
   externalId: string | null;
   category: { id: string; name: string } | null;
-  vendor: { id: null; name: string } | null;
+  vendor: { id: string | null; name: string } | null;
   squareCustomerId: string | null;
   splits: {
     id: string;
@@ -81,8 +85,8 @@ function getSquareCustomerId(metadata: unknown): string | null {
 function toCsv(rows: TransactionRow[]): string {
   const headers = [
     'id',
-    'updatedAt',
     'date',
+    'updatedAt',
     'amount',
     'amountCents',
     'type',
@@ -93,6 +97,10 @@ function toCsv(rows: TransactionRow[]): string {
     'effectiveClassification',
     'direction',
     'categoryName',
+    'vendorId',
+    'vendorName',
+    'customerName',
+    'customerEmail',
     'accountName',
     'externalId',
   ];
@@ -115,7 +123,10 @@ function toCsv(rows: TransactionRow[]): string {
  * INTEGRATION_API_TOKEN.
  *
  * Query params:
- *   from, to          — ISO dates (inclusive)
+ *   from, to          — ISO dates (inclusive, on transaction date)
+ *   updatedSince      — ISO timestamp; only rows changed at/after this. Use for
+ *                       cheap incremental sync that also re-reads corrected rows
+ *                       (reclassification, merchant fixes bump updatedAt).
  *   classification    — comma-separated effective classifications
  *                       (e.g. COGS,OPERATING); applied after category fallback
  *   direction         — outflow | inflow | transfer (comma-separated). Derived
@@ -125,7 +136,8 @@ function toCsv(rows: TransactionRow[]): string {
  *   merchant          — case-insensitive substring match on merchantName
  *   format            — json (default) | csv
  *   limit             — page size, default 500, max 2000
- *   cursor            — id of the last row of the previous page
+ *   cursor            — opaque (updatedAt,id) cursor; legacy id-only cursors
+ *                       remain accepted for backward compatibility
  */
 export async function GET(req: NextRequest) {
   const auth = authorizeServiceRequest(req, process.env.INTEGRATION_API_TOKEN, 'INTEGRATION_API_TOKEN');
@@ -136,6 +148,7 @@ export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const from = params.get('from');
   const to = params.get('to');
+  const updatedSince = params.get('updatedSince');
   const merchant = params.get('merchant');
   const format = params.get('format') ?? 'json';
   const limit = Math.min(Math.max(Number(params.get('limit')) || DEFAULT_LIMIT, 1), MAX_LIMIT);
@@ -165,6 +178,12 @@ export async function GET(req: NextRequest) {
       ...(from ? { gte: new Date(`${from}T00:00:00.000Z`) } : {}),
       ...(to ? { lte: new Date(`${to}T23:59:59.999Z`) } : {}),
     };
+  }
+  if (updatedSince) {
+    const since = new Date(updatedSince);
+    if (!Number.isNaN(since.getTime())) {
+      where.updatedAt = { gte: since };
+    }
   }
   if (merchant) {
     where.merchantName = { contains: merchant, mode: 'insensitive' };
@@ -201,8 +220,8 @@ export async function GET(req: NextRequest) {
         : where,
       select: {
         id: true,
-        updatedAt: true,
         date: true,
+        updatedAt: true,
         amount: true,
         type: true,
         status: true,
@@ -213,8 +232,13 @@ export async function GET(req: NextRequest) {
         externalId: true,
         metadata: true,
         accountId: true,
+        vendorId: true,
         account: { select: { name: true } },
         category: { select: { id: true, name: true, defaultClassification: true } },
+        vendor: { select: { name: true } },
+        squareCustomer: {
+          select: { squareCustomerId: true, name: true, companyName: true, email: true },
+        },
         splits: {
           select: {
             id: true,
@@ -252,8 +276,8 @@ export async function GET(req: NextRequest) {
       });
       rows.push({
         id: tx.id,
-        updatedAt: tx.updatedAt.toISOString(),
         date: tx.date.toISOString(),
+        updatedAt: tx.updatedAt.toISOString(),
         amount: Number(tx.amount),
         amountCents: dollarsToCents(tx.amount),
         type: tx.type,
@@ -266,12 +290,22 @@ export async function GET(req: NextRequest) {
         ...bucket,
         categoryId: tx.categoryId,
         categoryName: tx.category?.name ?? null,
+        vendorId: tx.vendorId,
+        vendorName: tx.vendor?.name ?? null,
+        customerName:
+          tx.squareCustomer?.name ?? tx.squareCustomer?.companyName ?? null,
+        customerEmail: tx.squareCustomer?.email ?? null,
         accountId: tx.accountId,
         accountName: tx.account?.name ?? null,
         externalId: tx.externalId,
         category: tx.category ? { id: tx.category.id, name: tx.category.name } : null,
-        vendor: tx.merchantName ? { id: null, name: tx.merchantName } : null,
-        squareCustomerId: getSquareCustomerId(tx.metadata),
+        vendor: tx.vendor?.name
+          ? { id: tx.vendorId, name: tx.vendor.name }
+          : tx.merchantName
+            ? { id: null, name: tx.merchantName }
+            : null,
+        squareCustomerId:
+          tx.squareCustomer?.squareCustomerId ?? getSquareCustomerId(tx.metadata),
         splits: tx.splits.map((s) => {
           const splitEffective = effectiveCashflowClassification(s, tx);
           const splitBucket = costBucketFor({

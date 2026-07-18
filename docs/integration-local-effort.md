@@ -18,9 +18,39 @@ the token is unconfigured. They bypass session middleware by design.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/integration/v1/cashflow-actuals?from=YYYY-MM-DD&to=YYYY-MM-DD&grain=month` | Posted, split-aware monthly actuals. `to` is exclusive. Contract version 1; method `cashflow-actuals-v1`; USD amounts are integer cents. Includes labor, excluded and unresolved buckets plus freshness/quality metadata. |
-| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to`, `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries integer `amountCents`, `updatedAt`, cashflow bucket fields, stable category/Square customer identity where available, and splits. The opaque cursor is ordered by `(updatedAt,id)`, so corrected history is replayed. |
-| `GET /api/integration/v1/vendors` | Vendor spend rollups (canonical name, aliases, txCount, totalSpend, avg, first/last seen, primaryClassification). Default filter `COGS,OPERATING`. This is the feed `seed-brain.js` needs. |
+| `GET /api/integration/v1/transactions` | Transaction export. Filters: `from`, `to` (on date), `updatedSince` (ISO timestamp), `classification` (effective, comma-separated), `direction` (`outflow\|inflow\|transfer`, comma-separated), `merchant`, `format=json\|csv`, `limit`, `cursor`. Each row carries integer `amountCents`, `updatedAt`, `effectiveClassification`, cashflow bucket fields, stable category/vendor/Square customer identity where available, customer name/email, account names, and detailed splits. The opaque cursor is ordered by `(updatedAt,id)`, so corrected history is replayed; legacy id-only cursors remain accepted. |
+| `GET /api/integration/v1/vendors` | Vendor spend rollups (stable `vendorId`, canonical name, `aliases` incl. raw bank descriptors, `rawNames`, txCount, totalSpend, avg, first/last seen, primaryClassification). Default filter `COGS,OPERATING`. This is the feed `seed-brain.js` needs. Resolve by `vendorId`, not name. |
+| `GET /api/integration/v1/items` | Line-item export for recipe/margin costing. One row per `LineItem` with parent date/merchant/customer, `quantity`, `unitPrice`, `totalPrice`, `unitOfMeasure`, `lineType`, `vendorId`/`itemId`. Filters: `from`, `to`, `updatedSince`, `lineType` (default `ITEM`), `source` (`square\|receipt`), `limit`, `cursor`. |
+| `GET /api/integration/v1/price-drift` | Per-item unit-price trend for price-drift / inflation inferences and recipe re-costing. Each row: `itemId`, `itemName`, `unitOfMeasure`, `observations`, first/last/min/max unit price, `pctChange`, and the time-ordered `points`. Filters: `from`, `to`, `item`, `minPoints` (default 2). Sorted by biggest mover. |
 | `GET /api/integration/v1/pnl?year=YYYY` | P&L using the same method as `generate-local-budget-pnl.cjs`, so both repos report identical numbers. |
+
+### Income counterparty (resolves the brain's "415 blank INCOME rows" gap)
+
+Square income rows now carry a resolved customer: `merchantName` is set to the
+customer/company name (or buyer email), `customerName`/`customerEmail` expose the
+resolved [Square] `SquareCustomer`, and `squareCustomerId` links the row. Guest /
+quick-sale payments have no customer and fall back to a channel label
+(`Square Invoice` / `Square Online` / `Square Payment`). Non-Square income
+(Zelle, farmers market, catering) still needs a payer captured in Local Budget —
+tracked separately.
+
+### Stable vendor identity (resolves the brain's bank-truncation splits)
+
+> **⚠️ NOT LIVE YET (verified 2026-07-18):** the hosted DB has 0 `vendors` rows
+> and no `transactions.vendorId` column — the migrations and
+> `npm run vendors:populate:apply` below have not been run against it. Until
+> they are, `/v1/transactions` returns `vendorId: null` and `/v1/vendors`
+> returns an empty list. **Do not build consumers against `vendorId` until this
+> caveat is removed.** Keep resolving by cleaned `merchantName` for now.
+
+Each transaction now resolves to a canonical `Vendor` row and exposes a stable
+`vendorId` (+ `vendorName`) on `/v1/transactions`. The resolver collapses bank
+descriptor variants — store-number/suffix noise *and* field truncation
+("Eastside Food Cooperati" → "Eastside Food Cooperative") and the alias map
+("COSTCO WHSE" → "Costco") — onto one id, recording every raw variant in the
+vendor's `aliases[]`. Consumers should resolve by `vendorId` instead of
+fuzzy-matching `merchantName`. Populate/relink history with
+`npm run vendors:populate:apply`; new Square income is linked at ingest.
 
 Auth styles accepted: `Authorization: Bearer <token>`, `x-webhook-token`
 header, or `?token=` query param.

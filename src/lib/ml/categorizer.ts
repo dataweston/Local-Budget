@@ -36,9 +36,20 @@ type RuleReference = {
   categoryName: string;
 };
 
-type SuggestionContext = {
+type FeedbackReference = {
+  merchantKey: string;
+  descriptionKey: string;
+  type: TransactionType;
+  categoryId: string;
+  categoryName: string;
+  timesConfirmed: number;
+  wasCorrection: boolean;
+};
+
+export type SuggestionContext = {
   references: CategorizedReference[];
   rules: RuleReference[];
+  feedback: FeedbackReference[];
 };
 
 const STOPWORDS = new Set([
@@ -75,7 +86,7 @@ export async function suggestCategory(
   return suggestCategoryWithContext(context, merchantName, description, type);
 }
 
-function suggestCategoryWithContext(
+export function suggestCategoryWithContext(
   context: SuggestionContext,
   merchantName: string | null,
   description: string,
@@ -85,6 +96,13 @@ function suggestCategoryWithContext(
     string,
     { categoryName: string; confidence: number; reasons: Set<string> }
   >();
+
+  // Learned feedback is the strongest signal: the user has explicitly confirmed
+  // (or corrected to) this category for this merchant before.
+  const feedbackCandidates = findFeedbackCandidates(context, merchantName, description, type);
+  for (const candidate of feedbackCandidates) {
+    addCandidate(candidateMap, candidate);
+  }
 
   const merchantCandidates = findMerchantCandidates(context, merchantName, type);
   for (const candidate of merchantCandidates) {
@@ -306,6 +324,53 @@ function matchKeywordRules(
   return results;
 }
 
+// Suggestions derived from prior user confirmations/corrections. An exact
+// merchant-key hit is near-certain; a description-key hit is strong. Confidence
+// grows with repeat confirmations and corrections rank above passive accepts.
+function findFeedbackCandidates(
+  context: SuggestionContext,
+  merchantName: string | null,
+  description: string,
+  type?: string
+): CategorySuggestion[] {
+  if (context.feedback.length === 0) return [];
+  const merchantKey = normalizeMerchantKey(merchantName);
+  const descKey = normalizeDescription(description);
+
+  const byCategory = new Map<
+    string,
+    { categoryName: string; confidence: number; reason: string }
+  >();
+
+  for (const fb of context.feedback) {
+    if (type && fb.type !== type) continue;
+    const merchantHit = !!merchantKey && fb.merchantKey === merchantKey;
+    const descHit = !!descKey && fb.descriptionKey === descKey;
+    if (!merchantHit && !descHit) continue;
+
+    const base = merchantHit ? 0.9 : 0.78;
+    const repeatBoost = Math.min(0.08, (fb.timesConfirmed - 1) * 0.02);
+    const correctionBoost = fb.wasCorrection ? 0.03 : 0;
+    const confidence = clamp(base + repeatBoost + correctionBoost, 0.7, 0.99);
+
+    const existing = byCategory.get(fb.categoryId);
+    if (!existing || confidence > existing.confidence) {
+      byCategory.set(fb.categoryId, {
+        categoryName: fb.categoryName,
+        confidence,
+        reason: merchantHit ? 'Learned from your past choices' : 'Learned (similar description)',
+      });
+    }
+  }
+
+  return Array.from(byCategory.entries()).map(([categoryId, data]) => ({
+    categoryId,
+    categoryName: data.categoryName,
+    confidence: data.confidence,
+    reason: data.reason,
+  }));
+}
+
 function matchRule(value: string, matchType: string, pattern: string): boolean {
   const lowerValue = value.toLowerCase();
   const lowerPattern = pattern.toLowerCase();
@@ -343,7 +408,7 @@ function getComparableReferences(
 }
 
 async function buildSuggestionContext(userId: string): Promise<SuggestionContext> {
-  const [transactions, rules] = await Promise.all([
+  const [transactions, rules, feedbackRows] = await Promise.all([
     db.transaction.findMany({
       where: {
         account: { userId },
@@ -382,7 +447,33 @@ async function buildSuggestionContext(userId: string): Promise<SuggestionContext
       },
       orderBy: { priority: 'desc' },
     }),
+    db.categoryFeedback.findMany({
+      where: { userId },
+      select: {
+        merchantKey: true,
+        descriptionKey: true,
+        type: true,
+        categoryId: true,
+        timesConfirmed: true,
+        wasCorrection: true,
+        category: { select: { name: true } },
+      },
+      orderBy: { lastConfirmedAt: 'desc' },
+      take: 4000,
+    }),
   ]);
+
+  const feedback: FeedbackReference[] = feedbackRows
+    .filter((f) => !!f.category)
+    .map((f) => ({
+      merchantKey: f.merchantKey,
+      descriptionKey: f.descriptionKey,
+      type: f.type as TransactionType,
+      categoryId: f.categoryId,
+      categoryName: f.category!.name,
+      timesConfirmed: f.timesConfirmed,
+      wasCorrection: f.wasCorrection,
+    }));
 
   const references: CategorizedReference[] = transactions
     .filter((tx) => !!tx.category)
@@ -413,10 +504,10 @@ async function buildSuggestionContext(userId: string): Promise<SuggestionContext
       categoryName: rule.category!.name,
     }));
 
-  return { references, rules: ruleRefs };
+  return { references, rules: ruleRefs, feedback };
 }
 
-function normalizeMerchantKey(value: string | null): string | null {
+export function normalizeMerchantKey(value: string | null): string | null {
   if (!value) return null;
   const canonical = normalizeVendorName(value);
   const normalized = normalizeText(canonical)
@@ -426,7 +517,7 @@ function normalizeMerchantKey(value: string | null): string | null {
   return normalized || null;
 }
 
-function normalizeDescription(value: string): string {
+export function normalizeDescription(value: string): string {
   return normalizeText(value)
     .replace(/\b\d{3,}\b/g, ' ')
     .replace(/\s+/g, ' ')
