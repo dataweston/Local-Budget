@@ -88,6 +88,8 @@ export const createTransactionSchema = z.object({
 });
 
 export const updateTransactionSchema = createTransactionSchema.partial().extend({
+  categoryId: z.string().nullable().optional(),
+  classification: classificationTypeEnum.nullable().optional(),
   isReviewed: z.boolean().optional(),
   isReconciled: z.boolean().optional(),
   userDescription: z.string().max(500).optional(),

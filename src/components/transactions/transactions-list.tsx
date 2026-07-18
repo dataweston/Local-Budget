@@ -30,6 +30,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { formatCurrency, formatDate, cn, classificationColor } from '@/lib/utils';
+import { useToastCallbacks } from '@/hooks/use-toast-mutation';
 import { AddTransactionModal } from './AddTransactionModal';
 import { SplitTransactionModal } from './SplitTransactionModal';
 import { LinkTransactionModal } from './LinkTransactionModal';
@@ -58,6 +59,7 @@ interface SelectedTransaction {
   type: string;
   date: any;
   account?: { name: string } | null;
+  categoryId?: string | null;
   category?: { name: string; icon: string | null } | null;
   classification?: string | null;
   isReviewed: boolean;
@@ -131,6 +133,24 @@ export function TransactionsList() {
   const { data: accounts } = api.accounts.list.useQuery();
   const { data: categories } = api.categories.list.useQuery();
 
+  const utils = api.useUtils();
+  const updateCategory = api.transactions.update.useMutation(
+    useToastCallbacks({
+      successTitle: 'Category Updated',
+      successDescription: 'Transaction category has been updated',
+      errorTitle: 'Failed to update category',
+    })
+  );
+
+  const handleCategoryChange = async (transactionId: string, value: string) => {
+    await updateCategory.mutateAsync({
+      id: transactionId,
+      data: { categoryId: value === '_uncategorized' ? null : value },
+    });
+    await utils.transactions.list.invalidate();
+    await utils.dashboard.invalidate();
+  };
+
   const hasActiveFilters = Object.values(filters).some((v) => v !== undefined && v !== '');
 
   function clearFilters() {
@@ -164,6 +184,8 @@ export function TransactionsList() {
       {/* Transaction Detail Dialog */}
       <TransactionDetailDialog
         transaction={selectedTx}
+        categories={categories}
+        onCategoryChange={handleCategoryChange}
         onClose={() => setSelectedTx(null)}
         onSplit={(id, amount) => { setSelectedTx(null); setSplitTxId(id); setSplitTxAmount(amount); }}
         onLink={(id) => { setSelectedTx(null); setLinkTxId(id); }}
@@ -411,17 +433,34 @@ export function TransactionsList() {
                         <div className="col-span-2 text-sm text-muted-foreground">
                           {tx.account?.name}
                         </div>
-                        <div className="col-span-2">
-                          {tx.category ? (
-                            <div className="flex items-center gap-1">
-                              <span>{tx.category.icon}</span>
-                              <span className="text-sm">{tx.category.name}</span>
-                            </div>
-                          ) : (
-                            <Badge variant="outline" className="text-xs">
-                              Uncategorized
-                            </Badge>
-                          )}
+                        <div className="col-span-2" onClick={(e) => e.stopPropagation()}>
+                          <Select
+                            value={tx.categoryId ?? '_uncategorized'}
+                            onValueChange={(v) => handleCategoryChange(tx.id, v)}
+                          >
+                            <SelectTrigger className="h-8 text-sm border-none bg-transparent px-2 shadow-none hover:bg-accent focus:ring-1">
+                              <SelectValue>
+                                {tx.category ? (
+                                  <span className="flex items-center gap-1">
+                                    <span>{tx.category.icon}</span>
+                                    <span>{tx.category.name}</span>
+                                  </span>
+                                ) : (
+                                  <Badge variant="outline" className="text-xs">
+                                    Uncategorized
+                                  </Badge>
+                                )}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="_uncategorized">Uncategorized</SelectItem>
+                              {categories?.map((c) => (
+                                <SelectItem key={c.id} value={c.id}>
+                                  {c.icon} {c.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div className="col-span-2">
                           {tx.classification && (
@@ -495,11 +534,15 @@ export function TransactionsList() {
 
 function TransactionDetailDialog({
   transaction,
+  categories,
+  onCategoryChange,
   onClose,
   onSplit,
   onLink,
 }: {
   transaction: SelectedTransaction | null;
+  categories?: { id: string; name: string; icon: string | null }[];
+  onCategoryChange: (transactionId: string, value: string) => void | Promise<void>;
   onClose: () => void;
   onSplit: (id: string, amount: number) => void;
   onLink: (id: string) => void;
@@ -560,10 +603,27 @@ function TransactionDetailDialog({
                 <p className="font-medium">{transaction.account?.name || 'N/A'}</p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Category</p>
-                <p className="font-medium">
-                  {transaction.category ? `${transaction.category.icon || ''} ${transaction.category.name}` : 'Uncategorized'}
-                </p>
+                <p className="text-sm text-muted-foreground mb-1">Category</p>
+                <Select
+                  value={transaction.categoryId ?? '_uncategorized'}
+                  onValueChange={(v) => onCategoryChange(transaction.id, v)}
+                >
+                  <SelectTrigger className="h-8">
+                    <SelectValue>
+                      {transaction.category
+                        ? `${transaction.category.icon || ''} ${transaction.category.name}`
+                        : 'Uncategorized'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_uncategorized">Uncategorized</SelectItem>
+                    {categories?.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.icon} {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               {transaction.classification && (
                 <div>

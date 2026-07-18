@@ -227,9 +227,29 @@ export const transactionsRouter = createTRPCRouter({
       });
       if (!existing) throw new Error('Transaction not found');
 
+      const data = { ...input.data };
+
+      // When the category is being changed (including unassigned), keep the
+      // classification in sync with the new category's default unless the
+      // caller explicitly provided a classification of their own.
+      if ('categoryId' in data && !('classification' in data)) {
+        if (data.categoryId) {
+          const category = await ctx.db.category.findFirst({
+            where: { id: data.categoryId, userId: ctx.session.user.id },
+            select: { defaultClassification: true },
+          });
+          if (!category) throw new Error('Category not found');
+          if (category.defaultClassification) {
+            data.classification = category.defaultClassification;
+          }
+        } else {
+          data.classification = null;
+        }
+      }
+
       const transaction = await ctx.db.transaction.update({
         where: { id: input.id },
-        data: input.data,
+        data,
       });
       return transaction;
     }),
