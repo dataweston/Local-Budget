@@ -1,4 +1,5 @@
 import { createTRPCRouter, protectedProcedure } from '../trpc';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import {
   blankReport,
@@ -75,8 +76,7 @@ export const taxRouter = createTRPCRouter({
         date: yearRange(input.year),
         metadata: {
           path: ['transferException'],
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          not: 'null' as any,
+          not: Prisma.JsonNull,
         },
       },
       select: {
