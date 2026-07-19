@@ -1,6 +1,10 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import path from 'path';
 import { PrismaClient, AccountType, TransactionStatus, TransactionType } from '@prisma/client';
+import {
+  resolveVendorId,
+  createVendorResolverCache,
+} from '../src/lib/normalization/vendor-resolver';
 
 type ParsedArgs = {
   inputs: string[];
@@ -36,7 +40,8 @@ type CanonicalImportRow = {
   date: Date;
   description: string;
   merchantName: string;
-  classification: 'INCOME' | 'PERSONAL' | 'TRANSFER';
+  vendorId: string | null;
+  classification: 'INCOME' | 'PERSONAL' | 'OPERATING' | 'COGS' | 'TRANSFER' | null;
   categoryId: string | null;
   metadata: Record<string, unknown>;
 };
@@ -456,6 +461,7 @@ async function run() {
       preferredBankAccounts.length > 0 ? preferredBankAccounts : fallbackBankAccounts;
     const bankScopeAccountIds = bankScopeAccounts.map((a) => a.id);
 
+    const vendorCache = createVendorResolverCache();
     const canonicalRows: CanonicalImportRow[] = [];
     for (const entry of completed) {
       const txType = venmoEntryToType(entry);
@@ -463,6 +469,45 @@ async function run() {
       const description = txType === 'TRANSFER'
         ? `Venmo ${entry.type}${entry.destination ? ` ${entry.destination}` : ''}`
         : `Venmo ${entry.type}: ${entry.from || 'Unknown'} -> ${entry.to || 'Unknown'}${entry.note ? ` | ${entry.note}` : ''}`;
+
+      // Counterparty, not the constant 'Venmo': money in comes FROM someone,
+      // money out goes TO someone. This is what makes Venmo rows show up in
+      // vendor rollups and 1099 reporting instead of one opaque blob.
+      const counterparty =
+        txType === 'TRANSFER'
+          ? null
+          : (entry.amountTotalSigned >= 0 ? entry.from : entry.to)?.trim() || null;
+      const merchantName = counterparty || 'Venmo';
+
+      // Resolve the counterparty to a canonical vendor (dry runs skip writes).
+      let vendorId: string | null = null;
+      let vendorDefaultClassification: string | null = null;
+      if (args.apply && counterparty) {
+        vendorId = await resolveVendorId(prisma, counterparty, vendorCache);
+        if (vendorId) {
+          const vendor = await prisma.vendor.findUnique({
+            where: { id: vendorId },
+            select: { defaultClassification: true },
+          });
+          vendorDefaultClassification = vendor?.defaultClassification ?? null;
+        }
+      }
+
+      // Classification: income and transfers are unambiguous. Expenses use the
+      // vendor's learned default when one exists; otherwise they are left
+      // unclassified so the review queue / rules engine decides — a Venmo
+      // payment can be COGS or a contractor payment, and the old hardcoded
+      // PERSONAL silently misfiled business spend.
+      const classification: CanonicalImportRow['classification'] =
+        txType === 'TRANSFER'
+          ? 'TRANSFER'
+          : txType === 'INCOME'
+          ? 'INCOME'
+          : vendorDefaultClassification === 'COGS' ||
+            vendorDefaultClassification === 'OPERATING' ||
+            vendorDefaultClassification === 'PERSONAL'
+          ? (vendorDefaultClassification as 'COGS' | 'OPERATING' | 'PERSONAL')
+          : null;
 
       const metadata = {
         venmoStatementEntry: {
@@ -490,8 +535,9 @@ async function run() {
         status,
         date: entry.statementDateTime,
         description,
-        merchantName: 'Venmo',
-        classification: txType === 'TRANSFER' ? 'TRANSFER' : txType === 'INCOME' ? 'INCOME' : 'PERSONAL',
+        merchantName,
+        vendorId,
+        classification,
         categoryId: txType === 'TRANSFER' ? transferCategory?.id ?? null : null,
         metadata,
       });
@@ -507,7 +553,9 @@ async function run() {
           date: entry.statementDateTime,
           description: `Venmo ${entry.type} fee`,
           merchantName: 'Venmo',
-          classification: feeType === 'INCOME' ? 'INCOME' : 'PERSONAL',
+          vendorId: null,
+          // Platform fees are an operating cost, not personal spending.
+          classification: feeType === 'INCOME' ? 'INCOME' : 'OPERATING',
           categoryId: null,
           metadata: {
             venmoStatementEntry: {
@@ -536,31 +584,40 @@ async function run() {
         accountId: venmoAccount.id,
         externalId: { in: canonicalRows.map((r) => r.externalId) },
       },
-      select: { id: true, externalId: true },
+      select: { id: true, externalId: true, isReviewed: true },
     });
-    const existingByExternalId = new Map(existing.map((x) => [x.externalId ?? '', x.id]));
+    const existingByExternalId = new Map(existing.map((x) => [x.externalId ?? '', x]));
 
     let created = 0;
     let updated = 0;
     if (args.apply) {
       for (const row of canonicalRows) {
-        const existingId = existingByExternalId.get(row.externalId);
-        if (!existingId) {
+        const existingRow = existingByExternalId.get(row.externalId);
+        if (!existingRow) {
           await prisma.transaction.create({ data: row as any });
           created++;
         } else {
+          // Re-syncs refresh the statement-derived facts. Classification,
+          // category, and merchant/vendor identity are only rewritten while
+          // the row is unreviewed — a human decision always wins over the
+          // importer's defaults.
           await prisma.transaction.update({
-            where: { id: existingId },
+            where: { id: existingRow.id },
             data: {
               amount: row.amount,
               type: row.type,
               status: row.status,
               date: row.date,
               description: row.description,
-              merchantName: row.merchantName,
-              classification: row.classification,
-              categoryId: row.categoryId,
               metadata: row.metadata as any,
+              ...(existingRow.isReviewed
+                ? {}
+                : {
+                    merchantName: row.merchantName,
+                    vendorId: row.vendorId,
+                    classification: row.classification,
+                    categoryId: row.categoryId,
+                  }),
             },
           });
           updated++;
@@ -799,10 +856,20 @@ async function run() {
       }
     }
     if (args.apply) {
+      // Normalize remaining bank-side Venmo rows to TRANSFER — but ONLY inside
+      // the date window the statement CSVs actually cover. Within that window
+      // the statement is authoritative for every wallet movement, so an
+      // unmatched bank "venmo" row is a duplicate the fuzzy matcher missed.
+      // OUTSIDE the window it can be real income or a real payment, and the
+      // old unscoped version silently erased that from the P&L. Rows a human
+      // already reviewed are never touched, and normalized rows stay
+      // unreviewed so they remain visible in the review queue.
       const bankVenmoRows = await prisma.transaction.findMany({
         where: {
           account: { userId },
           accountId: { in: bankScopeAccountIds },
+          date: { gte: minDate, lte: maxDate },
+          isReviewed: false,
           OR: [
             { description: { contains: 'venmo', mode: 'insensitive' } },
             { merchantName: { contains: 'venmo', mode: 'insensitive' } },
@@ -833,10 +900,11 @@ async function run() {
               venmoReconciliation: {
                 source: 'venmo-statement-sync',
                 reason: 'bank-venmo-normalized-to-transfer',
+                statementWindowStart: minDate.toISOString(),
+                statementWindowEnd: maxDate.toISOString(),
                 normalizedAt: new Date().toISOString(),
               },
             },
-            isReviewed: true,
           },
         });
         normalizedBankVenmoToTransfer++;

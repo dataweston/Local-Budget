@@ -193,6 +193,8 @@ async function handlePaymentEvent(
     id: string;
     status: string;
     amount_money?: { amount: number; currency: string };
+    tip_money?: { amount: number };
+    total_money?: { amount: number };
     source_type?: string;
     created_at?: string;
     updated_at?: string;
@@ -215,8 +217,14 @@ async function handlePaymentEvent(
     return;
   }
 
-  const amount = payment.amount_money?.amount ?? 0;
-  const amountInDollars = amount / 100; // Square amounts are in cents
+  // amount_money excludes the tip; record total_money (base + tip) — the
+  // cash that actually hit the Square balance. Matches the sync route.
+  const baseAmount = (payment.amount_money?.amount ?? 0) / 100;
+  const tipAmount = (payment.tip_money?.amount ?? 0) / 100;
+  const amountInDollars =
+    payment.total_money?.amount != null
+      ? payment.total_money.amount / 100
+      : baseAmount + tipAmount;
 
   const { rowId: customerRowId, displayName: customerName } =
     await resolveWebhookCustomer(connection, payment.customer_id);
@@ -267,6 +275,9 @@ async function handlePaymentEvent(
       customer_name: customerName ?? null,
       receipt_number: payment.receipt_number ?? null,
       buyer_email: payment.buyer_email_address ?? null,
+      base_amount: baseAmount,
+      tip_amount: tipAmount,
+      total_amount: amountInDollars,
     },
   };
 
@@ -365,7 +376,10 @@ async function handleRefundEvent(
   const baseData = {
     accountId: account.id,
     amount: amountInDollars,
-    type: 'EXPENSE' as const, // Refunds are money going out
+    // EXPENSE type + INCOME classification = contra-revenue (netted against
+    // sales in the P&L), matching the sync route.
+    type: 'EXPENSE' as const,
+    classification: 'INCOME' as const,
     status: mapSquareStatus(refund.status),
     date: new Date(refund.created_at || new Date()),
     description: refund.reason || `Square Refund for payment ${refund.payment_id}`,

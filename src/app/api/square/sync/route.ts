@@ -10,6 +10,7 @@ import {
   mapSquarePayment,
   mapSquareRefund,
   mapSquareOrderLineItems,
+  mapSquareOrderAdjustments,
   squareCustomerDisplayName,
   refreshSquareToken,
   type SquareCustomerData,
@@ -34,6 +35,15 @@ function squarePayoutExternalId(payoutId: string) {
 function squareRefundExternalId(refundId: string) {
   return `square_refund_${refundId}`;
 }
+
+// Auto-generated split descriptions. Splits with these descriptions are owned
+// by the sync (deleted + recreated each run); user-created splits are never
+// touched.
+const AUTO_SPLIT_DESCRIPTIONS = [
+  'Square net sales',
+  'Square tip',
+  'Sales tax collected (Square)',
+];
 
 export async function POST(request: NextRequest) {
   try {
@@ -228,6 +238,13 @@ export async function POST(request: NextRequest) {
           ? 'Square Online'
           : 'Square Payment');
 
+      // Money decomposition: the transaction records total collected (base +
+      // tip); tax comes from the order. Tip and tax are broken out as splits
+      // below so the P&L reads net sales, not tax-inclusive gross.
+      const tipAmount = mapped.tipAmount ?? 0;
+      const taxAmount = order ? Number(order?.totalTaxMoney?.amount ?? 0) / 100 : 0;
+      const totalAmount = mapped.totalAmount ?? mapped.amount;
+
       const paymentMetadata = {
         source: 'square',
         channel,
@@ -238,6 +255,10 @@ export async function POST(request: NextRequest) {
         customer_name: (customer && squareCustomerDisplayName(customer)) ?? null,
         receipt_number: mapped.receiptNumber ?? null,
         buyer_email: mapped.buyerEmail ?? null,
+        base_amount: mapped.amount,
+        tip_amount: tipAmount,
+        sales_tax_amount: taxAmount,
+        total_amount: totalAmount,
       };
 
       const vendorId = await resolveVendorId(db, merchantName, vendorCache);
@@ -284,7 +305,7 @@ export async function POST(request: NextRequest) {
         },
         create: {
           accountId: account.id,
-          amount: mapped.amount,
+          amount: totalAmount,
           type: 'INCOME',
           status: 'POSTED',
           date: new Date(mapped.date),
@@ -297,7 +318,7 @@ export async function POST(request: NextRequest) {
           metadata: paymentMetadata,
         },
         update: {
-          amount: mapped.amount,
+          amount: totalAmount,
           type: 'INCOME',
           status: 'POSTED',
           date: new Date(mapped.date),
@@ -311,6 +332,49 @@ export async function POST(request: NextRequest) {
       });
 
       if (isNew) added++;
+
+      // Break tip and sales tax out of the recorded total via auto-splits so
+      // the P&L counts net sales + tip as income and excludes collected tax
+      // (a pass-through owed to the state, classified TRANSFER; the tax
+      // report reads these splits). Idempotent: our splits are identified by
+      // description and rebuilt each sync; user splits are untouched.
+      await db.transactionSplit.deleteMany({
+        where: {
+          transactionId: upsertedTx.id,
+          description: { in: AUTO_SPLIT_DESCRIPTIONS },
+        },
+      });
+      if (tipAmount > 0 || taxAmount > 0) {
+        const netSales = Math.max(totalAmount - tipAmount - taxAmount, 0);
+        const splitData = [];
+        if (netSales > 0) {
+          splitData.push({
+            transactionId: upsertedTx.id,
+            amount: netSales,
+            classification: 'INCOME' as const,
+            description: 'Square net sales',
+          });
+        }
+        if (tipAmount > 0) {
+          splitData.push({
+            transactionId: upsertedTx.id,
+            amount: tipAmount,
+            classification: 'INCOME' as const,
+            description: 'Square tip',
+          });
+        }
+        if (taxAmount > 0) {
+          splitData.push({
+            transactionId: upsertedTx.id,
+            amount: taxAmount,
+            classification: 'TRANSFER' as const,
+            description: 'Sales tax collected (Square)',
+          });
+        }
+        if (splitData.length > 0) {
+          await db.transactionSplit.createMany({ data: splitData });
+        }
+      }
 
       // Persist order line items so revenue is reportable per item. Idempotent
       // via the (transactionId, sourceUid) unique key; lines without a stable
@@ -351,6 +415,29 @@ export async function POST(request: NextRequest) {
           }
           itemsAdded += orderLines.length;
         }
+
+        // Order-level adjustments (sales tax, discounts, service charges) as
+        // typed lines. Stable uids ('order:tax', …) make re-syncs idempotent.
+        const adjustments = mapSquareOrderAdjustments(order);
+        for (const adj of adjustments) {
+          const data = {
+            transactionId: upsertedTx.id,
+            description: adj.description,
+            totalPrice: adj.amount,
+            lineType: adj.lineType,
+            sourceUid: adj.uid,
+          };
+          await db.lineItem.upsert({
+            where: {
+              transactionId_sourceUid: {
+                transactionId: upsertedTx.id,
+                sourceUid: adj.uid,
+              },
+            },
+            create: data,
+            update: data,
+          });
+        }
       }
 
       // Extract and sync processing fees as separate expense transactions
@@ -370,6 +457,9 @@ export async function POST(request: NextRequest) {
             select: { id: true },
           });
 
+          // Processing fees are a business operating cost, never personal.
+          const feeVendorId = await resolveVendorId(db, 'Square Fees', vendorCache);
+
           await db.transaction.upsert({
             where: {
               accountId_externalId: {
@@ -385,6 +475,8 @@ export async function POST(request: NextRequest) {
               date: new Date(mapped.date),
               description: `Square Processing Fee (${fee.type || 'INITIAL'})`,
               merchantName: 'Square Fees',
+              classification: 'OPERATING',
+              vendorId: feeVendorId,
               externalId: feeExternalId,
               isReviewed: false,
             },
@@ -395,6 +487,7 @@ export async function POST(request: NextRequest) {
               date: new Date(mapped.date),
               description: `Square Processing Fee (${fee.type || 'INITIAL'})`,
               merchantName: 'Square Fees',
+              vendorId: feeVendorId,
             },
           });
 
@@ -483,7 +576,12 @@ export async function POST(request: NextRequest) {
           create: {
             accountId: account.id,
             amount: mapped.amount,
+            // EXPENSE type + INCOME classification = contra-revenue: the P&L
+            // nets refunds against sales instead of booking an expense (and
+            // instead of the old behavior, where the null classification fell
+            // through to PERSONAL).
             type: 'EXPENSE',
+            classification: 'INCOME',
             status: txStatus,
             date: new Date(mapped.date),
             description: mapped.description,
@@ -582,6 +680,34 @@ export async function POST(request: NextRequest) {
       console.log(`[Square Sync] Added ${payoutsAdded} new payouts`);
     } catch (payoutError) {
       console.log('[Square Sync] Error syncing payouts (non-fatal):', payoutError);
+    }
+
+    // Backfill classifications on rows written by earlier sync versions:
+    // fees were landing in PERSONAL via the null-classification fallback, and
+    // refunds were inflating personal expenses instead of netting revenue.
+    const [feeBackfill, refundBackfill] = await Promise.all([
+      db.transaction.updateMany({
+        where: {
+          accountId: account.id,
+          merchantName: 'Square Fees',
+          classification: null,
+        },
+        data: { classification: 'OPERATING' },
+      }),
+      db.transaction.updateMany({
+        where: {
+          accountId: account.id,
+          merchantName: 'Square Refund',
+          type: 'EXPENSE',
+          classification: null,
+        },
+        data: { classification: 'INCOME' },
+      }),
+    ]);
+    if (feeBackfill.count > 0 || refundBackfill.count > 0) {
+      console.log(
+        `[Square Sync] Backfilled classifications: ${feeBackfill.count} fees -> OPERATING, ${refundBackfill.count} refunds -> contra-revenue`
+      );
     }
 
     // Calculate total balance from all completed transactions

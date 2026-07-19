@@ -338,6 +338,10 @@ export interface SquareTransactionData {
   orderId?: string;
   receiptNumber?: string;
   buyerEmail?: string;
+  /** Tip collected on top of the base amount (payment.tip_money). */
+  tipAmount?: number;
+  /** Total money collected = base + tip (payment.total_money). */
+  totalAmount?: number;
 }
 
 export interface SquareCustomerData {
@@ -389,8 +393,10 @@ export interface SquareLineItemData {
 
 // Extract structured line items from a Square order so they can be persisted
 // as LineItem rows (instead of being flattened into a description string).
-// gross/total money are already net of item-level discounts; base price is the
-// per-unit list price.
+// Item lines are recorded NET OF TAX: Square's per-line total_money includes
+// the line's tax share, which would double-count against the order-level TAX
+// adjustment line. Net sales for a line = total_money − total_tax_money
+// (fallback: gross_sales − discounts). Base price is the per-unit list price.
 export function mapSquareOrderLineItems(order: any): SquareLineItemData[] {
   const lineItems: any[] = order?.lineItems || [];
   return lineItems
@@ -399,19 +405,75 @@ export function mapSquareOrderLineItems(order: any): SquareLineItemData[] {
       if (!name) return null;
       const quantity = Number(li?.quantity || 1);
       const unitCents = li?.basePriceMoney?.amount;
-      const totalCents = li?.totalMoney?.amount ?? li?.grossSalesMoney?.amount ?? 0;
+      const totalCents = li?.totalMoney?.amount;
+      const taxCents = li?.totalTaxMoney?.amount ?? 0;
+      const netCents =
+        totalCents != null
+          ? Number(totalCents) - Number(taxCents)
+          : Number(li?.grossSalesMoney?.amount ?? 0) -
+            Number(li?.totalDiscountMoney?.amount ?? 0);
       return {
         uid: li?.uid ?? null,
         name,
         quantity: Number.isFinite(quantity) ? quantity : 1,
         unitPrice: unitCents != null ? Number(unitCents) / 100 : null,
-        totalPrice: Number(totalCents) / 100,
+        totalPrice: netCents / 100,
         variationName: li?.variationName ?? null,
         catalogObjectId: li?.catalogObjectId ?? null,
         note: li?.note ?? null,
       };
     })
     .filter((li): li is SquareLineItemData => li !== null);
+}
+
+export interface SquareOrderAdjustment {
+  /** Stable per-order uid so re-syncs upsert instead of duplicating. */
+  uid: string;
+  lineType: 'TAX' | 'DISCOUNT' | 'FEE' | 'TIP';
+  description: string;
+  amount: number; // positive dollars
+}
+
+// Order-level money that is NOT item revenue: collected sales tax, discounts,
+// and service charges. Persisted as typed LineItem rows so the sales-tax
+// report and margin views can read them, and so item + adjustment lines sum
+// to the payment total.
+export function mapSquareOrderAdjustments(order: any): SquareOrderAdjustment[] {
+  const out: SquareOrderAdjustment[] = [];
+
+  const taxCents = Number(order?.totalTaxMoney?.amount ?? 0);
+  if (taxCents > 0) {
+    out.push({
+      uid: 'order:tax',
+      lineType: 'TAX',
+      description: 'Sales tax collected',
+      amount: taxCents / 100,
+    });
+  }
+
+  const discountCents = Number(order?.totalDiscountMoney?.amount ?? 0);
+  if (discountCents > 0) {
+    out.push({
+      uid: 'order:discount',
+      lineType: 'DISCOUNT',
+      description: 'Order discounts',
+      amount: discountCents / 100,
+    });
+  }
+
+  const serviceCharges: any[] = order?.serviceCharges || [];
+  for (const sc of serviceCharges) {
+    const cents = Number(sc?.totalMoney?.amount ?? sc?.appliedMoney?.amount ?? 0);
+    if (cents <= 0) continue;
+    out.push({
+      uid: `sc:${sc?.uid ?? sc?.name ?? 'service-charge'}`,
+      lineType: 'FEE',
+      description: sc?.name ? `Service charge: ${sc.name}` : 'Service charge',
+      amount: cents / 100,
+    });
+  }
+
+  return out;
 }
 
 // Map Square payment to our format
@@ -425,10 +487,21 @@ export function mapSquarePayment(payment: any): SquareTransactionData {
     (payment.buyerEmailAddress ? `Square payment from ${payment.buyerEmailAddress}` : '') ||
     `Square Payment ${payment.receiptNumber || payment.id.slice(-6)}`;
 
+  // Square's amount_money EXCLUDES the tip; tip_money is separate and
+  // total_money is their sum. The transaction must record total_money — that's
+  // the cash that actually hit the Square balance and what reconciles against
+  // payouts and bank deposits. (Dropping tips was understating revenue.)
+  const baseAmount = Number(payment.amountMoney?.amount || 0) / 100;
+  const tipAmount = Number(payment.tipMoney?.amount || 0) / 100;
+  const totalAmount =
+    payment.totalMoney?.amount != null
+      ? Number(payment.totalMoney.amount) / 100
+      : baseAmount + tipAmount;
+
   return {
     id: payment.id,
     locationId: payment.locationId,
-    amount: Number(payment.amountMoney?.amount || 0) / 100, // Square uses cents
+    amount: baseAmount,
     currency: payment.amountMoney?.currency || 'USD',
     date: payment.createdAt,
     description,
@@ -438,6 +511,8 @@ export function mapSquarePayment(payment: any): SquareTransactionData {
     orderId: payment.orderId,
     receiptNumber: payment.receiptNumber,
     buyerEmail: payment.buyerEmailAddress,
+    tipAmount,
+    totalAmount,
   };
 }
 

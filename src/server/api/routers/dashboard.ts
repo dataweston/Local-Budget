@@ -6,6 +6,11 @@ import {
   isExpenseForSpending,
   isTransferLikeTransaction,
 } from '@/lib/transaction-filters';
+import {
+  blankReport as blankPnlReport,
+  aggregatePnl,
+  derivePnlMetrics,
+} from '@/lib/pnl';
 
 export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
@@ -274,123 +279,41 @@ export const dashboardRouter = createTRPCRouter({
         },
       });
 
-      let revenue = 0;
-      let cogs = 0;
-      let operatingExpenses = 0;
-      let personalExpenses = 0;
-      let reimbursableExpenses = 0;
-      let reimbursementIncome = 0;
-      let uncategorizedAmount = 0;
-      let uncategorizedCount = 0;
-      let totalTransactionsConsidered = 0;
+      // Shared P&L aggregation (single source of truth in @/lib/pnl):
+      // contra-revenue netting, split handling, and category rollup.
+      const report = blankPnlReport(startDate.getFullYear());
+      aggregatePnl(report, transactions);
+      const derived = derivePnlMetrics(report);
 
-      const byCategory = new Map<
-        string,
-        {
-          categoryId: string | null;
-          name: string;
-          classification: string;
-          amount: number;
-          transactionCount: number;
-        }
-      >();
+      const {
+        cogs,
+        operatingExpenses,
+        personalExpenses,
+        reimbursableExpenses,
+        reimbursementIncome,
+        refunds,
+        uncategorizedAmount,
+        uncategorizedCount,
+        totalLinesConsidered: totalTransactionsConsidered,
+      } = report;
+      const {
+        totalRevenue,
+        grossProfit,
+        grossMargin,
+        operatingIncome,
+        operatingMargin,
+        netBusinessIncome,
+        totalExpenses,
+        netCashFlow,
+        savingsRate,
+      } = derived;
 
-      const addCategory = (
-        categoryId: string | null,
-        categoryName: string,
-        classification: string,
-        amount: number
-      ) => {
-        const key = `${categoryId ?? 'uncategorized'}::${classification}`;
-        if (!byCategory.has(key)) {
-          byCategory.set(key, {
-            categoryId,
-            name: categoryName,
-            classification,
-            amount: 0,
-            transactionCount: 0,
-          });
-        }
-
-        const row = byCategory.get(key)!;
-        row.amount += amount;
-        row.transactionCount += 1;
-      };
-
-      const applyLine = (
-        amount: number,
-        classification: string,
-        categoryId: string | null,
-        categoryName: string
-      ) => {
-        if (classification === 'TRANSFER') return;
-
-        totalTransactionsConsidered += 1;
-        const absAmount = Math.abs(amount);
-
-        if (classification === 'INCOME') {
-          revenue += absAmount;
-        } else if (classification === 'REIMBURSEMENT') {
-          reimbursementIncome += absAmount;
-        } else if (classification === 'COGS') {
-          cogs += absAmount;
-        } else if (classification === 'OPERATING') {
-          operatingExpenses += absAmount;
-        } else if (classification === 'REIMBURSABLE') {
-          reimbursableExpenses += absAmount;
-        } else {
-          personalExpenses += absAmount;
-        }
-
-        addCategory(categoryId, categoryName, classification, absAmount);
-
-        if (!categoryId) {
-          uncategorizedAmount += absAmount;
-          uncategorizedCount += 1;
-        }
-      };
-
-      for (const tx of transactions) {
-        const txClassification = getEffectiveClassification(tx);
-
-        if (tx.splits.length > 0) {
-          for (const split of tx.splits) {
-            const splitClassification =
-              split.classification ??
-              split.category?.defaultClassification ??
-              txClassification;
-            const splitCategoryId = split.category?.id ?? tx.categoryId ?? null;
-            const splitCategoryName =
-              split.category?.name ?? tx.category?.name ?? 'Uncategorized';
-
-            applyLine(
-              Number(split.amount),
-              String(splitClassification),
-              splitCategoryId,
-              splitCategoryName
-            );
-          }
-          continue;
-        }
-
-        applyLine(
-          Number(tx.amount),
-          txClassification,
-          tx.categoryId ?? null,
-          tx.category?.name ?? 'Uncategorized'
-        );
-      }
-
-      // Reimbursements are income-like (money returned), add to revenue
-      const totalRevenue = revenue + reimbursementIncome;
-      const grossProfit = totalRevenue - cogs;
-      const grossMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
-      const operatingIncome = grossProfit - operatingExpenses - reimbursableExpenses;
-      const operatingMargin = totalRevenue > 0 ? (operatingIncome / totalRevenue) * 100 : 0;
-      const totalExpenses = cogs + operatingExpenses + personalExpenses + reimbursableExpenses;
-      const netIncome = totalRevenue - totalExpenses;
+      // The reports waterfall shows Revenue − COGS − OpEx − Personal = Net,
+      // so the `netIncome` field keeps that cash-flow meaning; the business
+      // figures (excluding personal) are exposed alongside.
+      const netIncome = netCashFlow;
       const netMargin = totalRevenue > 0 ? (netIncome / totalRevenue) * 100 : 0;
-      const savingsRate = totalRevenue > 0 ? ((totalRevenue - totalExpenses) / totalRevenue) * 100 : 0;
+      const businessNetMargin = derived.netMargin;
 
       const totalPnlVolume = totalRevenue + totalExpenses;
       const daysInPeriod = Math.max(
@@ -405,7 +328,7 @@ export const dashboardRouter = createTRPCRouter({
       const expenseCoverageRatio =
         totalExpenses > 0 ? totalRevenue / totalExpenses : totalRevenue > 0 ? Infinity : 0;
 
-      const topExpenseCategoryAmount = Array.from(byCategory.values())
+      const topExpenseCategoryAmount = Array.from(report.byCategory.values())
         .filter((row) =>
           ['COGS', 'OPERATING', 'PERSONAL', 'REIMBURSABLE'].includes(row.classification)
         )
@@ -416,6 +339,7 @@ export const dashboardRouter = createTRPCRouter({
       return {
         period: { start: startDate, end: endDate },
         revenue: totalRevenue,
+        refunds,
         cogs,
         grossProfit,
         grossMargin,
@@ -427,6 +351,8 @@ export const dashboardRouter = createTRPCRouter({
         operatingMargin,
         netIncome,
         netMargin,
+        netBusinessIncome,
+        businessNetMargin,
         savingsRate,
         totalExpenses,
         totalPnlVolume,
@@ -441,7 +367,7 @@ export const dashboardRouter = createTRPCRouter({
         uncategorizedAmount,
         uncategorizedCount,
         totalTransactionsConsidered,
-        byCategory: Array.from(byCategory.values())
+        byCategory: Array.from(report.byCategory.values())
           .map((row) => ({
             categoryId: row.categoryId,
             name: row.name,

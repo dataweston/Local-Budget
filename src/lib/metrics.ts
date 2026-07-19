@@ -64,12 +64,21 @@ export function operatingMargin(t: Pick<PeriodTotals, 'revenue' | 'cogs' | 'oper
   return pct(operatingIncome(t), t.revenue);
 }
 
-export function netIncome(t: PeriodTotals): number {
-  return t.revenue - t.cogs - t.operatingExpenses - t.personalExpenses;
+/**
+ * Business net income — excludes personal spending (unified P&L semantics,
+ * see @/lib/pnl). Use netCashFlow for the after-everything figure.
+ */
+export function netIncome(t: Pick<PeriodTotals, 'revenue' | 'cogs' | 'operatingExpenses'>): number {
+  return t.revenue - t.cogs - t.operatingExpenses;
 }
 
 export function netMargin(t: PeriodTotals): number {
   return pct(netIncome(t), t.revenue);
+}
+
+/** What's left after ALL outflows, including personal spending. */
+export function netCashFlow(t: PeriodTotals): number {
+  return t.revenue - t.cogs - t.operatingExpenses - t.personalExpenses;
 }
 
 // ── expense ratios ───────────────────────────────────────────────────
@@ -166,7 +175,14 @@ export const METRIC_DEFINITIONS: MetricDefinition[] = [
   },
   {
     key: 'netIncome',
-    label: 'Net Income',
+    label: 'Net Business Income',
+    description: 'Revenue minus COGS and Operating Expenses (personal excluded)',
+    format: 'currency',
+    higherIsBetter: true,
+  },
+  {
+    key: 'netCashFlow',
+    label: 'Net Cash Flow',
     description: 'Revenue minus all expenses (COGS + Operating + Personal)',
     format: 'currency',
     higherIsBetter: true,
