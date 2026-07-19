@@ -1,0 +1,93 @@
+export type VenmoStatementDetails = {
+  statementId?: string;
+  statementDateTime?: string;
+  type?: string;
+  status?: string;
+  note?: string;
+  from?: string;
+  to?: string;
+  amountTotalSigned?: number;
+  amountFeeSigned?: number;
+  fundingSource?: string;
+  destination?: string;
+  sourceFile?: string;
+  confidence?: string;
+  matchSource?: string;
+  dayDiff?: number | null;
+  amountDiff?: number | null;
+  candidateCount?: number;
+  matchedBankTransactionId?: string;
+  canonicalTransactionId?: string;
+  reconciliationReason?: string;
+  hasStatementData: boolean;
+  hasBankLink: boolean;
+  isCanonical: boolean;
+};
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Read both generations of Venmo metadata:
+ * - venmoStatementMatch: statement details attached to a pre-existing bank row
+ * - venmoStatementEntry: canonical Venmo Wallet row created by the sync command
+ *
+ * The UI previously read only the legacy key, which made canonical rows appear
+ * no richer than their bank descriptions even though the statement facts were
+ * present in the database.
+ */
+export function parseVenmoStatementDetails(metadata: unknown): VenmoStatementDetails {
+  const root = record(metadata);
+  const canonical = record(root?.venmoStatementEntry);
+  const legacyMatch = record(root?.venmoStatementMatch);
+  const reconciliation = record(root?.venmoReconciliation);
+  const statement = canonical || legacyMatch ? { ...canonical, ...legacyMatch } : null;
+
+  const matchedBankTransactionId = stringValue(reconciliation?.matchedBankTransactionId);
+  const canonicalTransactionId = stringValue(reconciliation?.canonicalTransactionId);
+
+  return {
+    statementId: stringValue(statement?.statementId) || stringValue(reconciliation?.statementId),
+    statementDateTime: stringValue(statement?.statementDateTime),
+    type: stringValue(statement?.type),
+    status: stringValue(statement?.status),
+    note: stringValue(statement?.note),
+    from: stringValue(statement?.from),
+    to: stringValue(statement?.to),
+    amountTotalSigned: numberValue(statement?.amountTotalSigned),
+    amountFeeSigned: numberValue(statement?.amountFeeSigned),
+    fundingSource: stringValue(statement?.fundingSource),
+    destination: stringValue(statement?.destination),
+    sourceFile: stringValue(statement?.sourceFile),
+    confidence: stringValue(statement?.confidence),
+    matchSource: stringValue(statement?.matchSource),
+    dayDiff: numberValue(statement?.dayDiff) ?? numberValue(reconciliation?.dayDiff) ?? null,
+    amountDiff:
+      numberValue(statement?.amountDiff) ?? numberValue(reconciliation?.amountDiff) ?? null,
+    candidateCount: numberValue(statement?.candidateCount),
+    matchedBankTransactionId,
+    canonicalTransactionId,
+    reconciliationReason: stringValue(reconciliation?.reason),
+    hasStatementData: !!statement,
+    hasBankLink: !!legacyMatch || !!matchedBankTransactionId || !!canonicalTransactionId,
+    isCanonical: !!canonical,
+  };
+}
+
+export function getVenmoCounterparty(
+  details: Pick<VenmoStatementDetails, 'from' | 'to'>,
+  transactionType: string
+): string | undefined {
+  return transactionType === 'INCOME' ? details.from || details.to : details.to || details.from;
+}

@@ -197,3 +197,24 @@ contract.
 2. Set `INTEGRATION_API_TOKEN` in Vercel env vars (and local `.env`).
 3. In local-effort-app, set `LOCAL_BUDGET_API_URL=https://local-budget.vercel.app`
    and `LOCAL_BUDGET_API_TOKEN=<same token>`.
+
+## P&L semantics change — 2026-07-19
+
+`/v1/pnl` now follows unified semantics (single source: `src/lib/pnl.ts`):
+
+- **New field `refunds`**: EXPENSE-typed transactions classified INCOME
+  (e.g. Square refunds) are contra-revenue. `revenue` stays the gross INCOME
+  sum; `totalRevenue = revenue − refunds + reimbursementIncome`.
+- **`netBusinessIncome` / `operatingIncome`** exclude reimbursable expenses
+  (money fronted for payback is not an operating cost). New fields:
+  `operatingIncome`, `operatingMargin`, `netMargin`, `netCashFlow`,
+  `savingsRate`, `totalExpenses`.
+- **Sales tax** collected via Square is recorded as a TRANSFER-classified
+  split (`Sales tax collected (Square)`) and never enters revenue. Square
+  payment transaction amounts now include tips (`total_money`, not
+  `amount_money`); the tip/tax decomposition is in transaction metadata
+  (`base_amount`, `tip_amount`, `sales_tax_amount`, `total_amount`) and splits.
+
+Consumers replicating the P&L (e.g. generate-local-budget-pnl.cjs) should
+adopt the contra-revenue rule or read `/v1/pnl` directly, otherwise their
+numbers will diverge by the refund total.

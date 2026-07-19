@@ -19,7 +19,10 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
@@ -32,6 +35,10 @@ import {
 } from '@/components/ui/dialog';
 import { UploadReceiptModal } from './UploadReceiptModal';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
+import {
+  getVenmoCounterparty,
+  parseVenmoStatementDetails,
+} from '@/lib/venmo-metadata';
 import {
   DateRangeSelector,
   getDateRangeForPreset,
@@ -98,50 +105,6 @@ function parseAmazonOrderMatchMeta(metadata: unknown): AmazonOrderMatchMeta {
   };
 }
 
-type VenmoStatementMatchMeta = {
-  statementId?: string;
-  statementDateTime?: string;
-  type?: string;
-  status?: string;
-  note?: string;
-  from?: string;
-  to?: string;
-  amountTotalSigned?: number;
-  amountFeeSigned?: number;
-  sourceFile?: string;
-  confidence?: string;
-  dayDiff?: number | null;
-  candidateCount?: number;
-};
-
-function parseVenmoStatementMatchMeta(metadata: unknown): VenmoStatementMatchMeta {
-  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return {};
-  const venmoStatementMatch = (metadata as Record<string, unknown>).venmoStatementMatch;
-  if (
-    !venmoStatementMatch ||
-    typeof venmoStatementMatch !== 'object' ||
-    Array.isArray(venmoStatementMatch)
-  ) {
-    return {};
-  }
-  const m = venmoStatementMatch as Record<string, unknown>;
-  return {
-    statementId: typeof m.statementId === 'string' ? m.statementId : undefined,
-    statementDateTime: typeof m.statementDateTime === 'string' ? m.statementDateTime : undefined,
-    type: typeof m.type === 'string' ? m.type : undefined,
-    status: typeof m.status === 'string' ? m.status : undefined,
-    note: typeof m.note === 'string' ? m.note : undefined,
-    from: typeof m.from === 'string' ? m.from : undefined,
-    to: typeof m.to === 'string' ? m.to : undefined,
-    amountTotalSigned: typeof m.amountTotalSigned === 'number' ? m.amountTotalSigned : undefined,
-    amountFeeSigned: typeof m.amountFeeSigned === 'number' ? m.amountFeeSigned : undefined,
-    sourceFile: typeof m.sourceFile === 'string' ? m.sourceFile : undefined,
-    confidence: typeof m.confidence === 'string' ? m.confidence : undefined,
-    dayDiff: typeof m.dayDiff === 'number' ? m.dayDiff : null,
-    candidateCount: typeof m.candidateCount === 'number' ? m.candidateCount : undefined,
-  };
-}
-
 const statusConfig = {
   PENDING: { icon: Clock, color: 'text-yellow-600', bg: 'bg-yellow-50' },
   PROCESSING: { icon: Clock, color: 'text-blue-600', bg: 'bg-blue-50' },
@@ -154,7 +117,30 @@ type MatchFilterValue = 'all' | 'matched' | 'unmatched' | 'pending';
 type IngestSectionValue = 'amazon' | 'venmo';
 type VenmoTypeFilterValue = 'all' | 'income' | 'expense';
 type VenmoMatchFilterValue = 'all' | 'matched' | 'unmatched';
+type VenmoAccountingClassification =
+  | 'UNCLASSIFIED'
+  | 'INCOME'
+  | 'COGS'
+  | 'OPERATING'
+  | 'PERSONAL'
+  | 'REIMBURSABLE'
+  | 'REIMBURSEMENT';
+type VenmoClassificationFilterValue = 'all' | VenmoAccountingClassification;
 type VenmoSortValue = 'date-desc' | 'date-asc' | 'amount-desc' | 'amount-asc';
+
+const VENMO_CLASSIFICATIONS: Array<{
+  value: VenmoAccountingClassification;
+  label: string;
+}> = [
+  { value: 'UNCLASSIFIED', label: 'Needs review' },
+  { value: 'INCOME', label: 'Revenue / contra-revenue' },
+  { value: 'COGS', label: 'Cost of goods sold' },
+  { value: 'OPERATING', label: 'Operating expense' },
+  { value: 'REIMBURSABLE', label: 'Reimbursable expense' },
+  { value: 'REIMBURSEMENT', label: 'Reimbursement income' },
+  { value: 'PERSONAL', label: 'Personal' },
+];
+
 const INGEST_PAGE_SIZE = 50;
 
 export function ReceiptsList() {
@@ -173,16 +159,24 @@ export function ReceiptsList() {
   const [venmoYearValue, setVenmoYearValue] = useState<number>(new Date().getFullYear());
   const [venmoCustomStart, setVenmoCustomStart] = useState('');
   const [venmoCustomEnd, setVenmoCustomEnd] = useState('');
-  const [updatingVenmoBusinessPersonalTxId, setUpdatingVenmoBusinessPersonalTxId] = useState<string | null>(null);
+  const [updatingVenmoTxId, setUpdatingVenmoTxId] = useState<string | null>(null);
   const [amazonMatchFilter, setAmazonMatchFilter] = useState<MatchFilterValue>('all');
   const [amazonAccountFilter, setAmazonAccountFilter] = useState<string | undefined>();
   const [venmoTypeFilter, setVenmoTypeFilter] = useState<VenmoTypeFilterValue>('all');
   const [venmoMatchFilter, setVenmoMatchFilter] = useState<VenmoMatchFilterValue>('all');
+  const [venmoClassificationFilter, setVenmoClassificationFilter] =
+    useState<VenmoClassificationFilterValue>('all');
+  const [venmoCategoryFilter, setVenmoCategoryFilter] = useState('__all__');
+  const [venmoSearch, setVenmoSearch] = useState('');
   const [venmoAccountFilter, setVenmoAccountFilter] = useState<string | undefined>();
   const [venmoSort, setVenmoSort] = useState<VenmoSortValue>('date-desc');
   const [amazonPage, setAmazonPage] = useState(1);
   const [venmoPage, setVenmoPage] = useState(1);
   const [selectedAmazonIds, setSelectedAmazonIds] = useState<Set<string>>(new Set());
+  const [selectedVenmoIds, setSelectedVenmoIds] = useState<Set<string>>(new Set());
+  const [venmoBulkClassification, setVenmoBulkClassification] =
+    useState<VenmoAccountingClassification>('UNCLASSIFIED');
+  const [venmoBulkCategoryId, setVenmoBulkCategoryId] = useState('__none__');
   const utils = api.useUtils();
 
   const { data, isLoading, refetch } = api.receipts.list.useQuery({
@@ -192,6 +186,7 @@ export function ReceiptsList() {
 
   const { data: pendingCount } = api.receipts.pendingCount.useQuery();
   const { data: unlinkedReceipts } = api.receipts.unlinked.useQuery();
+  const { data: categories } = api.categories.list.useQuery();
   const amazonDateRange = useMemo(() => {
     if (amazonPeriod === 'custom' && amazonCustomStart && amazonCustomEnd) {
       return {
@@ -231,6 +226,14 @@ export function ReceiptsList() {
       page: venmoPage,
       typeFilter: venmoTypeFilter === 'all' ? undefined : venmoTypeFilter,
       matchFilter: venmoMatchFilter === 'all' ? undefined : venmoMatchFilter,
+      classificationFilter:
+        venmoClassificationFilter === 'all' ? undefined : venmoClassificationFilter,
+      categoryId:
+        venmoCategoryFilter !== '__all__' && venmoCategoryFilter !== '__uncategorized__'
+          ? venmoCategoryFilter
+          : undefined,
+      uncategorizedOnly: venmoCategoryFilter === '__uncategorized__' || undefined,
+      search: venmoSearch.trim() || undefined,
       accountId: venmoAccountFilter,
       sortBy: venmoSort,
     });
@@ -249,7 +252,13 @@ export function ReceiptsList() {
     },
     onSettled: () => {
       setUpdatingBusinessPersonalTxId(null);
-      setUpdatingVenmoBusinessPersonalTxId(null);
+      setUpdatingVenmoTxId(null);
+    },
+  });
+  const bulkCategorizeVenmoMutation = api.transactions.bulkCategorize.useMutation({
+    onSuccess: async () => {
+      await utils.receipts.venmoSpending.invalidate();
+      setSelectedVenmoIds(new Set());
     },
   });
   const enforceAmazonRoutingMutation = api.receipts.enforceAmazonRouting.useMutation({
@@ -301,7 +310,7 @@ export function ReceiptsList() {
     ? parseAmazonOrderMatchMeta(selectedAmazonTx.metadata)
     : null;
   const selectedVenmoMeta = selectedVenmoTx
-    ? parseVenmoStatementMatchMeta(selectedVenmoTx.metadata)
+    ? parseVenmoStatementDetails(selectedVenmoTx.metadata)
     : null;
 
   function markAmazonBusinessPersonal(transactionId: string, mode: 'business' | 'personal') {
@@ -312,11 +321,67 @@ export function ReceiptsList() {
     });
   }
 
-  function markVenmoBusinessPersonal(transactionId: string, mode: 'business' | 'personal') {
-    setUpdatingVenmoBusinessPersonalTxId(transactionId);
+  function classifyVenmoTransaction(
+    transactionId: string,
+    classification: VenmoAccountingClassification,
+    currentCategoryClassification?: string | null
+  ) {
+    setUpdatingVenmoTxId(transactionId);
+    const classificationValue = classification === 'UNCLASSIFIED' ? null : classification;
     updateTransactionMutation.mutate({
       id: transactionId,
-      data: { classification: mode === 'business' ? 'OPERATING' : 'PERSONAL' },
+      data: {
+        classification: classificationValue,
+        ...(currentCategoryClassification && currentCategoryClassification !== classificationValue
+          ? { categoryId: null }
+          : {}),
+        isReviewed: classification !== 'UNCLASSIFIED',
+      },
+    });
+  }
+
+  function categorizeVenmoTransaction(transactionId: string, categoryId: string) {
+    setUpdatingVenmoTxId(transactionId);
+    updateTransactionMutation.mutate({
+      id: transactionId,
+      data: {
+        categoryId: categoryId === '__uncategorized__' ? null : categoryId,
+        isReviewed: categoryId !== '__uncategorized__',
+      },
+    });
+  }
+
+  function toggleVenmoSelection(id: string) {
+    setSelectedVenmoIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllVenmoOnPage() {
+    if (!venmoSpending) return;
+    const pageIds = venmoSpending.data.map((tx) => tx.id);
+    const allSelected = pageIds.every((id) => selectedVenmoIds.has(id));
+    setSelectedVenmoIds((previous) => {
+      const next = new Set(previous);
+      for (const id of pageIds) {
+        if (allSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function applyBulkVenmoAccounting() {
+    if (selectedVenmoIds.size === 0) return;
+    bulkCategorizeVenmoMutation.mutate({
+      transactionIds: Array.from(selectedVenmoIds),
+      classification:
+        venmoBulkClassification === 'UNCLASSIFIED' ? null : venmoBulkClassification,
+      categoryId:
+        venmoBulkCategoryId === '__none__' ? null : venmoBulkCategoryId,
     });
   }
 
@@ -351,7 +416,20 @@ export function ReceiptsList() {
 
   useEffect(() => {
     setVenmoPage(1);
-  }, [venmoPeriod, venmoYearValue, venmoCustomStart, venmoCustomEnd, venmoTypeFilter, venmoMatchFilter, venmoAccountFilter, venmoSort]);
+    setSelectedVenmoIds(new Set());
+  }, [
+    venmoPeriod,
+    venmoYearValue,
+    venmoCustomStart,
+    venmoCustomEnd,
+    venmoTypeFilter,
+    venmoMatchFilter,
+    venmoClassificationFilter,
+    venmoCategoryFilter,
+    venmoSearch,
+    venmoAccountFilter,
+    venmoSort,
+  ]);
 
   useEffect(() => {
     const maxPage = amazonSpending?.pagination?.totalPages ?? 1;
@@ -807,7 +885,7 @@ export function ReceiptsList() {
                     Venmo Transactions
                   </CardTitle>
                   <CardDescription>
-                    View Venmo income and expense activity with account and match filters
+                    Review statement details and assign P&amp;L classifications and categories
                   </CardDescription>
                 </div>
                 <DateRangeSelector
@@ -823,6 +901,12 @@ export function ReceiptsList() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={venmoSearch}
+                  onChange={(event) => setVenmoSearch(event.target.value)}
+                  placeholder="Search note, person, source..."
+                  className="h-8 w-[230px] text-xs"
+                />
                 <Select
                   value={venmoTypeFilter}
                   onValueChange={(v) => setVenmoTypeFilter(v as VenmoTypeFilterValue)}
@@ -834,6 +918,40 @@ export function ReceiptsList() {
                     <SelectItem value="all">All types</SelectItem>
                     <SelectItem value="income">Income</SelectItem>
                     <SelectItem value="expense">Expense</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={venmoClassificationFilter}
+                  onValueChange={(value) =>
+                    setVenmoClassificationFilter(value as VenmoClassificationFilterValue)
+                  }
+                >
+                  <SelectTrigger className="w-[175px] h-8 text-xs">
+                    <SelectValue placeholder="Accounting class" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All accounting classes</SelectItem>
+                    {VENMO_CLASSIFICATIONS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select value={venmoCategoryFilter} onValueChange={setVenmoCategoryFilter}>
+                  <SelectTrigger className="w-[190px] h-8 text-xs">
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all__">All categories</SelectItem>
+                    <SelectItem value="__uncategorized__">Uncategorized</SelectItem>
+                    {categories?.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.icon} {category.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
 
@@ -882,46 +1000,51 @@ export function ReceiptsList() {
                 </Select>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
                 <div className="rounded-md border p-2">
                   <p className="text-xs text-muted-foreground">Transactions</p>
                   <p className="text-lg font-semibold">{venmoSpending?.totalCount ?? 0}</p>
                 </div>
                 <div className="rounded-md border p-2">
-                  <p className="text-xs text-muted-foreground">Income</p>
+                  <p className="text-xs text-muted-foreground">Revenue</p>
                   <p className="text-lg font-semibold text-green-700">
-                    {formatCurrency(Number(venmoSpending?.incomeAmount ?? 0))}
+                    {formatCurrency(Number(venmoSpending?.classificationTotals.INCOME ?? 0))}
                   </p>
                 </div>
                 <div className="rounded-md border p-2">
-                  <p className="text-xs text-muted-foreground">Expense</p>
-                  <p className="text-lg font-semibold text-orange-700">
-                    {formatCurrency(Number(venmoSpending?.expenseAmount ?? 0))}
+                  <p className="text-xs text-muted-foreground">COGS</p>
+                  <p className="text-lg font-semibold text-amber-700">
+                    {formatCurrency(Number(venmoSpending?.classificationTotals.COGS ?? 0))}
                   </p>
                 </div>
                 <div className="rounded-md border p-2">
-                  <p className="text-xs text-muted-foreground">Net</p>
-                  <p
-                    className={cn(
-                      'text-lg font-semibold',
-                      Number(venmoSpending?.netAmount ?? 0) >= 0
-                        ? 'text-green-700'
-                        : 'text-orange-700',
-                    )}
-                  >
-                    {formatCurrency(Number(venmoSpending?.netAmount ?? 0))}
+                  <p className="text-xs text-muted-foreground">Operating</p>
+                  <p className="text-lg font-semibold text-sky-700">
+                    {formatCurrency(Number(venmoSpending?.classificationTotals.OPERATING ?? 0))}
                   </p>
                 </div>
                 <div className="rounded-md border p-2">
-                  <p className="text-xs text-muted-foreground">Matched</p>
+                  <p className="text-xs text-muted-foreground">Personal</p>
+                  <p className="text-lg font-semibold text-violet-700">
+                    {formatCurrency(Number(venmoSpending?.classificationTotals.PERSONAL ?? 0))}
+                  </p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Needs review</p>
+                  <p className="text-lg font-semibold text-red-700">
+                    {venmoSpending?.needsAccountingReviewCount ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-md border p-2">
+                  <p className="text-xs text-muted-foreground">Statement detail</p>
                   <p className="text-lg font-semibold text-sky-700">
                     {venmoSpending?.matchedCount ?? 0}
                   </p>
                 </div>
                 <div className="rounded-md border p-2">
-                  <p className="text-xs text-muted-foreground">Unmatched</p>
+                  <p className="text-xs text-muted-foreground">Bank linked</p>
                   <p className="text-lg font-semibold">
-                    {venmoSpending?.unmatchedCount ?? 0}
+                    {venmoSpending?.bankLinkedCount ?? 0}
                   </p>
                 </div>
               </div>
@@ -938,48 +1061,118 @@ export function ReceiptsList() {
               <p className="text-sm text-muted-foreground">No Venmo transactions found for this filter set.</p>
             ) : (
               <div className="space-y-2">
+                <div className="rounded-md border bg-muted/30 p-2 flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs font-medium px-1">
+                    <input
+                      type="checkbox"
+                      checked={
+                        venmoSpending.data.length > 0 &&
+                        venmoSpending.data.every((tx) => selectedVenmoIds.has(tx.id))
+                      }
+                      onChange={toggleAllVenmoOnPage}
+                      className="h-4 w-4 rounded border-input"
+                    />
+                    Select page
+                  </label>
+                  <span className="text-xs text-muted-foreground">
+                    {selectedVenmoIds.size} selected
+                  </span>
+                  <Select
+                    value={venmoBulkClassification}
+                    onValueChange={(value) => {
+                      setVenmoBulkClassification(value as VenmoAccountingClassification);
+                      setVenmoBulkCategoryId('__none__');
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-[190px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VENMO_CLASSIFICATIONS.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={venmoBulkCategoryId} onValueChange={setVenmoBulkCategoryId}>
+                    <SelectTrigger className="h-8 w-[210px] text-xs">
+                      <SelectValue placeholder="Optional category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">No category</SelectItem>
+                      {categories
+                        ?.filter(
+                          (category) =>
+                            category.defaultClassification === venmoBulkClassification
+                        )
+                        .map((category) => (
+                          <SelectItem key={category.id} value={category.id}>
+                            {category.icon} {category.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    className="h-8"
+                    disabled={
+                      selectedVenmoIds.size === 0 || bulkCategorizeVenmoMutation.isLoading
+                    }
+                    onClick={applyBulkVenmoAccounting}
+                  >
+                    Apply accounting
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-8" asChild>
+                    <Link href="/categories">Manage categories</Link>
+                  </Button>
+                </div>
                 {venmoSpending.data.map((tx) => {
-                  const meta = parseVenmoStatementMatchMeta(tx.metadata);
-                  const isBusiness = tx.effectiveClassification !== 'PERSONAL';
+                  const meta = tx.venmoDetails;
                   const isIncome = tx.type === 'INCOME';
-                  const primaryText =
-                    meta.note ||
-                    meta.to ||
-                    meta.from ||
-                    tx.merchantName ||
-                    tx.description;
+                  const counterparty =
+                    getVenmoCounterparty(meta, tx.type) || tx.merchantName || 'Unknown counterparty';
                   return (
                     <div
                       key={tx.id}
-                      className="rounded-md border px-3 py-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                      className={cn(
+                        'rounded-md border px-3 py-3 grid gap-3 lg:grid-cols-[auto_minmax(220px,1fr)_auto_190px_210px_auto] lg:items-center',
+                        tx.needsAccountingReview && 'border-red-200 bg-red-50/30'
+                      )}
                     >
+                      <input
+                        type="checkbox"
+                        checked={selectedVenmoIds.has(tx.id)}
+                        onChange={() => toggleVenmoSelection(tx.id)}
+                        aria-label={`Select ${counterparty}`}
+                        className="h-4 w-4 rounded border-input"
+                      />
                       <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{primaryText}</p>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="text-sm font-semibold truncate">{counterparty}</p>
+                          {meta.note && (
+                            <Badge variant="outline" className="text-[10px] shrink-0">
+                              Venmo note
+                            </Badge>
+                          )}
+                        </div>
+                        {meta.note && <p className="text-sm truncate mt-0.5">{meta.note}</p>}
                         <p className="text-xs text-muted-foreground truncate">
                           {formatDate(tx.date)} - {tx.account.name}
-                          {tx.category?.name ? ` - ${tx.category.name}` : ' - Uncategorized'}
                           {meta.statementId ? ` - Statement ${meta.statementId}` : ''}
-                          {` - Tx ${tx.id.slice(-8)}`}
                         </p>
+                        {(meta.from || meta.to || meta.fundingSource || meta.destination) && (
+                          <p className="text-xs text-muted-foreground truncate mt-0.5">
+                            {meta.from && meta.to ? `${meta.from} → ${meta.to}` : meta.from || meta.to}
+                            {meta.fundingSource ? ` · Source: ${meta.fundingSource}` : ''}
+                            {meta.destination ? ` · Destination: ${meta.destination}` : ''}
+                          </p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <div className="flex items-center gap-2 lg:flex-col lg:items-end">
                         <Badge variant={isIncome ? 'default' : 'secondary'} className="text-[10px]">
                           {isIncome ? 'Income' : 'Expense'}
                         </Badge>
-                        {tx.hasVenmoStatementMatch ? (
-                          <Badge variant="default" className="text-[10px]">
-                            Statement Matched
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary" className="text-[10px]">
-                            Unmatched
-                          </Badge>
-                        )}
-                        {meta.confidence && (
-                          <Badge variant="outline" className="text-[10px] uppercase">
-                            {meta.confidence}
-                          </Badge>
-                        )}
                         <p
                           className={cn(
                             'text-sm font-semibold',
@@ -988,32 +1181,86 @@ export function ReceiptsList() {
                         >
                           {formatCurrency(Number(tx.amount))}
                         </p>
-                        <div className="flex items-center rounded-md border overflow-hidden">
-                          <Button
-                            size="sm"
-                            variant={isBusiness ? 'default' : 'ghost'}
-                            className="h-7 rounded-none px-2"
-                            disabled={updatingVenmoBusinessPersonalTxId === tx.id}
-                            onClick={() => markVenmoBusinessPersonal(tx.id, 'business')}
-                          >
-                            Business
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={!isBusiness ? 'default' : 'ghost'}
-                            className="h-7 rounded-none px-2"
-                            disabled={updatingVenmoBusinessPersonalTxId === tx.id}
-                            onClick={() => markVenmoBusinessPersonal(tx.id, 'personal')}
-                          >
-                            Personal
-                          </Button>
-                        </div>
+                      </div>
+                      <Select
+                        value={tx.accountingClassification}
+                        disabled={updatingVenmoTxId === tx.id}
+                        onValueChange={(value) =>
+                          classifyVenmoTransaction(
+                            tx.id,
+                            value as VenmoAccountingClassification,
+                            tx.category?.defaultClassification
+                          )
+                        }
+                      >
+                        <SelectTrigger className="h-9 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {VENMO_CLASSIFICATIONS.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={tx.categoryId ?? '__uncategorized__'}
+                        disabled={updatingVenmoTxId === tx.id}
+                        onValueChange={(value) => categorizeVenmoTransaction(tx.id, value)}
+                      >
+                        <SelectTrigger className="h-9 text-xs">
+                          <SelectValue placeholder="Category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__uncategorized__">Uncategorized</SelectItem>
+                          <SelectSeparator />
+                          {VENMO_CLASSIFICATIONS.filter(
+                            (item) => item.value !== 'UNCLASSIFIED'
+                          ).map((group) => {
+                            const groupCategories =
+                              categories?.filter(
+                                (category) => category.defaultClassification === group.value
+                              ) ?? [];
+                            if (groupCategories.length === 0) return null;
+                            return (
+                              <SelectGroup key={group.value}>
+                                <SelectLabel>{group.label}</SelectLabel>
+                                {groupCategories.map((category) => (
+                                  <SelectItem key={category.id} value={category.id}>
+                                    {category.icon} {category.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            );
+                          })}
+                          {categories?.some((category) => !category.defaultClassification) && (
+                            <SelectGroup>
+                              <SelectLabel>Other categories</SelectLabel>
+                              {categories
+                                .filter((category) => !category.defaultClassification)
+                                .map((category) => (
+                                  <SelectItem key={category.id} value={category.id}>
+                                    {category.icon} {category.name}
+                                  </SelectItem>
+                                ))}
+                            </SelectGroup>
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <div className="flex items-center gap-2 justify-end">
+                        {meta.hasStatementData && (
+                          <Badge variant="outline" className="text-[10px]">Statement</Badge>
+                        )}
+                        {meta.hasBankLink && (
+                          <Badge variant="outline" className="text-[10px]">Bank linked</Badge>
+                        )}
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => setSelectedVenmoTxId(tx.id)}
                         >
-                          View Match
+                          Details
                         </Button>
                       </div>
                     </div>
@@ -1335,7 +1582,7 @@ export function ReceiptsList() {
           </DialogContent>
         </Dialog>
 
-        {/* Venmo Match Detail Dialog */}
+        {/* Venmo Detail Dialog */}
         <Dialog
           open={!!selectedVenmoTxId}
           onOpenChange={(open) => !open && setSelectedVenmoTxId(null)}
@@ -1344,11 +1591,11 @@ export function ReceiptsList() {
             <DialogHeader>
               <DialogTitle>
                 {selectedVenmoTx
-                  ? `Venmo Match${selectedVenmoMeta?.statementId ? ` - Statement ${selectedVenmoMeta.statementId}` : ''}`
-                  : 'Venmo Match'}
+                  ? `Venmo Details${selectedVenmoMeta?.statementId ? ` - Statement ${selectedVenmoMeta.statementId}` : ''}`
+                  : 'Venmo Details'}
               </DialogTitle>
               <DialogDescription>
-                Review statement-linked Venmo details for this transaction
+                Review the original Venmo facts and accounting treatment
               </DialogDescription>
             </DialogHeader>
             {isSelectedVenmoTxLoading ? (
@@ -1359,15 +1606,67 @@ export function ReceiptsList() {
               </div>
             ) : !selectedVenmoTx ? (
               <p className="text-sm text-muted-foreground">
-                Matched transaction not found.
+                Venmo transaction not found.
               </p>
             ) : (
               (() => {
-                const meta = parseVenmoStatementMatchMeta(selectedVenmoTx.metadata);
-                const isBusiness = selectedVenmoTx.classification !== 'PERSONAL';
-                const hasStatementMatch = !!meta.statementId;
+                const meta = parseVenmoStatementDetails(selectedVenmoTx.metadata);
+                const detailClassification =
+                  selectedVenmoTx.classification ||
+                  selectedVenmoTx.category?.defaultClassification ||
+                  (selectedVenmoTx.type === 'INCOME' ? 'INCOME' : 'UNCLASSIFIED');
+                const counterparty =
+                  getVenmoCounterparty(meta, selectedVenmoTx.type) ||
+                  selectedVenmoTx.merchantName ||
+                  'Unknown counterparty';
                 return (
                   <div className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-2 rounded-md border p-3 bg-muted/20">
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-muted-foreground">P&amp;L classification</p>
+                        <Select
+                          value={detailClassification}
+                          disabled={updatingVenmoTxId === selectedVenmoTx.id}
+                          onValueChange={(value) =>
+                            classifyVenmoTransaction(
+                              selectedVenmoTx.id,
+                              value as VenmoAccountingClassification,
+                              selectedVenmoTx.category?.defaultClassification
+                            )
+                          }
+                        >
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {VENMO_CLASSIFICATIONS.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>
+                                {item.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-muted-foreground">Detailed category</p>
+                        <Select
+                          value={selectedVenmoTx.categoryId ?? '__uncategorized__'}
+                          disabled={updatingVenmoTxId === selectedVenmoTx.id}
+                          onValueChange={(value) =>
+                            categorizeVenmoTransaction(selectedVenmoTx.id, value)
+                          }
+                        >
+                          <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__uncategorized__">Uncategorized</SelectItem>
+                            {categories?.map((category) => (
+                              <SelectItem key={category.id} value={category.id}>
+                                {category.icon} {category.name} ·{' '}
+                                {category.defaultClassification || 'No class'}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div>
                         <p className="text-muted-foreground">Transaction ID</p>
@@ -1388,12 +1687,12 @@ export function ReceiptsList() {
                         <p>{selectedVenmoTx.account?.name}</p>
                       </div>
                       <div>
-                        <p className="text-muted-foreground">Business / Personal</p>
-                        <p>{isBusiness ? 'Business' : 'Personal'}</p>
+                        <p className="text-muted-foreground">Counterparty</p>
+                        <p>{counterparty}</p>
                       </div>
                       <div>
-                        <p className="text-muted-foreground">Statement Match</p>
-                        <p>{hasStatementMatch ? 'Yes' : 'No'}</p>
+                        <p className="text-muted-foreground">Statement / Bank Link</p>
+                        <p>{meta.hasStatementData ? 'Yes' : 'No'} / {meta.hasBankLink ? 'Yes' : 'No'}</p>
                       </div>
                     </div>
 
@@ -1408,7 +1707,7 @@ export function ReceiptsList() {
                         )}
                     </div>
 
-                    {hasStatementMatch ? (
+                    {meta.hasStatementData ? (
                       <div className="rounded-md border p-3 space-y-2 text-sm">
                         <div className="grid grid-cols-2 gap-3">
                           <div>
@@ -1424,8 +1723,12 @@ export function ReceiptsList() {
                             <p>{meta.from || '-'} / {meta.to || '-'}</p>
                           </div>
                           <div>
-                            <p className="text-muted-foreground">Confidence</p>
-                            <p>{meta.confidence || '-'}</p>
+                            <p className="text-muted-foreground">Funding Source</p>
+                            <p>{meta.fundingSource || '-'}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Destination</p>
+                            <p>{meta.destination || '-'}</p>
                           </div>
                           <div>
                             <p className="text-muted-foreground">Amount (total / fee)</p>
@@ -1452,6 +1755,16 @@ export function ReceiptsList() {
                             <p>{meta.note}</p>
                           </div>
                         )}
+                        {(meta.confidence || meta.matchSource || meta.reconciliationReason) && (
+                          <div>
+                            <p className="text-muted-foreground">Reconciliation</p>
+                            <p>
+                              {[meta.confidence, meta.matchSource, meta.reconciliationReason]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </p>
+                          </div>
+                        )}
                         {meta.sourceFile && (
                           <div>
                             <p className="text-muted-foreground">Source File</p>
@@ -1461,7 +1774,7 @@ export function ReceiptsList() {
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        No ingested Venmo statement match is attached to this transaction.
+                        No ingested Venmo statement details are attached to this transaction.
                       </p>
                     )}
 

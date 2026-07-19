@@ -584,7 +584,7 @@ async function run() {
         accountId: venmoAccount.id,
         externalId: { in: canonicalRows.map((r) => r.externalId) },
       },
-      select: { id: true, externalId: true, isReviewed: true },
+      select: { id: true, externalId: true, isReviewed: true, metadata: true },
     });
     const existingByExternalId = new Map(existing.map((x) => [x.externalId ?? '', x]));
 
@@ -601,6 +601,12 @@ async function run() {
           // category, and merchant/vendor identity are only rewritten while
           // the row is unreviewed — a human decision always wins over the
           // importer's defaults.
+          const existingMetadata =
+            existingRow.metadata &&
+            typeof existingRow.metadata === 'object' &&
+            !Array.isArray(existingRow.metadata)
+              ? (existingRow.metadata as Record<string, unknown>)
+              : {};
           await prisma.transaction.update({
             where: { id: existingRow.id },
             data: {
@@ -609,7 +615,9 @@ async function run() {
               status: row.status,
               date: row.date,
               description: row.description,
-              metadata: row.metadata as any,
+              // Refresh the statement facts while retaining reconciliation and
+              // any other enrichment added after the original import.
+              metadata: { ...existingMetadata, ...row.metadata } as any,
               ...(existingRow.isReviewed
                 ? {}
                 : {

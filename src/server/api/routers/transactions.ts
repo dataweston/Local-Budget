@@ -4,9 +4,11 @@ import {
   createTransactionSchema,
   updateTransactionSchema,
   transactionFiltersSchema,
+  classificationTypeEnum,
 } from '@/lib/schemas';
-import { Prisma } from '@prisma/client';
+import { Prisma, type ClassificationType } from '@prisma/client';
 import { looksLikeMisclassifiedRevenue } from '@/lib/reclassify';
+import { recordCategoryFeedback } from '@/lib/ml/feedback';
 
 export const transactionsRouter = createTRPCRouter({
   // List transactions with filters
@@ -164,7 +166,7 @@ export const transactionsRouter = createTRPCRouter({
       });
       if (!account) throw new Error('Account not found');
 
-      let categoryDefaultClassification: string | null = null;
+      let categoryDefaultClassification: ClassificationType | null = null;
       if (input.categoryId) {
         const category = await ctx.db.category.findFirst({
           where: {
@@ -251,6 +253,20 @@ export const transactionsRouter = createTRPCRouter({
         where: { id: input.id },
         data,
       });
+
+      // A manual category choice is durable training data. This is especially
+      // useful for Venmo, where the counterparty is now the merchant identity:
+      // the next payment to the same person/business can be suggested correctly.
+      if ('categoryId' in input.data && data.categoryId) {
+        await recordCategoryFeedback(ctx.db, {
+          userId: ctx.session.user.id,
+          merchantName: existing.merchantName,
+          description: existing.description,
+          type: existing.type,
+          categoryId: data.categoryId,
+          wasCorrection: existing.categoryId !== data.categoryId,
+        });
+      }
       return transaction;
     }),
 
@@ -294,23 +310,30 @@ export const transactionsRouter = createTRPCRouter({
     .input(
       z.object({
         transactionIds: z.array(z.string()),
-        categoryId: z.string().optional(),
-        classification: z.string().optional(),
+        categoryId: z.string().nullable().optional(),
+        classification: classificationTypeEnum.nullable().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       // Verify ownership of all transactions
-      const owned = await ctx.db.transaction.count({
+      const owned = await ctx.db.transaction.findMany({
         where: {
           id: { in: input.transactionIds },
           account: { userId: ctx.session.user.id },
         },
+        select: {
+          id: true,
+          categoryId: true,
+          merchantName: true,
+          description: true,
+          type: true,
+        },
       });
-      if (owned !== input.transactionIds.length) {
+      if (owned.length !== input.transactionIds.length) {
         throw new Error('Some transactions not found');
       }
 
-      let categoryDefaultClassification: string | null = null;
+      let categoryDefaultClassification: ClassificationType | null = null;
       if (input.categoryId) {
         const category = await ctx.db.category.findFirst({
           where: {
@@ -326,18 +349,39 @@ export const transactionsRouter = createTRPCRouter({
       }
 
       const classificationToApply =
-        input.classification ?? categoryDefaultClassification ?? undefined;
+        input.classification !== undefined
+          ? input.classification
+          : input.categoryId !== undefined
+            ? categoryDefaultClassification
+            : undefined;
+
+      const bulkUpdateData: Prisma.TransactionUncheckedUpdateManyInput = {
+        isReviewed: !(classificationToApply === null && !input.categoryId),
+      };
+      if (input.categoryId !== undefined) bulkUpdateData.categoryId = input.categoryId;
+      if (classificationToApply !== undefined) {
+        bulkUpdateData.classification = classificationToApply;
+      }
 
       await ctx.db.transaction.updateMany({
         where: { id: { in: input.transactionIds } },
-        data: {
-          ...(input.categoryId && { categoryId: input.categoryId }),
-          ...(classificationToApply && {
-            classification: classificationToApply as any,
-          }),
-          isReviewed: true,
-        },
+        data: bulkUpdateData,
       });
+
+      if (input.categoryId) {
+        await Promise.all(
+          owned.map((tx) =>
+            recordCategoryFeedback(ctx.db, {
+              userId: ctx.session.user.id,
+              merchantName: tx.merchantName,
+              description: tx.description,
+              type: tx.type,
+              categoryId: input.categoryId!,
+              wasCorrection: tx.categoryId !== input.categoryId,
+            })
+          )
+        );
+      }
       return { success: true, count: input.transactionIds.length };
     }),
 

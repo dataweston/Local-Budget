@@ -71,7 +71,7 @@ function usage() {
       '',
       'Notes:',
       '  - Matches statement rows to existing Venmo income/expense transactions in DB.',
-      '  - On --apply, writes metadata.venmoStatementMatch and defaults to PERSONAL unless already OPERATING.',
+      '  - On --apply, writes metadata.venmoStatementMatch without changing accounting classification.',
     ].join('\n')
   );
 }
@@ -728,7 +728,6 @@ async function run() {
     writeFileSync(unmatchedReport, unmatchedLines.join('\n') + '\n', 'utf8');
 
     let appliedUpdates = 0;
-    let defaultedPersonal = 0;
     if (args.apply) {
       for (const m of matches) {
         if (!m.tx) continue;
@@ -758,16 +757,10 @@ async function run() {
           },
         };
 
-        const nextClassification = m.tx.classification === 'OPERATING' ? 'OPERATING' : 'PERSONAL';
-        if (nextClassification === 'PERSONAL' && m.tx.classification !== 'PERSONAL') {
-          defaultedPersonal++;
-        }
-
         await prisma.transaction.update({
           where: { id: m.tx.id },
           data: {
             metadata: nextMeta,
-            classification: nextClassification as any,
           },
         });
         appliedUpdates++;
@@ -795,8 +788,8 @@ async function run() {
         `Report: ${path.relative(process.cwd(), reportPath) || reportPath}`,
         `Unmatched report: ${path.relative(process.cwd(), unmatchedReport) || unmatchedReport}`,
         args.apply
-          ? `Applied: ${appliedUpdates} metadata updates, ${defaultedPersonal} set/defaulted to PERSONAL`
-          : 'Dry run only. Re-run with --apply to persist metadata + default PERSONAL.',
+          ? `Applied: ${appliedUpdates} metadata updates; accounting classifications preserved`
+          : 'Dry run only. Re-run with --apply to persist metadata without changing classifications.',
       ].join('\n')
     );
   } finally {

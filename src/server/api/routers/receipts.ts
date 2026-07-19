@@ -10,6 +10,7 @@ import {
   isAmazonVideoTransactionText,
 } from '@/lib/amazon-routing';
 import { getEffectiveClassification } from '@/lib/transaction-filters';
+import { getVenmoCounterparty, parseVenmoStatementDetails } from '@/lib/venmo-metadata';
 
 export const receiptsRouter = createTRPCRouter({
   // List receipts
@@ -396,6 +397,20 @@ export const receiptsRouter = createTRPCRouter({
           endDate: z.date().optional(),
           typeFilter: z.enum(['income', 'expense']).optional(),
           matchFilter: z.enum(['matched', 'unmatched']).optional(),
+          classificationFilter: z
+            .enum([
+              'UNCLASSIFIED',
+              'INCOME',
+              'COGS',
+              'OPERATING',
+              'PERSONAL',
+              'REIMBURSABLE',
+              'REIMBURSEMENT',
+            ])
+            .optional(),
+          categoryId: z.string().optional(),
+          uncategorizedOnly: z.boolean().optional(),
+          search: z.string().max(200).optional(),
           accountId: z.string().optional(),
           sortBy: z.enum(['date-desc', 'date-asc', 'amount-desc', 'amount-asc']).optional(),
         })
@@ -458,63 +473,21 @@ export const receiptsRouter = createTRPCRouter({
 
       const allData = rows.map((row) => {
         const effectiveClassification = getEffectiveClassification(row);
-        const metadata = row.metadata as Record<string, unknown> | null;
-        const venmoStatementMatchLegacy =
-          metadata &&
-          typeof metadata === 'object' &&
-          !Array.isArray(metadata) &&
-          metadata.venmoStatementMatch &&
-          typeof metadata.venmoStatementMatch === 'object'
-            ? (metadata.venmoStatementMatch as Record<string, unknown>)
-            : null;
-        const venmoStatementEntry =
-          metadata &&
-          typeof metadata === 'object' &&
-          !Array.isArray(metadata) &&
-          metadata.venmoStatementEntry &&
-          typeof metadata.venmoStatementEntry === 'object'
-            ? (metadata.venmoStatementEntry as Record<string, unknown>)
-            : null;
-        const venmoReconciliation =
-          metadata &&
-          typeof metadata === 'object' &&
-          !Array.isArray(metadata) &&
-          metadata.venmoReconciliation &&
-          typeof metadata.venmoReconciliation === 'object'
-            ? (metadata.venmoReconciliation as Record<string, unknown>)
-            : null;
-
-        const matchedBankTransactionId =
-          venmoReconciliation &&
-          typeof venmoReconciliation.matchedBankTransactionId === 'string'
-            ? venmoReconciliation.matchedBankTransactionId
-            : null;
-        const canonicalTransactionId =
-          venmoReconciliation &&
-          typeof venmoReconciliation.canonicalTransactionId === 'string'
-            ? venmoReconciliation.canonicalTransactionId
-            : null;
-        const statementType =
-          venmoStatementEntry &&
-          typeof venmoStatementEntry.type === 'string'
-            ? venmoStatementEntry.type.toLowerCase()
-            : '';
-        const isCanonicalIncomeWithoutBankCounterpart =
-          !!venmoStatementEntry &&
-          row.type === 'INCOME' &&
-          !statementType.includes('transfer');
-
-        const hasVenmoStatementMatch =
-          !!venmoStatementMatchLegacy ||
-          !!matchedBankTransactionId ||
-          !!canonicalTransactionId ||
-          isCanonicalIncomeWithoutBankCounterpart;
+        const venmoDetails = parseVenmoStatementDetails(row.metadata);
+        const accountingClassification =
+          row.classification ||
+          row.category?.defaultClassification ||
+          (row.type === 'INCOME' ? 'INCOME' : 'UNCLASSIFIED');
 
         return {
           ...row,
           effectiveClassification,
-          hasVenmoStatementMatch,
-          isVenmoStatementCanonical: !!venmoStatementEntry,
+          accountingClassification,
+          needsAccountingReview: accountingClassification === 'UNCLASSIFIED',
+          venmoDetails,
+          hasVenmoStatementMatch: venmoDetails.hasStatementData,
+          hasBankLink: venmoDetails.hasBankLink,
+          isVenmoStatementCanonical: venmoDetails.isCanonical,
         };
       });
 
@@ -522,6 +495,41 @@ export const receiptsRouter = createTRPCRouter({
       let filtered = allData;
       if (input?.accountId) {
         filtered = filtered.filter((row) => row.account.id === input.accountId);
+      }
+      if (input?.classificationFilter) {
+        filtered = filtered.filter(
+          (row) => row.accountingClassification === input.classificationFilter
+        );
+      }
+      if (input?.categoryId) {
+        filtered = filtered.filter((row) => row.categoryId === input.categoryId);
+      } else if (input?.uncategorizedOnly) {
+        filtered = filtered.filter((row) => !row.categoryId);
+      }
+      const search = input?.search?.trim().toLowerCase();
+      if (search) {
+        filtered = filtered.filter((row) => {
+          const counterparty = getVenmoCounterparty(row.venmoDetails, row.type);
+          const haystack = [
+            row.id,
+            row.description,
+            row.merchantName,
+            row.notes,
+            row.category?.name,
+            row.account.name,
+            counterparty,
+            row.venmoDetails.note,
+            row.venmoDetails.from,
+            row.venmoDetails.to,
+            row.venmoDetails.fundingSource,
+            row.venmoDetails.destination,
+            row.venmoDetails.statementId,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          return haystack.includes(search);
+        });
       }
       if (matchFilter === 'matched') {
         filtered = filtered.filter((row) => row.hasVenmoStatementMatch);
@@ -558,11 +566,31 @@ export const receiptsRouter = createTRPCRouter({
       const totalAmount = incomeAmount + expenseAmount;
 
       const businessAmount = sorted
-        .filter((row) => row.effectiveClassification !== 'PERSONAL')
-        .reduce((sum, row) => sum + Number(row.amount), 0);
+        .filter((row) =>
+          ['INCOME', 'COGS', 'OPERATING', 'REIMBURSABLE', 'REIMBURSEMENT'].includes(
+            row.accountingClassification
+          )
+        )
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
       const personalAmount = sorted
-        .filter((row) => row.effectiveClassification === 'PERSONAL')
-        .reduce((sum, row) => sum + Number(row.amount), 0);
+        .filter((row) => row.accountingClassification === 'PERSONAL')
+        .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+
+      const classificationTotals = {
+        INCOME: 0,
+        COGS: 0,
+        OPERATING: 0,
+        PERSONAL: 0,
+        REIMBURSABLE: 0,
+        REIMBURSEMENT: 0,
+        UNCLASSIFIED: 0,
+      };
+      for (const row of sorted) {
+        const key = row.accountingClassification as keyof typeof classificationTotals;
+        if (key in classificationTotals) {
+          classificationTotals[key] += Math.abs(Number(row.amount));
+        }
+      }
 
       const accountMap = new Map<string, string>();
       for (const row of allData) {
@@ -579,12 +607,19 @@ export const receiptsRouter = createTRPCRouter({
         netAmount,
         businessAmount,
         personalAmount,
-        businessCount: sorted.filter((row) => row.effectiveClassification !== 'PERSONAL').length,
-        personalCount: sorted.filter((row) => row.effectiveClassification === 'PERSONAL').length,
+        classificationTotals,
+        businessCount: sorted.filter((row) =>
+          ['INCOME', 'COGS', 'OPERATING', 'REIMBURSABLE', 'REIMBURSEMENT'].includes(
+            row.accountingClassification
+          )
+        ).length,
+        personalCount: sorted.filter((row) => row.accountingClassification === 'PERSONAL').length,
+        needsAccountingReviewCount: sorted.filter((row) => row.needsAccountingReview).length,
         incomeCount: sorted.filter((row) => row.type === 'INCOME').length,
         expenseCount: sorted.filter((row) => row.type === 'EXPENSE').length,
         matchedCount: sorted.filter((row) => row.hasVenmoStatementMatch).length,
         unmatchedCount: sorted.filter((row) => !row.hasVenmoStatementMatch).length,
+        bankLinkedCount: sorted.filter((row) => row.hasBankLink).length,
         accounts,
         pagination: {
           page,

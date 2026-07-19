@@ -29,6 +29,8 @@ import {
   ArrowDownRight,
   Store,
   ClipboardCheck,
+  TrendingUp,
+  Landmark,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -142,6 +144,18 @@ export function Header() {
               Reports
               <BarChart3 className="h-4 w-4" />
             </span>
+          </Link>
+          <Link
+            href="/margin"
+            className="text-sm font-medium text-muted-foreground transition-colors hover:text-primary"
+          >
+            Margin
+          </Link>
+          <Link
+            href="/tax"
+            className="text-sm font-medium text-muted-foreground transition-colors hover:text-primary"
+          >
+            Tax
           </Link>
           <Link
             href="/vendors"
@@ -407,6 +421,22 @@ export function Header() {
                   >
                     <BarChart3 className="h-5 w-5" />
                     <span>Reports</span>
+                  </Link>
+                  <Link
+                    href="/margin"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <TrendingUp className="h-5 w-5" />
+                    <span>Margin</span>
+                  </Link>
+                  <Link
+                    href="/tax"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent"
+                  >
+                    <Landmark className="h-5 w-5" />
+                    <span>Tax</span>
                   </Link>
                   <Link
                     href="/vendors"
