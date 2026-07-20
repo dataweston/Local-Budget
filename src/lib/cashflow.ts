@@ -2,6 +2,8 @@ import type { EffectiveClassification } from '@/lib/pnl';
 
 export const CASHFLOW_CONTRACT_VERSION = 1;
 export const CASHFLOW_METHOD_VERSION = 'cashflow-actuals-v1';
+export const CASHFLOW_CONTRACT_VERSION_V2 = 2;
+export const CASHFLOW_METHOD_VERSION_V2 = 'cashflow-actuals-v2';
 
 export type CostBucket =
   | 'INVENTORY'
@@ -40,7 +42,17 @@ export type CashflowTransactionInput = {
   merchantName?: string | null;
   classification?: string | null;
   category?: CategoryRef;
+  incurredBy?: { name?: string | null } | null;
   splits: CashflowSplitInput[];
+};
+
+// PERSONAL outflows are owner/founder draws in these books. Attribution comes
+// only from an explicitly linked incurredBy entity — never inferred, so
+// `unattributedCents` stays truthful for the evaluation pipeline.
+export type FounderDraws = {
+  totalCents: number;
+  byFounder: Record<string, number>;
+  unattributedCents: number;
 };
 
 export type CashflowMonth = {
@@ -56,6 +68,10 @@ export type CashflowMonth = {
   transactionCount: number;
   splitLineCount: number;
   complete: boolean;
+  // v2 additions — projected away for contract-v1 responses.
+  founderDraws: FounderDraws;
+  pendingTransactionCount: number;
+  isCompleteMonth: boolean;
 };
 
 const LABOR_CATEGORY = /(?:^|\b)(labor|payroll|wages?|contractors?|staff)(?:\b|$)/i;
@@ -141,6 +157,9 @@ function blankMonth(month: string, complete: boolean): CashflowMonth {
     transactionCount: 0,
     splitLineCount: 0,
     complete,
+    founderDraws: { totalCents: 0, byFounder: {}, unattributedCents: 0 },
+    pendingTransactionCount: 0,
+    isCompleteMonth: false,
   };
 }
 
@@ -149,6 +168,8 @@ export function buildCashflowMonths(options: {
   from: string;
   toExclusive: string;
   sourceMaxDate: string | null;
+  // Dates of PENDING imports in range; a month with any is not complete.
+  pendingDates?: Date[];
 }) {
   const months = new Map<string, CashflowMonth>();
   let cursor = `${options.from.slice(0, 7)}-01`;
@@ -203,6 +224,16 @@ export function buildCashflowMonths(options: {
         month.reimbursableCents += cents;
       } else if (classification === 'PERSONAL') {
         month.personalExcludedCents += cents;
+        if (tx.type === 'EXPENSE') {
+          month.founderDraws.totalCents += cents;
+          const founder = tx.incurredBy?.name?.trim();
+          if (founder) {
+            month.founderDraws.byFounder[founder] =
+              (month.founderDraws.byFounder[founder] ?? 0) + cents;
+          } else {
+            month.founderDraws.unattributedCents += cents;
+          }
+        }
       } else if (classification === 'TRANSFER' || tx.type === 'TRANSFER') {
         month.transferExcludedCents += cents;
       } else if (costBucket === 'OPERATING') {
@@ -212,6 +243,14 @@ export function buildCashflowMonths(options: {
         unclassifiedTransactions.add(tx.id);
       }
     }
+  }
+
+  for (const pendingDate of options.pendingDates ?? []) {
+    const month = months.get(monthKey(pendingDate));
+    if (month) month.pendingTransactionCount += 1;
+  }
+  for (const month of Array.from(months.values())) {
+    month.isCompleteMonth = month.complete && month.pendingTransactionCount === 0;
   }
 
   return {

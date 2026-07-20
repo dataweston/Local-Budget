@@ -190,12 +190,19 @@ export function AddTransactionModal({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="merchantName">Merchant Name</Label>
+              <Label htmlFor="merchantName">
+                {type === "INCOME" ? "Payer (who paid you) *" : "Merchant Name"}
+              </Label>
               <Input
                 id="merchantName"
                 value={merchantName}
                 onChange={(e) => setMerchantName(e.target.value)}
-                placeholder="e.g., Amazon, Starbucks"
+                placeholder={
+                  type === "INCOME"
+                    ? "e.g., Farmers market, catering client, Zelle sender"
+                    : "e.g., Amazon, Starbucks"
+                }
+                required={type === "INCOME"}
               />
             </div>
 

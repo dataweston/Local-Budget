@@ -68,4 +68,57 @@ describe('cashflow actuals', () => {
     expect(result.splitMismatchCount).toBe(1);
     expect(result.unclassifiedTransactionCount).toBe(1);
   });
+
+  it('buckets PERSONAL outflows as founder draws, attributed only via incurredBy', () => {
+    const result = buildCashflowMonths({
+      from: '2026-01-01',
+      toExclusive: '2026-02-01',
+      sourceMaxDate: '2026-02-03',
+      transactions: [
+        {
+          id: 'attributed', date: new Date('2026-01-05T00:00:00Z'), amount: 120, type: 'EXPENSE',
+          status: 'POSTED', classification: 'PERSONAL', category: null,
+          incurredBy: { name: 'Weston' }, splits: [],
+        },
+        {
+          id: 'unattributed', date: new Date('2026-01-06T00:00:00Z'), amount: 80, type: 'EXPENSE',
+          status: 'POSTED', classification: 'PERSONAL', category: null, splits: [],
+        },
+        {
+          id: 'contribution', date: new Date('2026-01-07T00:00:00Z'), amount: 500, type: 'INCOME',
+          status: 'POSTED', classification: 'PERSONAL', category: null, splits: [],
+        },
+      ],
+    });
+
+    expect(result.months[0].founderDraws).toEqual({
+      totalCents: 20000,
+      byFounder: { Weston: 12000 },
+      unattributedCents: 8000,
+    });
+    // Personal money *in* is excluded from the draw bucket but still excluded from P&L.
+    expect(result.months[0].personalExcludedCents).toBe(70000);
+  });
+
+  it('marks isCompleteMonth false when pending imports exist, even if posted data covers the month', () => {
+    const base = {
+      from: '2026-01-01',
+      toExclusive: '2026-03-01',
+      sourceMaxDate: '2026-03-05',
+      transactions: [],
+    };
+    const withPending = buildCashflowMonths({
+      ...base,
+      pendingDates: [new Date('2026-01-15T00:00:00Z')],
+    });
+    expect(withPending.months[0]).toMatchObject({
+      complete: true,
+      pendingTransactionCount: 1,
+      isCompleteMonth: false,
+    });
+    expect(withPending.months[1]).toMatchObject({ isCompleteMonth: true });
+
+    const withoutPending = buildCashflowMonths(base);
+    expect(withoutPending.months[0].isCompleteMonth).toBe(true);
+  });
 });

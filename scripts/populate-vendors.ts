@@ -46,10 +46,16 @@ async function main() {
   const classVotes = new Map<string, Map<string, number>>();
   let linked = 0;
   let alreadyLinked = 0;
+  let processed = 0;
 
   for (const tx of transactions) {
     if (!APPLY) {
       continue;
+    }
+
+    processed++;
+    if (processed % 500 === 0) {
+      console.log(`  ${processed}/${transactions.length} processed (${linked} relinked)`);
     }
 
     const vendorId = await resolveVendorId(db, tx.merchantName, cache);
@@ -92,9 +98,17 @@ async function main() {
     classified++;
   }
 
+  // Relinking under improved normalization strands the old junk vendors
+  // ("Debit Card Costco Whse #0652") with no references — drop them so
+  // /v1/vendors only serves canonical rows.
+  const orphans = await db.vendor.deleteMany({
+    where: { transactions: { none: {} }, lineItems: { none: {} } },
+  });
+
   const vendorCount = await db.vendor.count();
   console.log(
     `Linked ${linked} transactions (${alreadyLinked} already linked); ` +
+      `deleted ${orphans.count} orphaned vendors; ` +
       `vendors table now has ${vendorCount} rows; ` +
       `set defaultClassification on ${classified} vendors.`
   );

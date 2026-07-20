@@ -76,6 +76,52 @@ describe('resolveVendorId', () => {
     expect(db.rows).toHaveLength(1);
   });
 
+  it('collapses bank channel prefixes and store numbers (live-DB Costco split)', async () => {
+    const db = makeFakeDb();
+    const cache = createVendorResolverCache();
+    const a = await resolveVendorId(db as any, 'Costco', cache);
+    const b = await resolveVendorId(db as any, 'Debit Card COSTCO WHSE #0652', cache);
+    const c = await resolveVendorId(db as any, 'Debit Card COSTCO WHSE #0377', cache);
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    expect(db.rows).toHaveLength(1);
+    expect(db.rows[0].aliases).toContain('Debit Card COSTCO WHSE #0652');
+  });
+
+  it('merges channel-prefixed truncations (Eastside debit-card variant)', async () => {
+    const db = makeFakeDb();
+    const cache = createVendorResolverCache();
+    const full = await resolveVendorId(db as any, 'Eastside Food Cooperative', cache);
+    const debit = await resolveVendorId(db as any, 'Debit Card EASTSIDE FOOD C', cache);
+    expect(debit).toBe(full);
+  });
+
+  it('merges bare trailing store numbers (Chipotle 3529 vs 5278)', async () => {
+    const db = makeFakeDb();
+    const cache = createVendorResolverCache();
+    const a = await resolveVendorId(db as any, 'Debit Card CHIPOTLE 3529', cache);
+    const b = await resolveVendorId(db as any, 'Debit Card CHIPOTLE 5278', cache);
+    expect(b).toBe(a);
+    expect(db.rows).toHaveLength(1);
+  });
+
+  it('maps per-charge Facebook ad descriptors onto one vendor', async () => {
+    const db = makeFakeDb();
+    const cache = createVendorResolverCache();
+    const a = await resolveVendorId(db as any, 'Debit Card FACEBK *2T6BFTQN22', cache);
+    const b = await resolveVendorId(db as any, 'Debit Card FACEBK *3EVQ5UCN22', cache);
+    expect(b).toBe(a);
+    expect(db.rows).toHaveLength(1);
+    expect(db.rows[0].name).toBe('Facebook');
+  });
+
+  it('strips processor tags (SQ */TST*) down to the seller', async () => {
+    const db = makeFakeDb();
+    const cache = createVendorResolverCache();
+    await resolveVendorId(db as any, 'Debit Card SQ *DOGWOOD COFFEE NOR', cache);
+    expect(db.rows[0].name).toBe('Dogwood Coffee Nor');
+  });
+
   it('keeps genuinely different vendors separate', async () => {
     const db = makeFakeDb();
     const cache = createVendorResolverCache();

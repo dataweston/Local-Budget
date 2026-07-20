@@ -30,18 +30,24 @@ Square income rows now carry a resolved customer: `merchantName` is set to the
 customer/company name (or buyer email), `customerName`/`customerEmail` expose the
 resolved [Square] `SquareCustomer`, and `squareCustomerId` links the row. Guest /
 quick-sale payments have no customer and fall back to a channel label
-(`Square Invoice` / `Square Online` / `Square Payment`). Non-Square income
-(Zelle, farmers market, catering) still needs a payer captured in Local Budget —
-tracked separately.
+(`Square Invoice` / `Square Online` / `Square Payment`). For non-Square income
+(Zelle, farmers market, catering) the manual entry form now **requires** a payer
+on INCOME transactions (stored in `merchantName`, schema-enforced) — new blank
+INCOME rows can no longer be created by hand. Historical blank rows (~274 as of
+2026-07-20) still need payers backfilled by the owner.
 
 ### Stable vendor identity (resolves the brain's bank-truncation splits)
 
-> **⚠️ NOT LIVE YET (verified 2026-07-18):** the hosted DB has 0 `vendors` rows
-> and no `transactions.vendorId` column — the migrations and
-> `npm run vendors:populate:apply` below have not been run against it. Until
-> they are, `/v1/transactions` returns `vendorId: null` and `/v1/vendors`
-> returns an empty list. **Do not build consumers against `vendorId` until this
-> caveat is removed.** Keep resolving by cleaned `merchantName` for now.
+> **⚠️ PARTIALLY LIVE — re-run required (verified 2026-07-20):** the vendor
+> migrations are applied and the hosted DB has vendors rows with ~75% of
+> transactions linked, but the first backfill ran with a normalization bug that
+> split bank descriptors into junk per-store vendors ("Debit Card Costco Whse
+> #0652" vs "#0377", per-charge Facebook ad descriptors, `SQ *`/`TST*`
+> processor tags). The normalizer is fixed as of 2026-07-20; the owner must
+> re-run `npm run vendors:populate:apply` (now also deletes the orphaned junk
+> vendors) and verify with `scripts/_tmp-vendor-verify.ts`. **Until that re-run
+> is verified, resolve by cleaned `merchantName`, not `vendorId`.** Delete this
+> caveat once the spot checks come back clean.
 
 Each transaction now resolves to a canonical `Vendor` row and exposes a stable
 `vendorId` (+ `vendorName`) on `/v1/transactions`. The resolver collapses bank
@@ -141,6 +147,43 @@ the deployment origin as `LOCAL_BUDGET_API_URL`.
   newest active Plaid-backed account sync. A sync older than 48 hours warns.
 - A month is complete only when the requested range covers the calendar month
   and `sourceMaxDate` reaches that month's final date.
+
+### Contract v2 (`?contract=2`) — founder draws and complete-month flag
+
+`GET /api/integration/v1/cashflow-actuals?from=…&to=…&grain=month&contract=2`
+returns `contractVersion: 2` / `methodVersion: "cashflow-actuals-v2"` and adds
+three fields to every month row; omitting `contract` (or `contract=1`) returns
+the v1 shape unchanged.
+
+- `founderDraws` — `{ totalCents, byFounder, unattributedCents }`. Definition:
+  PERSONAL-classified **EXPENSE outflows** (owner draws). Attribution comes only
+  from an explicitly linked `incurredBy` entity, keyed by entity name in
+  `byFounder`; everything else lands in `unattributedCents`. Nothing is
+  inferred — as of 2026-07-20 all historical draws are unattributed because no
+  transactions carry an `incurredById`. PERSONAL money *in* (owner
+  contributions) stays in `personalExcludedCents` but never enters
+  `founderDraws`.
+- `pendingTransactionCount` — pending imports dated inside that month.
+- `isCompleteMonth` — true only when the v1 `complete` condition holds **and**
+  the month has zero pending imports. Line models must consume only months with
+  `isCompleteMonth: true`; the flag is authoritative, don't re-derive it.
+
+## Sanitized monthly snapshot (for secretless consumers)
+
+`npm run snapshot:export -- --month=YYYY-MM [--out=path.json]` emits an
+**aggregates-only** JSON snapshot of one closed month (defaults to the last
+complete calendar month; refuses incomplete months unless `--force`, and then
+carries `isCompleteMonth: false` honestly). It exists so chat sessions and the
+le-economist evaluation — which cannot hold `INTEGRATION_API_TOKEN` or reach
+the DB — can consume actuals from a committed file or a one-command owner
+export.
+
+Hard sanitization rules: integer cents, aggregates only — no transaction rows,
+no customer names/emails/Square customer IDs, no account numbers or bank
+descriptors. Fields deliberately unpublished are listed in `omittedFields` so a
+consumer can distinguish a deliberate gap from missing data. The snapshot
+carries `contractVersion`, `methodVersion`, `sourceMaxDate`,
+`latestBankSyncAt`, the v2 totals/founderDraws buckets, and quality counters.
 
 The API does not currently expose recurring Square invoice series. Local
 Budget stores completed Square payments and order enrichment, but it neither

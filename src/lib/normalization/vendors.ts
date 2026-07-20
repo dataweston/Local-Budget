@@ -12,6 +12,7 @@ export const VENDOR_ALIASES: Record<string, string[]> = {
     'amzn mktp',
     'amzn digital',
     'amazon marketplace',
+    'amazon retail',
     'amazon prime',
     'aws',
   ],
@@ -59,6 +60,11 @@ export const VENDOR_ALIASES: Record<string, string[]> = {
   'Costco': [
     'costco wholesale',
     'costco warehouse',
+    'costco whse',
+  ],
+  'Facebook': [
+    'facebk',
+    'facebook ads',
   ],
   'Uber': [
     'uber trip',
@@ -86,52 +92,80 @@ export const VENDOR_ALIASES: Record<string, string[]> = {
   ],
 };
 
+// Payment-channel prefixes banks prepend to the real merchant ("Debit Card
+// COSTCO WHSE #0652", "Withdrawal to Venmo"). Strip repeatedly: descriptors can
+// stack ("POS Debit Card ...").
+const CHANNEL_PREFIX =
+  /^(?:debit card|check card|checkcard|pos(?: debit| purchase)?|purchase|online payment|recurring payment|payment to|withdrawal to|deposit from|ach(?: debit| credit)?|electronic withdrawal)\s+/i;
+
+// Payment-processor tags in card descriptors: "SQ *DOGWOOD COFFEE",
+// "TST*ROSALIA", "PAYPAL *PATREON", "VENMO*OLSEN C", "CPI*CPI*THEISEN".
+const PROCESSOR_TAG = /^(?:sq|tst|dd|dnh|cbt|cpi|pp|paypal|venmo|py)\s*\*+\s*/i;
+
+function aliasMatches(normalized: string, alias: string): boolean {
+  const escaped = alias.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`).test(normalized);
+}
+
+function matchAlias(normalized: string): string | null {
+  for (const [canonical, aliases] of Object.entries(VENDOR_ALIASES)) {
+    if (normalized === canonical.toLowerCase()) return canonical;
+    for (const alias of aliases) {
+      if (aliasMatches(normalized, alias)) return canonical;
+    }
+  }
+  return null;
+}
+
 /**
  * Normalize a vendor name to its canonical form
  */
 export function normalizeVendorName(rawName: string): string {
   if (!rawName) return '';
 
-  // Remove common prefixes/suffixes
-  let normalized = rawName
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, ' ')
-    // Remove common patterns
-    .replace(/\s*#\d+/g, '') // Remove store numbers
-    .replace(/\s*-\s*\d+/g, '') // Remove location numbers
-    .replace(/\s+store$/i, '')
-    .replace(/\s+inc\.?$/i, '')
-    .replace(/\s+llc\.?$/i, '')
-    .replace(/\s+ltd\.?$/i, '')
-    .replace(/\s+corp\.?$/i, '')
-    .replace(/\s+co\.?$/i, '')
+  let normalized = rawName.toLowerCase().trim().replace(/\s+/g, ' ');
+
+  // Strip payment-channel prefixes before anything else, so the alias map and
+  // fuzzy matching see the merchant, not the channel.
+  let prev: string;
+  do {
+    prev = normalized;
+    normalized = normalized.replace(CHANNEL_PREFIX, '');
+  } while (normalized !== prev);
+
+  // Alias map first: processor descriptors like "FACEBK *2T6BFTQN22" carry a
+  // per-charge reference where the merchant would be, so match before stripping.
+  const aliasHit = matchAlias(normalized);
+  if (aliasHit) return aliasHit;
+
+  do {
+    prev = normalized;
+    normalized = normalized.replace(PROCESSOR_TAG, '');
+  } while (normalized !== prev);
+
+  normalized = normalized
+    .replace(/\s*#\d+/g, '') // "#0652" store numbers
+    .replace(/\s*-\s*\d+/g, '') // "- 1404" location numbers
+    .replace(/(?:\s+\d{2,})+$/g, '') // bare trailing store/reference numbers ("CHIPOTLE 3529")
+    .replace(/\s+store$/, '')
+    .replace(/\s+inc\.?$/, '')
+    .replace(/\s+llc\.?$/, '')
+    .replace(/\s+ltd\.?$/, '')
+    .replace(/\s+corp\.?$/, '')
+    .replace(/\s+co\.?$/, '')
     .trim();
 
-  // Check against known aliases
-  for (const [canonical, aliases] of Object.entries(VENDOR_ALIASES)) {
-    const canonicalLower = canonical.toLowerCase();
-    
-    // Check if normalized name matches canonical
-    if (normalized === canonicalLower) {
-      return canonical;
-    }
+  if (!normalized) return '';
 
-    // Check if normalized name matches any alias
-    for (const alias of aliases) {
-      if (normalized.includes(alias.toLowerCase())) {
-        return canonical;
-      }
-    }
-  }
+  const cleanedHit = matchAlias(normalized);
+  if (cleanedHit) return cleanedHit;
 
-  // Return cleaned name with proper capitalization
-  return rawName
+  // Title-case the *normalized* text — returning the raw name here is what used
+  // to split "Debit Card COSTCO WHSE #0377" / "#0652" into per-store vendors.
+  return normalized
     .split(' ')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 /**

@@ -31,6 +31,7 @@
     "classify:nulls:apply": "tsx scripts/classify-null-bucket.ts --apply",
     "transfers:reconcile": "tsx scripts/reconcile-transfers.ts",
     "transfers:reconcile:apply": "tsx scripts/reconcile-transfers.ts --apply",
+    "snapshot:export": "tsx scripts/export-month-snapshot.ts",
     "test": "vitest run"
   },
   "dependencies": {

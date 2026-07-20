@@ -72,7 +72,7 @@ export const classificationTypeEnum = z.enum([
   'REIMBURSEMENT',
 ]);
 
-export const createTransactionSchema = z.object({
+const createTransactionBaseSchema = z.object({
   accountId: z.string(),
   amount: z.number(),
   type: transactionTypeEnum,
@@ -87,7 +87,17 @@ export const createTransactionSchema = z.object({
   notes: z.string().max(1000).optional(),
 });
 
-export const updateTransactionSchema = createTransactionSchema.partial().extend({
+// Manual income without a payer lands in the integration feed's Unallocated
+// bucket (blank-INCOME gap) — require the counterparty at entry.
+export const createTransactionSchema = createTransactionBaseSchema.refine(
+  (input) => input.type !== 'INCOME' || !!input.merchantName?.trim(),
+  {
+    message: 'Income entries must name the payer (who paid you)',
+    path: ['merchantName'],
+  }
+);
+
+export const updateTransactionSchema = createTransactionBaseSchema.partial().extend({
   categoryId: z.string().nullable().optional(),
   classification: classificationTypeEnum.nullable().optional(),
   isReviewed: z.boolean().optional(),
