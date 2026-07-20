@@ -37,6 +37,7 @@ import { UploadReceiptModal } from './UploadReceiptModal';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import {
   getVenmoCounterparty,
+  getVenmoMemo,
   parseVenmoStatementDetails,
 } from '@/lib/venmo-metadata';
 import {
@@ -960,12 +961,12 @@ export function ReceiptsList() {
                   onValueChange={(v) => setVenmoMatchFilter(v as VenmoMatchFilterValue)}
                 >
                   <SelectTrigger className="w-[140px] h-8 text-xs">
-                    <SelectValue placeholder="Match status" />
+                    <SelectValue placeholder="Data detail" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All matches</SelectItem>
-                    <SelectItem value="matched">Matched</SelectItem>
-                    <SelectItem value="unmatched">Unmatched</SelectItem>
+                    <SelectItem value="all">All data sources</SelectItem>
+                    <SelectItem value="matched">Detail available</SelectItem>
+                    <SelectItem value="unmatched">Bank-only</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -1038,19 +1039,39 @@ export function ReceiptsList() {
                 <div className="rounded-md border p-2">
                   <p className="text-xs text-muted-foreground">Statement detail</p>
                   <p className="text-lg font-semibold text-sky-700">
-                    {venmoSpending?.matchedCount ?? 0}
+                    {venmoSpending?.statementDetailCount ?? 0}
                   </p>
                 </div>
                 <div className="rounded-md border p-2">
-                  <p className="text-xs text-muted-foreground">Bank linked</p>
-                  <p className="text-lg font-semibold">
-                    {venmoSpending?.bankLinkedCount ?? 0}
+                  <p className="text-xs text-muted-foreground">Bank-only</p>
+                  <p className="text-lg font-semibold text-amber-700">
+                    {venmoSpending?.bankOnlyCount ?? 0}
                   </p>
                 </div>
               </div>
             </div>
           </CardHeader>
           <CardContent>
+            {!!venmoSpending?.bankOnlyCount && (
+              <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <p className="font-medium">
+                  {venmoSpending.bankOnlyCount} Venmo transaction
+                  {venmoSpending.bankOnlyCount === 1 ? '' : 's'} contain only bank data.
+                </p>
+                <p className="mt-1 text-xs text-amber-800">
+                  Chase supplied only “Venmo,” so the recipient and memo cannot be inferred.
+                  {venmoSpending.latestStatementDate
+                    ? ` Available Venmo statement detail currently ends ${formatDate(venmoSpending.latestStatementDate)}.`
+                    : ''}
+                  {' '}
+                  <Link href="/accounts" className="font-medium underline underline-offset-2">
+                    Run an Accounts Full Sync
+                  </Link>{' '}
+                  to capture any detail Plaid provides; import a newer Venmo statement for the
+                  remaining rows.
+                </p>
+              </div>
+            )}
             {isVenmoSpendingLoading ? (
               <div className="space-y-2">
                 {[...Array(4)].map((_, i) => (
@@ -1130,8 +1151,12 @@ export function ReceiptsList() {
                 {venmoSpending.data.map((tx) => {
                   const meta = tx.venmoDetails;
                   const isIncome = tx.type === 'INCOME';
+                  const memo = getVenmoMemo(meta);
                   const counterparty =
-                    getVenmoCounterparty(meta, tx.type) || tx.merchantName || 'Unknown counterparty';
+                    getVenmoCounterparty(meta, tx.type) ||
+                    (tx.merchantName && !/^venmo$/i.test(tx.merchantName)
+                      ? tx.merchantName
+                      : 'Venmo payment');
                   return (
                     <div
                       key={tx.id}
@@ -1150,22 +1175,34 @@ export function ReceiptsList() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 min-w-0">
                           <p className="text-sm font-semibold truncate">{counterparty}</p>
-                          {meta.note && (
+                          {memo && (
                             <Badge variant="outline" className="text-[10px] shrink-0">
-                              Venmo note
+                              Payment memo
                             </Badge>
                           )}
                         </div>
-                        {meta.note && <p className="text-sm truncate mt-0.5">{meta.note}</p>}
+                        {memo && <p className="text-sm truncate mt-0.5">{memo}</p>}
+                        {meta.dataSource === 'bank-only' && (
+                          <p className="text-xs text-amber-700 mt-0.5">
+                            Bank-only record — recipient and memo were not supplied.
+                          </p>
+                        )}
                         <p className="text-xs text-muted-foreground truncate">
                           {formatDate(tx.date)} - {tx.account.name}
                           {meta.statementId ? ` - Statement ${meta.statementId}` : ''}
                         </p>
-                        {(meta.from || meta.to || meta.fundingSource || meta.destination) && (
+                        {(meta.from ||
+                          meta.to ||
+                          meta.fundingSource ||
+                          meta.destination ||
+                          meta.plaidOriginalDescription) && (
                           <p className="text-xs text-muted-foreground truncate mt-0.5">
-                            {meta.from && meta.to ? `${meta.from} → ${meta.to}` : meta.from || meta.to}
-                            {meta.fundingSource ? ` · Source: ${meta.fundingSource}` : ''}
-                            {meta.destination ? ` · Destination: ${meta.destination}` : ''}
+                            {meta.from && meta.to ? `${meta.from} to ${meta.to}` : meta.from || meta.to}
+                            {meta.fundingSource ? ` / Source: ${meta.fundingSource}` : ''}
+                            {meta.destination ? ` / Destination: ${meta.destination}` : ''}
+                            {meta.plaidOriginalDescription
+                              ? ` / Bank text: ${meta.plaidOriginalDescription}`
+                              : ''}
                           </p>
                         )}
                       </div>
@@ -1251,6 +1288,14 @@ export function ReceiptsList() {
                       <div className="flex items-center gap-2 justify-end">
                         {meta.hasStatementData && (
                           <Badge variant="outline" className="text-[10px]">Statement</Badge>
+                        )}
+                        {meta.dataSource === 'plaid' && (
+                          <Badge variant="outline" className="text-[10px]">Plaid detail</Badge>
+                        )}
+                        {meta.dataSource === 'bank-only' && (
+                          <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-800">
+                            Bank-only
+                          </Badge>
                         )}
                         {meta.hasBankLink && (
                           <Badge variant="outline" className="text-[10px]">Bank linked</Badge>
@@ -1617,8 +1662,11 @@ export function ReceiptsList() {
                   (selectedVenmoTx.type === 'INCOME' ? 'INCOME' : 'UNCLASSIFIED');
                 const counterparty =
                   getVenmoCounterparty(meta, selectedVenmoTx.type) ||
-                  selectedVenmoTx.merchantName ||
-                  'Unknown counterparty';
+                  (selectedVenmoTx.merchantName &&
+                  !/^venmo$/i.test(selectedVenmoTx.merchantName)
+                    ? selectedVenmoTx.merchantName
+                    : 'Venmo payment');
+                const memo = getVenmoMemo(meta);
                 return (
                   <div className="space-y-4">
                     <div className="grid gap-3 sm:grid-cols-2 rounded-md border p-3 bg-muted/20">
@@ -1691,8 +1739,8 @@ export function ReceiptsList() {
                         <p>{counterparty}</p>
                       </div>
                       <div>
-                        <p className="text-muted-foreground">Statement / Bank Link</p>
-                        <p>{meta.hasStatementData ? 'Yes' : 'No'} / {meta.hasBankLink ? 'Yes' : 'No'}</p>
+                        <p className="text-muted-foreground">Data Source / Bank Link</p>
+                        <p>{meta.dataSource} / {meta.hasBankLink ? 'Yes' : 'No'}</p>
                       </div>
                     </div>
 
@@ -1749,10 +1797,10 @@ export function ReceiptsList() {
                             </p>
                           </div>
                         </div>
-                        {meta.note && (
+                        {memo && (
                           <div>
                             <p className="text-muted-foreground">Note</p>
-                            <p>{meta.note}</p>
+                            <p>{memo}</p>
                           </div>
                         )}
                         {(meta.confidence || meta.matchSource || meta.reconciliationReason) && (
@@ -1773,9 +1821,18 @@ export function ReceiptsList() {
                         )}
                       </div>
                     ) : (
-                      <p className="text-sm text-muted-foreground">
-                        No ingested Venmo statement details are attached to this transaction.
-                      </p>
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm">
+                        <p className="font-medium text-amber-950">
+                          {meta.hasPlaidDetail
+                            ? 'Plaid detail is available, but no Venmo statement is attached.'
+                            : 'This is a bank-only Venmo transaction.'}
+                        </p>
+                        <p className="mt-1 text-xs text-amber-800">
+                          {meta.hasPlaidDetail
+                            ? meta.plaidOriginalDescription || 'Review the Plaid-derived fields above.'
+                            : 'The bank supplied no recipient or memo. A matching Venmo statement export is required to recover them.'}
+                        </p>
+                      </div>
                     )}
 
                     <div className="flex items-center gap-2">

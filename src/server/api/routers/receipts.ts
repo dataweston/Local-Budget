@@ -485,6 +485,7 @@ export const receiptsRouter = createTRPCRouter({
           accountingClassification,
           needsAccountingReview: accountingClassification === 'UNCLASSIFIED',
           venmoDetails,
+          hasVenmoDetail: venmoDetails.dataSource !== 'bank-only',
           hasVenmoStatementMatch: venmoDetails.hasStatementData,
           hasBankLink: venmoDetails.hasBankLink,
           isVenmoStatementCanonical: venmoDetails.isCanonical,
@@ -532,9 +533,9 @@ export const receiptsRouter = createTRPCRouter({
         });
       }
       if (matchFilter === 'matched') {
-        filtered = filtered.filter((row) => row.hasVenmoStatementMatch);
+        filtered = filtered.filter((row) => row.hasVenmoDetail);
       } else if (matchFilter === 'unmatched') {
-        filtered = filtered.filter((row) => !row.hasVenmoStatementMatch);
+        filtered = filtered.filter((row) => !row.hasVenmoDetail);
       }
 
       const sortBy = input?.sortBy ?? 'date-desc';
@@ -597,6 +598,15 @@ export const receiptsRouter = createTRPCRouter({
         accountMap.set(row.account.id, row.account.name);
       }
       const accounts = Array.from(accountMap, ([id, name]) => ({ id, name }));
+      const statementRows = sorted.filter((row) => row.venmoDetails.hasStatementData);
+      const plaidDetailRows = sorted.filter(
+        (row) => !row.venmoDetails.hasStatementData && row.venmoDetails.hasPlaidDetail
+      );
+      const bankOnlyRows = sorted.filter((row) => row.venmoDetails.dataSource === 'bank-only');
+      const latestStatementDate = statementRows.reduce<Date | null>(
+        (latest, row) => (!latest || row.date > latest ? row.date : latest),
+        null
+      );
 
       return {
         data,
@@ -617,8 +627,15 @@ export const receiptsRouter = createTRPCRouter({
         needsAccountingReviewCount: sorted.filter((row) => row.needsAccountingReview).length,
         incomeCount: sorted.filter((row) => row.type === 'INCOME').length,
         expenseCount: sorted.filter((row) => row.type === 'EXPENSE').length,
-        matchedCount: sorted.filter((row) => row.hasVenmoStatementMatch).length,
-        unmatchedCount: sorted.filter((row) => !row.hasVenmoStatementMatch).length,
+        matchedCount: sorted.filter((row) => row.hasVenmoDetail).length,
+        unmatchedCount: bankOnlyRows.length,
+        statementDetailCount: statementRows.length,
+        plaidDetailCount: plaidDetailRows.length,
+        bankOnlyCount: bankOnlyRows.length,
+        latestStatementDate,
+        bankOnlyYears: Array.from(
+          new Set(bankOnlyRows.map((row) => row.date.getFullYear()))
+        ).sort((a, b) => b - a),
         bankLinkedCount: sorted.filter((row) => row.hasBankLink).length,
         accounts,
         pagination: {

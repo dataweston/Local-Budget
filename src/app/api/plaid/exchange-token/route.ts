@@ -2,7 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { exchangePublicToken, getAccountBalances, getInstitution, getAllTransactions, syncTransactions, mapPlaidTransaction } from '@/lib/plaid';
+import {
+  exchangePublicToken,
+  getAccountBalances,
+  getInstitution,
+  getAllTransactions,
+  syncTransactions,
+  mapPlaidTransaction,
+  mergePlaidTransactionMetadata,
+} from '@/lib/plaid';
 import { getVenmoBankRouting } from '@/lib/venmo-routing';
 
 export async function POST(request: NextRequest) {
@@ -155,6 +163,13 @@ export async function POST(request: NextRequest) {
               merchantName: mappedTx.merchantName,
               externalId: mappedTx.transactionId,
               isReviewed: false,
+              metadata: mergePlaidTransactionMetadata(
+                mappedTx,
+                undefined,
+                venmoRouting
+                  ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
+                  : undefined
+              ),
               ...(venmoRouting ? { classification: venmoRouting.classification } : {}),
             },
           });

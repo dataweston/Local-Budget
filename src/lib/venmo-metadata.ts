@@ -19,9 +19,16 @@ export type VenmoStatementDetails = {
   matchedBankTransactionId?: string;
   canonicalTransactionId?: string;
   reconciliationReason?: string;
+  plaidCounterparty?: string;
+  plaidPayer?: string;
+  plaidPayee?: string;
+  plaidMemo?: string;
+  plaidOriginalDescription?: string;
   hasStatementData: boolean;
+  hasPlaidDetail: boolean;
   hasBankLink: boolean;
   isCanonical: boolean;
+  dataSource: 'statement' | 'plaid' | 'bank-only';
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -52,10 +59,30 @@ export function parseVenmoStatementDetails(metadata: unknown): VenmoStatementDet
   const canonical = record(root?.venmoStatementEntry);
   const legacyMatch = record(root?.venmoStatementMatch);
   const reconciliation = record(root?.venmoReconciliation);
+  const plaidTransaction = record(root?.plaidTransaction);
+  const paymentMeta = record(plaidTransaction?.paymentMeta);
+  const counterparties = Array.isArray(plaidTransaction?.counterparties)
+    ? plaidTransaction.counterparties.map(record).filter(Boolean)
+    : [];
   const statement = canonical || legacyMatch ? { ...canonical, ...legacyMatch } : null;
 
   const matchedBankTransactionId = stringValue(reconciliation?.matchedBankTransactionId);
   const canonicalTransactionId = stringValue(reconciliation?.canonicalTransactionId);
+  const plaidCounterparty = counterparties
+    .map((counterparty) => stringValue(counterparty?.name))
+    .find((name) => name && !/^venmo(?:\s|$)/i.test(name));
+  const plaidPayer = stringValue(paymentMeta?.payer);
+  const plaidPayee = stringValue(paymentMeta?.payee);
+  const plaidMemo = stringValue(paymentMeta?.reason);
+  const plaidOriginalDescription = stringValue(plaidTransaction?.originalDescription);
+  const hasStatementData = !!statement;
+  const hasPlaidDetail = !!(
+    plaidCounterparty ||
+    plaidMemo ||
+    plaidPayer ||
+    plaidPayee ||
+    plaidOriginalDescription
+  );
 
   return {
     statementId: stringValue(statement?.statementId) || stringValue(reconciliation?.statementId),
@@ -79,15 +106,39 @@ export function parseVenmoStatementDetails(metadata: unknown): VenmoStatementDet
     matchedBankTransactionId,
     canonicalTransactionId,
     reconciliationReason: stringValue(reconciliation?.reason),
-    hasStatementData: !!statement,
+    plaidCounterparty,
+    plaidPayer,
+    plaidPayee,
+    plaidMemo,
+    plaidOriginalDescription,
+    hasStatementData,
+    hasPlaidDetail,
     hasBankLink: !!legacyMatch || !!matchedBankTransactionId || !!canonicalTransactionId,
     isCanonical: !!canonical,
+    dataSource: hasStatementData ? 'statement' : hasPlaidDetail ? 'plaid' : 'bank-only',
   };
 }
 
 export function getVenmoCounterparty(
-  details: Pick<VenmoStatementDetails, 'from' | 'to'>,
+  details: Pick<
+    VenmoStatementDetails,
+    'from' | 'to' | 'plaidCounterparty' | 'plaidPayer' | 'plaidPayee'
+  >,
   transactionType: string
 ): string | undefined {
-  return transactionType === 'INCOME' ? details.from || details.to : details.to || details.from;
+  return transactionType === 'INCOME'
+    ? details.from ||
+        details.to ||
+        details.plaidPayer ||
+        details.plaidCounterparty ||
+        details.plaidPayee
+    : details.to ||
+        details.from ||
+        details.plaidPayee ||
+        details.plaidCounterparty ||
+        details.plaidPayer;
+}
+
+export function getVenmoMemo(details: VenmoStatementDetails): string | undefined {
+  return details.note || details.plaidMemo;
 }

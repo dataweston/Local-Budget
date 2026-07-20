@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { syncTransactions, getAccountBalances, mapPlaidTransaction, getAllTransactions } from '@/lib/plaid';
+import {
+  syncTransactions,
+  getAccountBalances,
+  mapPlaidTransaction,
+  getAllTransactions,
+  mergePlaidTransactionMetadata,
+} from '@/lib/plaid';
 import {
   getAmazonCategoryTargets,
   getAmazonRoutingCategoryId,
@@ -85,7 +91,7 @@ export async function POST(request: NextRequest) {
       const externalIds = validMapped.map((m) => m.transactionId);
       const existingTxs = await db.transaction.findMany({
         where: { externalId: { in: externalIds } },
-        select: { id: true, externalId: true, merchantName: true },
+        select: { id: true, externalId: true, merchantName: true, metadata: true },
       });
       const existingMap = new Map(existingTxs.map((t) => [t.externalId, t]));
 
@@ -118,12 +124,16 @@ export async function POST(request: NextRequest) {
             merchantName: m.merchantName,
             externalId: m.transactionId,
             isReviewed: false,
+            metadata: mergePlaidTransactionMetadata(
+              m,
+              undefined,
+              venmoRouting
+                ? { transferDirection: m.amount > 0 ? 'out' : 'in' }
+                : undefined
+            ),
             ...(venmoRouting
               ? {
                   classification: venmoRouting.classification,
-                  // Plaid sign: positive = money out, negative = money in.
-                  // Record direction so the transfer matcher can pair this leg.
-                  metadata: { transferDirection: m.amount > 0 ? 'out' : 'in' },
                 }
               : amazonCategoryId
                 ? {
@@ -172,6 +182,13 @@ export async function POST(request: NextRequest) {
             status: m.pending ? 'PENDING' : 'POSTED',
             description: m.name,
             ...(shouldUpdateMerchant && { merchantName: m.merchantName }),
+            metadata: mergePlaidTransactionMetadata(
+              m,
+              existing.metadata,
+              venmoRouting
+                ? { transferDirection: m.amount > 0 ? 'out' : 'in' }
+                : undefined
+            ),
             ...(venmoRouting
               ? { classification: venmoRouting.classification, categoryId: null }
               : amazonCategoryId
@@ -276,10 +293,16 @@ export async function POST(request: NextRequest) {
                     merchantName: mappedTx.merchantName,
                     externalId: mappedTx.transactionId,
                     isReviewed: false,
+                    metadata: mergePlaidTransactionMetadata(
+                      mappedTx,
+                      undefined,
+                      venmoRouting
+                        ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
+                        : undefined
+                    ),
                     ...(venmoRouting
                       ? {
                           classification: venmoRouting.classification,
-                          metadata: { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' },
                         }
                       : amazonCategoryId
                         ? {
@@ -300,7 +323,7 @@ export async function POST(request: NextRequest) {
               // Check if user has renamed this merchant
               const existing = await db.transaction.findFirst({
                 where: { externalId: mappedTx.transactionId },
-                select: { merchantName: true },
+                select: { merchantName: true, metadata: true },
               });
 
               const shouldUpdateMerchant = !existing?.merchantName || existing.merchantName === mappedTx.merchantName;
@@ -326,6 +349,13 @@ export async function POST(request: NextRequest) {
                   status: mappedTx.pending ? 'PENDING' : 'POSTED',
                   description: mappedTx.name,
                   ...(shouldUpdateMerchant && { merchantName: mappedTx.merchantName }),
+                  metadata: mergePlaidTransactionMetadata(
+                    mappedTx,
+                    existing?.metadata,
+                    venmoRouting
+                      ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
+                      : undefined
+                  ),
                   ...(venmoRouting
                     ? { classification: venmoRouting.classification, categoryId: null }
                     : amazonCategoryId

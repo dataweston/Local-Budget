@@ -1,4 +1,5 @@
 import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } from 'plaid';
+import type { Prisma } from '@prisma/client';
 
 // Plaid client configuration
 const configuration = new Configuration({
@@ -135,6 +136,28 @@ export interface PlaidTransactionData {
   merchantName?: string;
   category?: string[];
   pending: boolean;
+  originalDescription?: string;
+  counterparties?: Array<{
+    name?: string;
+    type?: string;
+    entityId?: string;
+    confidenceLevel?: string;
+    website?: string;
+  }>;
+  personalFinanceCategory?: {
+    primary?: string;
+    detailed?: string;
+    confidenceLevel?: string;
+  };
+  paymentChannel?: string;
+  paymentMeta?: {
+    payer?: string;
+    payee?: string;
+    reason?: string;
+    referenceNumber?: string;
+    paymentMethod?: string;
+    paymentProcessor?: string;
+  };
 }
 
 // Map Plaid transaction to our format
@@ -148,5 +171,69 @@ export function mapPlaidTransaction(transaction: any): PlaidTransactionData {
     merchantName: transaction.merchant_name || undefined,
     category: transaction.category || undefined,
     pending: transaction.pending,
+    originalDescription: transaction.original_description || undefined,
+    counterparties: Array.isArray(transaction.counterparties)
+      ? transaction.counterparties.map((counterparty: any) => ({
+          name: counterparty.name || undefined,
+          type: counterparty.type || undefined,
+          entityId: counterparty.entity_id || undefined,
+          confidenceLevel: counterparty.confidence_level || undefined,
+          website: counterparty.website || undefined,
+        }))
+      : undefined,
+    personalFinanceCategory: transaction.personal_finance_category
+      ? {
+          primary: transaction.personal_finance_category.primary || undefined,
+          detailed: transaction.personal_finance_category.detailed || undefined,
+          confidenceLevel:
+            transaction.personal_finance_category.confidence_level || undefined,
+        }
+      : undefined,
+    paymentChannel: transaction.payment_channel || undefined,
+    paymentMeta: transaction.payment_meta
+      ? {
+          payer: transaction.payment_meta.payer || undefined,
+          payee: transaction.payment_meta.payee || undefined,
+          reason: transaction.payment_meta.reason || undefined,
+          referenceNumber: transaction.payment_meta.reference_number || undefined,
+          paymentMethod: transaction.payment_meta.payment_method || undefined,
+          paymentProcessor: transaction.payment_meta.payment_processor || undefined,
+        }
+      : undefined,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Preserve the useful parts of Plaid's raw transaction payload. Historically
+ * the sync retained only name and merchantName, which made a bank-supplied
+ * "Venmo" row permanently opaque even when Plaid returned counterparties,
+ * original_description, or payment metadata.
+ */
+export function mergePlaidTransactionMetadata(
+  transaction: PlaidTransactionData,
+  existingMetadata?: unknown,
+  extras?: Record<string, unknown>
+): Prisma.InputJsonObject {
+  const existing = isRecord(existingMetadata) ? existingMetadata : {};
+  const plaidTransaction = {
+    source: 'plaid',
+    originalDescription: transaction.originalDescription,
+    counterparties: transaction.counterparties?.filter((item) => item.name),
+    personalFinanceCategory: transaction.personalFinanceCategory,
+    paymentChannel: transaction.paymentChannel,
+    paymentMeta: transaction.paymentMeta,
+    category: transaction.category,
+  };
+
+  return JSON.parse(
+    JSON.stringify({
+      ...existing,
+      ...extras,
+      plaidTransaction,
+    })
+  ) as Prisma.InputJsonObject;
 }

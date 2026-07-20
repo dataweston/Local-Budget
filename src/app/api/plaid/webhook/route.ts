@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { syncTransactions, getAccountBalances, plaidClient } from '@/lib/plaid';
+import {
+  syncTransactions,
+  getAccountBalances,
+  plaidClient,
+  mapPlaidTransaction,
+  mergePlaidTransactionMetadata,
+} from '@/lib/plaid';
 import { jwtVerify, importJWK, type JWK } from 'jose';
 import { createHash } from 'crypto';
 import {
@@ -171,6 +177,7 @@ async function handleTransactionsWebhook(
 
         // Process added transactions
         for (const tx of result.added) {
+          const mappedTx = mapPlaidTransaction(tx);
           // Find the corresponding FinancialAccount
           const account = await db.financialAccount.findFirst({
             where: { 
@@ -209,11 +216,13 @@ async function handleTransactionsWebhook(
                   description: tx.name,
                   merchantName: tx.merchant_name,
                   externalId: tx.transaction_id,
-                  metadata: {
-                    plaid_category: tx.category,
-                    plaid_category_id: tx.category_id,
-                    payment_channel: tx.payment_channel,
-                  },
+                  metadata: mergePlaidTransactionMetadata(
+                    mappedTx,
+                    undefined,
+                    venmoRouting
+                      ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
+                      : undefined
+                  ),
                   ...(venmoRouting
                     ? { classification: venmoRouting.classification }
                     : amazonCategoryId
@@ -230,11 +239,16 @@ async function handleTransactionsWebhook(
 
         // Handle modified transactions
         for (const tx of result.modified) {
+          const mappedTx = mapPlaidTransaction(tx);
           const account = await db.financialAccount.findFirst({
             where: { plaidAccountId: tx.account_id },
           });
 
           if (account) {
+            const existingTransaction = await db.transaction.findFirst({
+              where: { accountId: account.id, externalId: tx.transaction_id },
+              select: { metadata: true },
+            });
             const venmoRouting = getVenmoBankRouting({
               description: tx.name,
               merchantName: tx.merchant_name,
@@ -256,6 +270,13 @@ async function handleTransactionsWebhook(
                 status: tx.pending ? 'PENDING' : 'POSTED',
                 description: tx.name,
                 merchantName: tx.merchant_name,
+                metadata: mergePlaidTransactionMetadata(
+                  mappedTx,
+                  existingTransaction?.metadata,
+                  venmoRouting
+                    ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
+                    : undefined
+                ),
                 ...(venmoRouting
                   ? { classification: venmoRouting.classification, categoryId: null }
                   : amazonCategoryId
