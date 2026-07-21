@@ -16,6 +16,7 @@
  *   npm run snapshot:export -- --out=path.json    # also write to a file
  *   npm run snapshot:export -- --force            # emit even if the month is incomplete
  */
+import './load-env';
 import { writeFileSync } from 'fs';
 import { PrismaClient } from '@prisma/client';
 import {

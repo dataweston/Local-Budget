@@ -13,6 +13,7 @@
  *   npm run vendors:populate           # dry run
  *   npm run vendors:populate:apply     # writes
  */
+import './load-env';
 import { PrismaClient } from '@prisma/client';
 import {
   resolveVendorId,
