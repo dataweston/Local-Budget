@@ -34,6 +34,11 @@
     "classify:fix": "tsx scripts/fix-classification-2026-08.ts",
     "classify:fix:apply": "tsx scripts/fix-classification-2026-08.ts --apply",
     "snapshot:export": "tsx scripts/export-month-snapshot.ts",
+    "export:financials": "tsx scripts/export-financials-csv.ts",
+    "uber:reconcile": "tsx scripts/reconcile-uber-trips.ts",
+    "uber:reconcile:apply": "tsx scripts/reconcile-uber-trips.ts --apply",
+    "delivery:classify": "tsx scripts/classify-delivery-costs.ts",
+    "delivery:classify:apply": "tsx scripts/classify-delivery-costs.ts --apply",
     "test": "vitest run"
   },
   "dependencies": {

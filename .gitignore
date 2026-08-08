@@ -45,6 +45,8 @@ imports/
 ledger-*.json
 tmp-*.js
 tmp-csv-import/
+exports/
+scripts/_tmp-*.ts
 
 # IDE
 .idea
