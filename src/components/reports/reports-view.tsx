@@ -208,6 +208,7 @@ export function ReportsView() {
       ['Top Expense Concentration', `${profitLoss.topExpenseCategoryShare.toFixed(1)}%`],
       ['Cash Runway', Number.isFinite(runway) ? `${runway.toFixed(1)} mo` : 'Infinity'],
       ['Uncategorized Spend', formatCurrency(profitLoss.uncategorizedAmount)],
+      ['Unclassified Spend', formatCurrency(profitLoss.unclassifiedExpenses)],
     ];
   }, [profitLoss, stats?.totalBalance]);
 
@@ -253,6 +254,14 @@ export function ReportsView() {
                     <div className="flex justify-between"><span>COGS</span><span className="text-expense">({formatCurrency(profitLoss.cogs)})</span></div>
                     <div className="flex justify-between"><span>Operating Expenses</span><span className="text-expense">({formatCurrency(profitLoss.operatingExpenses)})</span></div>
                     <div className="flex justify-between"><span>Personal</span><span className="text-expense">({formatCurrency(profitLoss.personalExpenses)})</span></div>
+                    {profitLoss.unclassifiedExpenses > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-amber-600">
+                          Unclassified{profitLoss.unclassifiedCount > 0 && ` (${profitLoss.unclassifiedCount})`}
+                        </span>
+                        <span className="text-expense">({formatCurrency(profitLoss.unclassifiedExpenses)})</span>
+                      </div>
+                    )}
                     <div className="flex justify-between font-bold"><span>Net Income</span><span className={cn(profitLoss.netIncome >= 0 ? 'text-income' : 'text-expense')}>{formatCurrency(profitLoss.netIncome)}</span></div>
                   </CardContent>
                 </Card>

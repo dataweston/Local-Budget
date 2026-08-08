@@ -6,6 +6,12 @@ type TransferCheckInput = {
   } | null;
 };
 
+/**
+ * `UNCLASSIFIED` is a derived-only value — it is never stored on a transaction
+ * (the DB enum has no such member). It means "nobody has decided yet", and it
+ * exists so that an undecided expense is reported as undecided instead of being
+ * silently attributed to the owner's personal spending.
+ */
 export type EffectiveClassification =
   | 'COGS'
   | 'OPERATING'
@@ -13,7 +19,8 @@ export type EffectiveClassification =
   | 'INCOME'
   | 'TRANSFER'
   | 'REIMBURSABLE'
-  | 'REIMBURSEMENT';
+  | 'REIMBURSEMENT'
+  | 'UNCLASSIFIED';
 
 export function isTransferLikeTransaction(tx: TransferCheckInput): boolean {
   return (
@@ -45,5 +52,10 @@ export function getEffectiveClassification(
 
   if (tx.type === 'INCOME') return 'INCOME';
   if (tx.type === 'TRANSFER') return 'TRANSFER';
-  return 'PERSONAL';
+
+  // An expense nobody has classified is NOT personal spending. Defaulting it to
+  // PERSONAL used to hide it from the business P&L entirely (personal is
+  // excluded from operating income), which flattered operating income by
+  // whatever happened to be un-triaged. Report it as undecided instead.
+  return 'UNCLASSIFIED';
 }

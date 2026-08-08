@@ -21,6 +21,10 @@ import {
  *     reported separately.
  *   - Personal spending never enters business net income; it only appears in
  *     `netCashFlow` (what's left after everything, including personal).
+ *   - Unclassified outflows (nobody has decided business vs personal) are their
+ *     own bucket. They are excluded from the business income lines — claiming
+ *     them either way would be a guess — but counted in totalExpenses and
+ *     netCashFlow, because the cash did leave.
  */
 
 export type { EffectiveClassification };
@@ -43,8 +47,51 @@ export function directionFor(classification: EffectiveClassification): Direction
     case 'TRANSFER':
       return 'transfer';
     default:
-      // COGS, OPERATING, REIMBURSABLE, PERSONAL — money leaving the business.
+      // COGS, OPERATING, REIMBURSABLE, PERSONAL, UNCLASSIFIED — money leaving
+      // the business. An undecided expense is still cash out the door, so it
+      // keeps its direction even though its bucket is unknown.
       return 'outflow';
+  }
+}
+
+/**
+ * The seeded catch-all category carries no more information than having no
+ * category at all, but it is stored differently (a real row vs a NULL). Left
+ * alone the two shapes produce two separate report lines with the identical
+ * label "Uncategorized". Reporting collapses them into one bucket.
+ */
+export const UNCATEGORIZED_CATEGORY_NAME = 'Uncategorized';
+
+export function isUncategorized(
+  categoryId: string | null | undefined,
+  categoryName: string | null | undefined
+): boolean {
+  return !categoryId || categoryName === UNCATEGORIZED_CATEGORY_NAME;
+}
+
+/**
+ * Distinct label per uncategorized bucket. Uncategorized lines are split by
+ * classification, so without this every split renders as the same word and the
+ * breakdown appears to list "Uncategorized" several times for no visible reason.
+ */
+export function uncategorizedLabel(classification: EffectiveClassification): string {
+  switch (classification) {
+    case 'INCOME':
+      return 'Uncategorized income';
+    case 'PERSONAL':
+      return 'Uncategorized personal';
+    case 'COGS':
+      return 'Uncategorized COGS';
+    case 'OPERATING':
+      return 'Uncategorized operating';
+    case 'REIMBURSABLE':
+      return 'Uncategorized reimbursable';
+    case 'REIMBURSEMENT':
+      return 'Uncategorized reimbursement';
+    case 'TRANSFER':
+      return 'Uncategorized transfer';
+    case 'UNCLASSIFIED':
+      return 'Uncategorized (needs review)';
   }
 }
 
@@ -64,6 +111,13 @@ export type PnlTotals = {
   operatingExpenses: number;
   reimbursableExpenses: number;
   personalExpenses: number;
+  /**
+   * Outflows nobody has classified yet. Held apart from personalExpenses so an
+   * un-triaged expense is never silently booked as owner spending; it is real
+   * cash out, so it still counts toward totalExpenses and netCashFlow.
+   */
+  unclassifiedExpenses: number;
+  unclassifiedCount: number;
   uncategorizedAmount: number;
   uncategorizedCount: number;
   totalTransactionsInPeriod: number;
@@ -111,6 +165,8 @@ export function blankReport(year: number): MutablePnl {
     operatingExpenses: 0,
     reimbursableExpenses: 0,
     personalExpenses: 0,
+    unclassifiedExpenses: 0,
+    unclassifiedCount: 0,
     uncategorizedAmount: 0,
     uncategorizedCount: 0,
     totalTransactionsInPeriod: 0,
@@ -149,16 +205,28 @@ export function applyPnlLine(
     report.operatingExpenses += absAmount;
   } else if (classification === 'REIMBURSABLE') {
     report.reimbursableExpenses += absAmount;
+  } else if (classification === 'UNCLASSIFIED') {
+    report.unclassifiedExpenses += absAmount;
+    report.unclassifiedCount += 1;
   } else {
     report.personalExpenses += absAmount;
   }
 
-  const key = `${categoryId || 'uncategorized'}::${classification}${isContraRevenue ? '::contra' : ''}`;
+  // Collapse the seeded "Uncategorized" category into the no-category bucket so
+  // the breakdown carries one line per meaning rather than one per storage shape.
+  const uncategorized = isUncategorized(categoryId, categoryName);
+  const rollupCategoryId = uncategorized ? null : categoryId;
+
+  const key = `${rollupCategoryId || 'uncategorized'}::${classification}${isContraRevenue ? '::contra' : ''}`;
   let row = report.byCategory.get(key);
   if (!row) {
     row = {
-      categoryId: categoryId || null,
-      name: isContraRevenue && !categoryId ? 'Refunds' : categoryName || 'Uncategorized',
+      categoryId: rollupCategoryId,
+      name: isContraRevenue && uncategorized
+        ? 'Refunds'
+        : uncategorized
+          ? uncategorizedLabel(classification)
+          : categoryName,
       classification,
       amount: 0,
       transactionCount: 0,
@@ -169,7 +237,7 @@ export function applyPnlLine(
   row.amount += isContraRevenue ? -absAmount : absAmount;
   row.transactionCount += 1;
 
-  if (!categoryId && !isContraRevenue) {
+  if (uncategorized && !isContraRevenue) {
     report.uncategorizedAmount += absAmount;
     report.uncategorizedCount += 1;
   }
@@ -185,8 +253,15 @@ export function derivePnlMetrics(t: PnlTotals): PnlDerived {
   // Business net income: reimbursables and personal spend are excluded.
   const netBusinessIncome = operatingIncome;
   const netMargin = totalRevenue > 0 ? (netBusinessIncome / totalRevenue) * 100 : 0;
+  // Unclassified outflows are real cash movement, so they belong in total
+  // expenses and net cash flow — they are only withheld from the business
+  // income lines above, where claiming them either way would be a guess.
   const totalExpenses =
-    t.cogs + t.operatingExpenses + t.personalExpenses + t.reimbursableExpenses;
+    t.cogs +
+    t.operatingExpenses +
+    t.personalExpenses +
+    t.reimbursableExpenses +
+    t.unclassifiedExpenses;
   const netCashFlow = totalRevenue - totalExpenses;
   const savingsRate = totalRevenue > 0 ? (netCashFlow / totalRevenue) * 100 : 0;
   return {

@@ -234,18 +234,41 @@ export const transactionsRouter = createTRPCRouter({
       // When the category is being changed (including unassigned), keep the
       // classification in sync with the new category's default unless the
       // caller explicitly provided a classification of their own.
+      //
+      // A classification that differs from the OLD category's default was set
+      // deliberately on this transaction (business vs personal is a per-row
+      // decision — a work vehicle payment sits in a personal category, a
+      // personal charge sits in a business one). Recategorizing must not
+      // silently discard that; only an inherited value is re-inherited.
       if ('categoryId' in data && !('classification' in data)) {
-        if (data.categoryId) {
+        const previousCategory = existing.categoryId
+          ? await ctx.db.category.findFirst({
+              where: { id: existing.categoryId, userId: ctx.session.user.id },
+              select: { defaultClassification: true },
+            })
+          : null;
+        const wasInherited =
+          existing.classification === null ||
+          existing.classification === previousCategory?.defaultClassification;
+
+        if (wasInherited) {
+          if (data.categoryId) {
+            const category = await ctx.db.category.findFirst({
+              where: { id: data.categoryId, userId: ctx.session.user.id },
+              select: { defaultClassification: true },
+            });
+            if (!category) throw new Error('Category not found');
+            data.classification = category.defaultClassification ?? null;
+          } else {
+            data.classification = null;
+          }
+        } else if (data.categoryId) {
+          // Still validate the target category belongs to the user.
           const category = await ctx.db.category.findFirst({
             where: { id: data.categoryId, userId: ctx.session.user.id },
-            select: { defaultClassification: true },
+            select: { id: true },
           });
           if (!category) throw new Error('Category not found');
-          if (category.defaultClassification) {
-            data.classification = category.defaultClassification;
-          }
-        } else {
-          data.classification = null;
         }
       }
 

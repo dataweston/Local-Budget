@@ -1,6 +1,7 @@
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { createCategorySchema, updateCategorySchema } from '@/lib/schemas';
+import { isUncategorized, UNCATEGORIZED_CATEGORY_NAME } from '@/lib/pnl';
 
 const CLUSTER_STOP_WORDS = new Set([
   'the',
@@ -387,18 +388,22 @@ export const categoriesRouter = createTRPCRouter({
       const aggregates = new Map<string, AggregateRow>();
 
       const push = (transactionId: string, amount: number, category: CategoryInfo | null) => {
-        const categoryId = category?.id ?? null;
-        const categoryName = category?.name ?? 'Uncategorized';
-        const key = categoryId ?? `uncategorized:${categoryName}`;
+        // Transactions with no category and transactions filed under the seeded
+        // "Uncategorized" category mean the same thing; keying them separately
+        // produced two rows with the identical label.
+        const uncategorized = isUncategorized(category?.id, category?.name);
+        const categoryId = uncategorized ? null : category!.id;
+        const categoryName = uncategorized ? UNCATEGORIZED_CATEGORY_NAME : category!.name;
+        const key = categoryId ?? 'uncategorized';
 
         if (!aggregates.has(key)) {
           aggregates.set(key, {
             categoryId,
             categoryName,
-            icon: category?.icon ?? '?',
-            color: category?.color ?? null,
-            parentCategoryId: category?.parentId ?? null,
-            parentCategoryName: category?.parent?.name ?? null,
+            icon: (uncategorized ? '❓' : category?.icon) ?? '?',
+            color: uncategorized ? null : category?.color ?? null,
+            parentCategoryId: uncategorized ? null : category?.parentId ?? null,
+            parentCategoryName: uncategorized ? null : category?.parent?.name ?? null,
             amount: 0,
             transactionIds: new Set<string>(),
           });
@@ -569,18 +574,19 @@ export const categoriesRouter = createTRPCRouter({
         amount: number,
         category: CategoryInfo | null
       ) => {
-        const categoryId = category?.id ?? null;
-        const categoryName = category?.name ?? 'Uncategorized';
-        const key = categoryId ?? `uncategorized:${categoryName}`;
+        const uncategorized = isUncategorized(category?.id, category?.name);
+        const categoryId = uncategorized ? null : category!.id;
+        const categoryName = uncategorized ? UNCATEGORIZED_CATEGORY_NAME : category!.name;
+        const key = categoryId ?? 'uncategorized';
 
         if (!aggregates.has(key)) {
           aggregates.set(key, {
             categoryId,
             categoryName,
-            icon: category?.icon ?? '?',
-            color: category?.color ?? null,
-            parentCategoryId: category?.parentId ?? null,
-            parentCategoryName: category?.parent?.name ?? null,
+            icon: (uncategorized ? '❓' : category?.icon) ?? '?',
+            color: uncategorized ? null : category?.color ?? null,
+            parentCategoryId: uncategorized ? null : category?.parentId ?? null,
+            parentCategoryName: uncategorized ? null : category?.parent?.name ?? null,
             amount: 0,
             transactionIds: new Set<string>(),
             clusters: new Map<string, ClusterAggregate>(),

@@ -292,6 +292,8 @@ export const dashboardRouter = createTRPCRouter({
         reimbursableExpenses,
         reimbursementIncome,
         refunds,
+        unclassifiedExpenses,
+        unclassifiedCount,
         uncategorizedAmount,
         uncategorizedCount,
         totalLinesConsidered: totalTransactionsConsidered,
@@ -330,7 +332,9 @@ export const dashboardRouter = createTRPCRouter({
 
       const topExpenseCategoryAmount = Array.from(report.byCategory.values())
         .filter((row) =>
-          ['COGS', 'OPERATING', 'PERSONAL', 'REIMBURSABLE'].includes(row.classification)
+          ['COGS', 'OPERATING', 'PERSONAL', 'REIMBURSABLE', 'UNCLASSIFIED'].includes(
+            row.classification
+          )
         )
         .reduce((max, row) => Math.max(max, row.amount), 0);
       const topExpenseCategoryShare =
@@ -345,6 +349,8 @@ export const dashboardRouter = createTRPCRouter({
         grossMargin,
         operatingExpenses,
         personalExpenses,
+        unclassifiedExpenses,
+        unclassifiedCount,
         reimbursableExpenses,
         reimbursementIncome,
         operatingIncome,

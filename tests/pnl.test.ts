@@ -33,9 +33,66 @@ describe('getEffectiveClassification', () => {
     expect(getEffectiveClassification({ type: 'TRANSFER' })).toBe('TRANSFER');
   });
 
-  it('defaults to PERSONAL for unclassified expenses', () => {
-    expect(getEffectiveClassification({ type: 'EXPENSE' })).toBe('PERSONAL');
-    expect(getEffectiveClassification({})).toBe('PERSONAL');
+  it('reports undecided expenses as UNCLASSIFIED, never as personal spending', () => {
+    expect(getEffectiveClassification({ type: 'EXPENSE' })).toBe('UNCLASSIFIED');
+    expect(getEffectiveClassification({})).toBe('UNCLASSIFIED');
+    // A category with no default must not drag the row into personal either.
+    expect(
+      getEffectiveClassification({
+        type: 'EXPENSE',
+        classification: null,
+        category: { defaultClassification: null },
+      })
+    ).toBe('UNCLASSIFIED');
+  });
+});
+
+describe('unclassified spend', () => {
+  it('is kept out of personal but still counted as cash out', () => {
+    const report = blankReport(2026);
+    applyPnlLine(report, 100, 'INCOME', null, '', { txType: 'INCOME' });
+    applyPnlLine(report, 40, 'UNCLASSIFIED', null, '', { txType: 'EXPENSE' });
+
+    expect(report.personalExpenses).toBe(0);
+    expect(report.operatingExpenses).toBe(0);
+    expect(report.unclassifiedExpenses).toBe(40);
+    expect(report.unclassifiedCount).toBe(1);
+
+    const d = derivePnlMetrics(report);
+    // Business income ignores it (deciding either way would be a guess)...
+    expect(d.operatingIncome).toBe(100);
+    expect(d.netBusinessIncome).toBe(100);
+    // ...but the cash really left.
+    expect(d.totalExpenses).toBe(40);
+    expect(d.netCashFlow).toBe(60);
+  });
+});
+
+describe('uncategorized rollup', () => {
+  it('merges the seeded Uncategorized category with no-category rows', () => {
+    const report = blankReport(2026);
+    applyPnlLine(report, 10, 'UNCLASSIFIED', null, 'Uncategorized', { txType: 'EXPENSE' });
+    applyPnlLine(report, 15, 'UNCLASSIFIED', 'cat-unc', 'Uncategorized', { txType: 'EXPENSE' });
+
+    const rows = Array.from(report.byCategory.values());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount).toBe(25);
+    expect(rows[0].categoryId).toBeNull();
+    expect(report.uncategorizedAmount).toBe(25);
+    expect(report.uncategorizedCount).toBe(2);
+  });
+
+  it('gives each uncategorized bucket a distinct label', () => {
+    const report = blankReport(2026);
+    applyPnlLine(report, 10, 'UNCLASSIFIED', null, '', { txType: 'EXPENSE' });
+    applyPnlLine(report, 20, 'INCOME', null, '', { txType: 'INCOME' });
+    applyPnlLine(report, 30, 'PERSONAL', null, '', { txType: 'EXPENSE' });
+
+    const names = Array.from(report.byCategory.values()).map((r) => r.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain('Uncategorized (needs review)');
+    expect(names).toContain('Uncategorized income');
+    expect(names).toContain('Uncategorized personal');
   });
 });
 

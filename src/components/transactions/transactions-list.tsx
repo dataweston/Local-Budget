@@ -65,6 +65,30 @@ interface SelectedTransaction {
   isReviewed: boolean;
 }
 
+type Classification =
+  | 'COGS'
+  | 'OPERATING'
+  | 'PERSONAL'
+  | 'INCOME'
+  | 'TRANSFER'
+  | 'REIMBURSABLE'
+  | 'REIMBURSEMENT';
+
+/**
+ * Per-transaction business/personal override. Grouped so the common
+ * business-vs-personal decision reads plainly; "_inherit" clears the override
+ * and lets the category default apply again.
+ */
+const CLASSIFICATION_OPTIONS: { value: Classification; label: string }[] = [
+  { value: 'COGS', label: 'Business — cost of goods' },
+  { value: 'OPERATING', label: 'Business — operating' },
+  { value: 'REIMBURSABLE', label: 'Business — reimbursable' },
+  { value: 'PERSONAL', label: 'Personal / owner draw' },
+  { value: 'INCOME', label: 'Income' },
+  { value: 'REIMBURSEMENT', label: 'Reimbursement received' },
+  { value: 'TRANSFER', label: 'Internal transfer' },
+];
+
 interface Filters {
   accountId?: string;
   categoryId?: string;
@@ -141,11 +165,31 @@ export function TransactionsList() {
       errorTitle: 'Failed to update category',
     })
   );
+  const updateClassification = api.transactions.update.useMutation(
+    useToastCallbacks({
+      successTitle: 'Classification Updated',
+      successDescription: 'Business/personal treatment has been updated',
+      errorTitle: 'Failed to update classification',
+    })
+  );
 
   const handleCategoryChange = async (transactionId: string, value: string) => {
     await updateCategory.mutateAsync({
       id: transactionId,
       data: { categoryId: value === '_uncategorized' ? null : value },
+    });
+    await utils.transactions.list.invalidate();
+    await utils.dashboard.invalidate();
+  };
+
+  // Business vs personal is a per-transaction decision, independent of the
+  // category: a work-vehicle payment can sit in a personal category and a
+  // personal charge can sit in a business one. Setting it here overrides the
+  // category default and survives later recategorization.
+  const handleClassificationChange = async (transactionId: string, value: string) => {
+    await updateClassification.mutateAsync({
+      id: transactionId,
+      data: { classification: value === '_inherit' ? null : (value as Classification) },
     });
     await utils.transactions.list.invalidate();
     await utils.dashboard.invalidate();
@@ -186,6 +230,7 @@ export function TransactionsList() {
         transaction={selectedTx}
         categories={categories}
         onCategoryChange={handleCategoryChange}
+        onClassificationChange={handleClassificationChange}
         onClose={() => setSelectedTx(null)}
         onSplit={(id, amount) => { setSelectedTx(null); setSplitTxId(id); setSplitTxAmount(amount); }}
         onLink={(id) => { setSelectedTx(null); setLinkTxId(id); }}
@@ -536,6 +581,7 @@ function TransactionDetailDialog({
   transaction,
   categories,
   onCategoryChange,
+  onClassificationChange,
   onClose,
   onSplit,
   onLink,
@@ -543,6 +589,7 @@ function TransactionDetailDialog({
   transaction: SelectedTransaction | null;
   categories?: { id: string; name: string; icon: string | null }[];
   onCategoryChange: (transactionId: string, value: string) => void | Promise<void>;
+  onClassificationChange: (transactionId: string, value: string) => void | Promise<void>;
   onClose: () => void;
   onSplit: (id: string, amount: number) => void;
   onLink: (id: string) => void;
@@ -625,14 +672,33 @@ function TransactionDetailDialog({
                   </SelectContent>
                 </Select>
               </div>
-              {transaction.classification && (
-                <div>
-                  <p className="text-sm text-muted-foreground">Classification</p>
-                  <Badge className={classificationColor(transaction.classification)}>
-                    {transaction.classification}
-                  </Badge>
-                </div>
-              )}
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">Classification</p>
+                <Select
+                  value={transaction.classification ?? '_inherit'}
+                  onValueChange={(v) => onClassificationChange(transaction.id, v)}
+                >
+                  <SelectTrigger className="h-8">
+                    <SelectValue>
+                      {transaction.classification ? (
+                        <Badge className={classificationColor(transaction.classification)}>
+                          {transaction.classification}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground">From category</span>
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_inherit">From category (no override)</SelectItem>
+                    {CLASSIFICATION_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div>
                 <p className="text-sm text-muted-foreground">Status</p>
                 <p className="font-medium flex items-center gap-1">
