@@ -2,6 +2,7 @@ import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { createCategorySchema, updateCategorySchema } from '@/lib/schemas';
 import { isUncategorized, UNCATEGORIZED_CATEGORY_NAME } from '@/lib/pnl';
+import { ledgerAccountScope } from '@/lib/processor-ledger';
 
 const CLUSTER_STOP_WORDS = new Set([
   'the',
@@ -323,7 +324,9 @@ export const categoriesRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          // Processor-ledger rows are never categorized, so including them here
+          // renders the whole Square feed as one giant "Uncategorized" cluster.
+          account: ledgerAccountScope(ctx.session.user.id),
           type: targetType,
           date: {
             gte: input?.startDate ?? startOfMonth,
@@ -480,7 +483,9 @@ export const categoriesRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          // Processor-ledger rows are never categorized, so including them here
+          // renders the whole Square feed as one giant "Uncategorized" cluster.
+          account: ledgerAccountScope(ctx.session.user.id),
           type: targetType,
           date: {
             gte: input?.startDate ?? startOfMonth,

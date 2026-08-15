@@ -11,6 +11,7 @@ import {
   aggregatePnl,
   derivePnlMetrics,
 } from '@/lib/pnl';
+import { ledgerAccountScope } from '@/lib/processor-ledger';
 
 export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
@@ -46,7 +47,7 @@ export const dashboardRouter = createTRPCRouter({
       // Current period transactions
       const currentTransactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          account: ledgerAccountScope(ctx.session.user.id),
           date: { gte: startDate, lte: endDate },
         },
         select: {
@@ -64,7 +65,7 @@ export const dashboardRouter = createTRPCRouter({
       // Previous period transactions for trend
       const prevTransactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          account: ledgerAccountScope(ctx.session.user.id),
           date: { gte: prevStartDate, lte: prevEndDate },
         },
         select: {
@@ -112,7 +113,12 @@ export const dashboardRouter = createTRPCRouter({
           },
         }),
         ctx.db.transaction.count({
-          where: { account: { userId: ctx.session.user.id }, isReviewed: false },
+          where: {
+            // See unreviewedCount: processor-ledger rows stay unclassified by
+            // design and would otherwise read as a permanent backlog.
+            account: ledgerAccountScope(ctx.session.user.id),
+            isReviewed: false,
+          },
         }),
       ]);
 
@@ -146,7 +152,7 @@ export const dashboardRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          account: ledgerAccountScope(ctx.session.user.id),
           date: { gte: startDate, lte: endDate },
         },
         select: {
@@ -253,7 +259,19 @@ export const dashboardRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          // Exclude processor-ledger accounts from the P&L entirely.
+          //
+          // Revenue in this ledger is the bank deposit, which the processor has
+          // already reduced by its fees and refunds. The processor's own rows
+          // describe the same money on the way there, so including them counts
+          // it twice — both as fee expense that is already netted out and as
+          // contra-revenue for refunds already deducted. Their unclassified
+          // rows also inflate the uncategorized-income bucket, which is what
+          // made them look like a permanent to-do.
+          //
+          // Fees stay visible: settlements.feeSummary reports them from the
+          // settlement entries, which is where the gross detail lives.
+          account: ledgerAccountScope(ctx.session.user.id),
           date: { gte: startDate, lte: endDate },
         },
         select: {

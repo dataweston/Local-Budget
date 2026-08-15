@@ -30,6 +30,23 @@ export const PROCESSOR_LEDGER_REASON =
   'to stay unclassified.';
 
 /**
+ * Account scope for ledger *totals and work queues* — the owner's accounts
+ * excluding any processor ledger.
+ *
+ * The rule this encodes: totals and queues exclude the processor ledger;
+ * listings and detail views include it. A processor row is real and worth
+ * looking at, but it is not revenue, not an expense, and not a task — it is the
+ * gross side of money that is counted once, as a bank deposit. Feeding it into
+ * a sum double-counts; feeding it into a review queue creates a backlog that
+ * can never be cleared, because these rows are meant to stay unclassified.
+ *
+ * Use in `where: { account: ledgerAccountScope(userId) }`.
+ */
+export function ledgerAccountScope(userId: string) {
+  return { userId, squareConnectionId: null };
+}
+
+/**
  * Accounts that mirror a processor's ledger. Derived from the Square link
  * rather than a stored flag, so it stays correct without a migration and
  * without anyone having to remember to set something.

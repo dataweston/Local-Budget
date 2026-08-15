@@ -601,7 +601,9 @@ export async function suggestCategoriesForUncategorized(
     buildSuggestionContext(userId),
     db.transaction.findMany({
       where: {
-        account: { userId },
+        // Processor-ledger rows are unclassified by design, so without this
+        // they queue up for review forever and can never be cleared.
+        account: { userId, squareConnectionId: null },
         ...(accountId && { accountId }),
         categoryId: null,
         ...(normalizedSearch && {

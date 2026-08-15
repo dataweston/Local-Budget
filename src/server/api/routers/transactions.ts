@@ -10,6 +10,7 @@ import { TRPCError } from '@trpc/server';
 import { Prisma, type ClassificationType } from '@prisma/client';
 import { looksLikeMisclassifiedRevenue } from '@/lib/reclassify';
 import {
+  ledgerAccountScope,
   partitionProcessorLedger,
   processorLedgerAccountIds,
   PROCESSOR_LEDGER_REASON,
@@ -663,9 +664,11 @@ export const transactionsRouter = createTRPCRouter({
   // Get unreviewed count
   unreviewedCount: protectedProcedure.query(async ({ ctx }) => {
     const count = await ctx.db.transaction.count({
-      where: { 
+      where: {
         isReviewed: false,
-        account: { userId: ctx.session.user.id },
+        // Processor-ledger rows are intentionally never classified, so counting
+        // them here would show a backlog that no amount of work can clear.
+        account: ledgerAccountScope(ctx.session.user.id),
       },
     });
     return count;
