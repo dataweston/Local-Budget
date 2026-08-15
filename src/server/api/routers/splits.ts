@@ -1,6 +1,7 @@
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
+import { recordFinancialAudit } from '@/lib/financial-integrity';
 
 const classificationEnum = z.enum([
   'COGS',
@@ -63,6 +64,7 @@ export const splitsRouter = createTRPCRouter({
       z.object({
         transactionId: z.string(),
         splits: z.array(splitItemSchema).min(2),
+        reason: z.string().min(1).max(1000).default('Manual split replacement'),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -72,7 +74,12 @@ export const splitsRouter = createTRPCRouter({
           id: input.transactionId,
           account: { userId: ctx.session.user.id },
         },
-        select: { id: true, amount: true },
+        select: {
+          id: true,
+          amount: true,
+          accountId: true,
+          splits: { orderBy: { createdAt: 'asc' } },
+        },
       });
 
       if (!transaction) {
@@ -126,6 +133,18 @@ export const splitsRouter = createTRPCRouter({
           where: { id: input.transactionId },
           data: { isReviewed: true },
         });
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          transactionId: input.transactionId,
+          financialAccountId: transaction.accountId,
+          action: 'TRANSACTION_SPLITS_REPLACED',
+          source: 'MANUAL',
+          reason: input.reason,
+          changedFields: ['splits', 'isReviewed'],
+          before: { splits: transaction.splits },
+          after: { splits },
+        });
 
         return splits;
       });
@@ -154,6 +173,7 @@ export const splitsRouter = createTRPCRouter({
             secondClassification: classificationEnum.optional(),
           }),
         ]),
+        reason: z.string().min(1).max(1000).default('Bulk split replacement'),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -167,6 +187,8 @@ export const splitsRouter = createTRPCRouter({
         select: {
           id: true,
           amount: true,
+          accountId: true,
+          splits: { orderBy: { createdAt: 'asc' } },
           categoryId: true,
         },
       });
@@ -304,6 +326,22 @@ export const splitsRouter = createTRPCRouter({
             where: { id: transaction.id },
             data: { isReviewed: true },
           });
+          const updatedSplits = await tx.transactionSplit.findMany({
+            where: { transactionId: transaction.id },
+            orderBy: { createdAt: 'asc' },
+          });
+          await recordFinancialAudit(tx, {
+            userId: ctx.session.user.id,
+            actorUserId: ctx.session.user.id,
+            transactionId: transaction.id,
+            financialAccountId: transaction.accountId,
+            action: 'TRANSACTION_SPLITS_REPLACED',
+            source: 'MANUAL',
+            reason: input.reason,
+            changedFields: ['splits', 'isReviewed'],
+            before: { splits: transaction.splits },
+            after: { splits: updatedSplits },
+          });
         }
       });
 
@@ -327,6 +365,8 @@ export const splitsRouter = createTRPCRouter({
         select: {
           id: true,
           amount: true,
+          accountId: true,
+          splits: { orderBy: { createdAt: 'asc' } },
           classification: true,
           categoryId: true,
           receiptLinks: {
@@ -421,6 +461,18 @@ export const splitsRouter = createTRPCRouter({
           where: { id: input.transactionId },
           data: { isReviewed: true },
         });
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          transactionId: input.transactionId,
+          financialAccountId: transaction.accountId,
+          action: 'TRANSACTION_SPLITS_REPLACED',
+          source: 'RECEIPT',
+          reason: `Generated from receipt ${receipt.id}`,
+          changedFields: ['splits', 'isReviewed'],
+          before: { splits: transaction.splits },
+          after: { splits: created },
+        });
 
         return created;
       });
@@ -430,7 +482,10 @@ export const splitsRouter = createTRPCRouter({
 
   // Remove all splits from a transaction
   remove: protectedProcedure
-    .input(z.object({ transactionId: z.string() }))
+    .input(z.object({
+      transactionId: z.string(),
+      reason: z.string().min(1).max(1000).default('Manual split removal'),
+    }))
     .mutation(async ({ ctx, input }) => {
       // Verify ownership
       const transaction = await ctx.db.transaction.findFirst({
@@ -438,6 +493,7 @@ export const splitsRouter = createTRPCRouter({
           id: input.transactionId,
           account: { userId: ctx.session.user.id },
         },
+        include: { splits: { orderBy: { createdAt: 'asc' } } },
       });
 
       if (!transaction) {
@@ -454,6 +510,18 @@ export const splitsRouter = createTRPCRouter({
         await tx.transaction.update({
           where: { id: input.transactionId },
           data: { isReviewed: true },
+        });
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          transactionId: input.transactionId,
+          financialAccountId: transaction.accountId,
+          action: 'TRANSACTION_SPLITS_REMOVED',
+          source: 'MANUAL',
+          reason: input.reason,
+          changedFields: ['splits', 'isReviewed'],
+          before: { splits: transaction.splits },
+          after: { splits: [] },
         });
       });
 

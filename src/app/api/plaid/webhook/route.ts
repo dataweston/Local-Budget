@@ -15,6 +15,7 @@ import {
   getAmazonRoutingClassification,
 } from '@/lib/amazon-routing';
 import { getVenmoBankRouting } from '@/lib/venmo-routing';
+import { upsertTransactionSourceIdentity } from '@/lib/financial-integrity';
 
 // Plaid webhook event types
 type PlaidWebhookType =
@@ -148,6 +149,46 @@ export async function POST(request: NextRequest) {
   }
 }
 
+async function tombstonePlaidTransaction(
+  externalId: string,
+  sourceAccountId?: string | null
+) {
+  const identities = await db.transactionSourceIdentity.findMany({
+    where: {
+      sourceSystem: 'PLAID',
+      externalId,
+      ...(sourceAccountId ? { sourceAccountId } : {}),
+    },
+    select: { transactionId: true },
+  });
+  const fallback = identities.length === 0
+    ? await db.transaction.findMany({
+        where: { externalId },
+        select: { id: true },
+      })
+    : [];
+  const transactionIds = [
+    ...identities.map((identity) => identity.transactionId),
+    ...fallback.map((transaction) => transaction.id),
+  ];
+  const removedAt = new Date();
+  await db.$transaction([
+    db.transaction.updateMany({
+      where: { id: { in: transactionIds } },
+      data: { status: 'REMOVED', removedAt },
+    }),
+    db.transactionSourceIdentity.updateMany({
+      where: {
+        sourceSystem: 'PLAID',
+        externalId,
+        ...(sourceAccountId ? { sourceAccountId } : {}),
+      },
+      data: { isCurrent: false, removedAt, lastSeenAt: removedAt },
+    }),
+  ]);
+  return transactionIds.length;
+}
+
 async function handleTransactionsWebhook(
   code: string,
   plaidItem: {
@@ -186,55 +227,85 @@ async function handleTransactionsWebhook(
             },
           });
 
-          if (account) {
-            // Check if transaction already exists
-            const existing = await db.transaction.findFirst({
-              where: { 
-                accountId: account.id,
-                externalId: tx.transaction_id,
-              },
-            });
+          if (!account) continue;
 
-            if (!existing) {
-              const venmoRouting = getVenmoBankRouting({
-                description: tx.name,
-                merchantName: tx.merchant_name,
-              });
-              const amazonInput = { description: tx.name, merchantName: tx.merchant_name };
-              const amazonCategoryId = getAmazonRoutingCategoryId(
-                amazonInput,
-                amazonTargets
-              );
-              const amazonClassification = getAmazonRoutingClassification(amazonInput);
-              await db.transaction.create({
-                data: {
-                  accountId: account.id,
-                  amount: Math.abs(tx.amount),
-                  type: (venmoRouting?.type ?? (tx.amount < 0 ? 'INCOME' : 'EXPENSE')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
-                  status: tx.pending ? 'PENDING' : 'POSTED',
-                  date: new Date(tx.date),
-                  description: tx.name,
-                  merchantName: tx.merchant_name,
-                  externalId: tx.transaction_id,
-                  metadata: mergePlaidTransactionMetadata(
-                    mappedTx,
-                    undefined,
-                    venmoRouting
-                      ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
-                      : undefined
-                  ),
-                  ...(venmoRouting
-                    ? { classification: venmoRouting.classification }
-                    : amazonCategoryId
-                      ? {
-                          categoryId: amazonCategoryId,
-                          classification: amazonClassification ?? 'OPERATING',
-                        }
-                      : {}),
+          const directExisting = await db.transaction.findFirst({
+            where: {
+              accountId: account.id,
+              externalId: mappedTx.transactionId,
+            },
+          });
+          const pendingIdentity = mappedTx.pendingTransactionId
+            ? await db.transactionSourceIdentity.findUnique({
+                where: {
+                  sourceSystem_sourceAccountId_externalId: {
+                    sourceSystem: 'PLAID',
+                    sourceAccountId: mappedTx.accountId,
+                    externalId: mappedTx.pendingTransactionId,
+                  },
                 },
+                include: { transaction: true },
+              })
+            : null;
+          const existing = directExisting ?? pendingIdentity?.transaction ?? null;
+          const venmoRouting = getVenmoBankRouting({
+            description: mappedTx.name,
+            merchantName: mappedTx.merchantName,
+          });
+          const amazonInput = {
+            description: mappedTx.name,
+            merchantName: mappedTx.merchantName,
+          };
+          const amazonCategoryId = getAmazonRoutingCategoryId(amazonInput, amazonTargets);
+          const amazonClassification = getAmazonRoutingClassification(amazonInput);
+
+          await db.$transaction(async (transactionDb) => {
+            const data = {
+              accountId: account.id,
+              amount: Math.abs(mappedTx.amount),
+              type: (venmoRouting?.type ?? (mappedTx.amount < 0 ? 'INCOME' : 'EXPENSE')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
+              status: mappedTx.pending ? 'PENDING' as const : 'POSTED' as const,
+              removedAt: null,
+              date: new Date(mappedTx.date),
+              description: mappedTx.name,
+              merchantName: mappedTx.merchantName,
+              externalId: mappedTx.transactionId,
+              metadata: mergePlaidTransactionMetadata(
+                mappedTx,
+                existing?.metadata,
+                venmoRouting
+                  ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
+                  : undefined
+              ),
+              ...(venmoRouting
+                ? { classification: venmoRouting.classification, categoryId: null }
+                : amazonCategoryId
+                  ? {
+                      categoryId: amazonCategoryId,
+                      classification: amazonClassification ?? 'OPERATING',
+                    }
+                  : {}),
+            };
+            const stored = existing
+              ? await transactionDb.transaction.update({ where: { id: existing.id }, data })
+              : await transactionDb.transaction.create({ data });
+            if (mappedTx.pendingTransactionId) {
+              await transactionDb.transactionSourceIdentity.updateMany({
+                where: {
+                  sourceSystem: 'PLAID',
+                  sourceAccountId: mappedTx.accountId,
+                  externalId: mappedTx.pendingTransactionId,
+                },
+                data: { isCurrent: false, lastSeenAt: new Date() },
               });
             }
-          }
+            await upsertTransactionSourceIdentity(transactionDb, {
+              transactionId: stored.id,
+              sourceSystem: 'PLAID',
+              sourceAccountId: mappedTx.accountId,
+              externalId: mappedTx.transactionId,
+            });
+          });
         }
 
         // Handle modified transactions
@@ -244,35 +315,35 @@ async function handleTransactionsWebhook(
             where: { plaidAccountId: tx.account_id },
           });
 
-          if (account) {
-            const existingTransaction = await db.transaction.findFirst({
-              where: { accountId: account.id, externalId: tx.transaction_id },
-              select: { metadata: true },
-            });
-            const venmoRouting = getVenmoBankRouting({
-              description: tx.name,
-              merchantName: tx.merchant_name,
-            });
-            const amazonInput = { description: tx.name, merchantName: tx.merchant_name };
-            const amazonCategoryId = getAmazonRoutingCategoryId(
-              amazonInput,
-              amazonTargets
-            );
-            const amazonClassification = getAmazonRoutingClassification(amazonInput);
-            await db.transaction.updateMany({
-              where: { 
-                accountId: account.id,
-                externalId: tx.transaction_id,
-              },
+          if (!account) continue;
+          const existingTransaction = await db.transaction.findFirst({
+            where: { accountId: account.id, externalId: tx.transaction_id },
+            select: { id: true, metadata: true },
+          });
+          if (!existingTransaction) continue;
+          const venmoRouting = getVenmoBankRouting({
+            description: tx.name,
+            merchantName: tx.merchant_name,
+          });
+          const amazonInput = { description: tx.name, merchantName: tx.merchant_name };
+          const amazonCategoryId = getAmazonRoutingCategoryId(
+            amazonInput,
+            amazonTargets
+          );
+          const amazonClassification = getAmazonRoutingClassification(amazonInput);
+          await db.$transaction(async (transactionDb) => {
+            await transactionDb.transaction.update({
+              where: { id: existingTransaction.id },
               data: {
                 amount: Math.abs(tx.amount),
                 type: (venmoRouting?.type ?? (tx.amount < 0 ? 'INCOME' : 'EXPENSE')) as 'EXPENSE' | 'INCOME' | 'TRANSFER',
                 status: tx.pending ? 'PENDING' : 'POSTED',
+                removedAt: null,
                 description: tx.name,
                 merchantName: tx.merchant_name,
                 metadata: mergePlaidTransactionMetadata(
                   mappedTx,
-                  existingTransaction?.metadata,
+                  existingTransaction.metadata,
                   venmoRouting
                     ? { transferDirection: mappedTx.amount > 0 ? 'out' : 'in' }
                     : undefined
@@ -287,15 +358,20 @@ async function handleTransactionsWebhook(
                     : {}),
               },
             });
-          }
+            await upsertTransactionSourceIdentity(transactionDb, {
+              transactionId: existingTransaction.id,
+              sourceSystem: 'PLAID',
+              sourceAccountId: mappedTx.accountId,
+              externalId: mappedTx.transactionId,
+            });
+          });
         }
 
-        // Handle removed transactions
+        // Handle removed transactions without destroying historical identity.
         for (const removed of result.removed) {
-          const txId = typeof removed === 'string' ? removed : removed.transaction_id;
-          await db.transaction.deleteMany({
-            where: { externalId: txId },
-          });
+          const externalId = typeof removed === 'string' ? removed : removed.transaction_id;
+          const sourceAccountId = typeof removed === 'string' ? null : removed.account_id;
+          await tombstonePlaidTransaction(externalId, sourceAccountId);
         }
 
         // Update cursor
@@ -311,13 +387,32 @@ async function handleTransactionsWebhook(
         try {
           const balanceResponse = await getAccountBalances(plaidItem.accessToken);
           for (const balance of balanceResponse.accounts) {
-            await db.financialAccount.updateMany({
+            const account = await db.financialAccount.findFirst({
               where: { plaidAccountId: balance.account_id },
-              data: {
-                currentBalance: balance.balances.current ?? 0,
-                availableBalance: balance.balances.available ?? null,
-              },
+              select: { id: true },
             });
+            if (!account) continue;
+            const effectiveAt = new Date();
+            await db.$transaction([
+              db.financialAccount.update({
+                where: { id: account.id },
+                data: {
+                  currentBalance: balance.balances.current ?? 0,
+                  availableBalance: balance.balances.available ?? null,
+                  lastSyncedAt: effectiveAt,
+                },
+              }),
+              db.accountBalanceSnapshot.create({
+                data: {
+                  accountId: account.id,
+                  balance: balance.balances.current ?? 0,
+                  availableBalance: balance.balances.available ?? null,
+                  currency: balance.balances.iso_currency_code || 'USD',
+                  effectiveAt,
+                  source: 'PLAID_WEBHOOK',
+                },
+              }),
+            ]);
           }
         } catch (balanceError) {
           console.error('Error updating balances:', balanceError);
@@ -331,14 +426,11 @@ async function handleTransactionsWebhook(
       break;
 
     case 'TRANSACTIONS_REMOVED':
-      // Handle bulk transaction removal
       if (body.removed_transactions) {
-        for (const txId of body.removed_transactions) {
-          await db.transaction.deleteMany({
-            where: { externalId: txId },
-          });
+        for (const externalId of body.removed_transactions) {
+          await tombstonePlaidTransaction(externalId);
         }
-        console.log(`Removed ${body.removed_transactions.length} transactions`);
+        console.log(`Tombstoned ${body.removed_transactions.length} transactions`);
       }
       break;
 

@@ -14,11 +14,24 @@ import {
   squareCustomerDisplayName,
   refreshSquareToken,
   type SquareCustomerData,
+  listSquarePayoutEntries,
+  listSquarePayouts,
+  mapSquarePayout,
+  mapSquarePayoutEntry,
 } from '@/lib/square';
 import {
   resolveVendorId,
   createVendorResolverCache,
 } from '@/lib/normalization/vendor-resolver';
+import {
+  refreshTransactionReconciliation,
+  upsertTransactionSourceIdentity,
+} from '@/lib/financial-integrity';
+import {
+  checkSettlementEntries,
+  settlementBankDateWindow,
+  settlementReconciliationStatus,
+} from '@/lib/settlements';
 
 function squarePaymentExternalId(paymentId: string) {
   return `square_${paymentId}`;
@@ -288,7 +301,10 @@ export async function POST(request: NextRequest) {
       const isNew = !canonicalExisting && !legacyExisting;
 
       if (canonicalExisting && legacyExisting) {
-        await db.transaction.delete({ where: { id: legacyExisting.id } });
+        await db.transaction.update({
+          where: { id: legacyExisting.id },
+          data: { status: 'SUPERSEDED', removedAt: new Date() },
+        });
       } else if (!canonicalExisting && legacyExisting) {
         await db.transaction.update({
           where: { id: legacyExisting.id },
@@ -329,6 +345,12 @@ export async function POST(request: NextRequest) {
           metadata: paymentMetadata,
         },
         select: { id: true },
+      });
+      await upsertTransactionSourceIdentity(db, {
+        transactionId: upsertedTx.id,
+        sourceSystem: 'SQUARE',
+        sourceAccountId: connection.id,
+        externalId: mapped.id,
       });
 
       if (isNew) added++;
@@ -497,22 +519,26 @@ export async function POST(request: NextRequest) {
     }
 
     // Orders are no longer written as their own INCOME transactions: every
-    // completed order is already counted by its payment, so the old
-    // syncOrders path double-counted revenue. Orders now only enrich payment
-    // descriptions/metadata (above). Remove any leftover duplicates from
-    // earlier syncs for orders we know are covered by a payment.
+    // completed order is already counted by its payment. Preserve legacy order
+    // rows as superseded provider history instead of deleting them.
     let orderDuplicatesRemoved = 0;
     if (paymentOrderIds.length > 0) {
-      const duplicateOrderIds = paymentOrderIds.map((orderId) => squareOrderExternalId(orderId));
-      const removed = await db.transaction.deleteMany({
+      const duplicateOrderIds = paymentOrderIds.map((orderId) =>
+        squareOrderExternalId(orderId)
+      );
+      const superseded = await db.transaction.updateMany({
         where: {
           accountId: account.id,
           externalId: { in: duplicateOrderIds },
+          status: { not: 'SUPERSEDED' },
         },
+        data: { status: 'SUPERSEDED', removedAt: new Date() },
       });
-      orderDuplicatesRemoved = removed.count;
+      orderDuplicatesRemoved = superseded.count;
       if (orderDuplicatesRemoved > 0) {
-        console.log(`[Square Sync] Removed ${orderDuplicatesRemoved} duplicate order transactions`);
+        console.log(
+          `[Square Sync] Superseded ${orderDuplicatesRemoved} duplicate order transactions`
+        );
       }
     }
 
@@ -555,7 +581,10 @@ export async function POST(request: NextRequest) {
         const isNew = !canonicalExisting && !legacyExisting;
 
         if (canonicalExisting && legacyExisting) {
-          await db.transaction.delete({ where: { id: legacyExisting.id } });
+          await db.transaction.update({
+            where: { id: legacyExisting.id },
+            data: { status: 'SUPERSEDED', removedAt: new Date() },
+          });
         } else if (!canonicalExisting && legacyExisting) {
           await db.transaction.update({
             where: { id: legacyExisting.id },
@@ -566,7 +595,7 @@ export async function POST(request: NextRequest) {
         const txStatus =
           String(mapped.status).toUpperCase() === 'COMPLETED' ? 'POSTED' : 'PENDING';
 
-        await db.transaction.upsert({
+        const storedRefund = await db.transaction.upsert({
           where: {
             accountId_externalId: {
               accountId: account.id,
@@ -598,6 +627,12 @@ export async function POST(request: NextRequest) {
             merchantName: 'Square Refund',
           },
         });
+        await upsertTransactionSourceIdentity(db, {
+          transactionId: storedRefund.id,
+          sourceSystem: 'SQUARE',
+          sourceAccountId: connection.id,
+          externalId: mapped.id,
+        });
 
         if (isNew) added++;
       }
@@ -608,7 +643,6 @@ export async function POST(request: NextRequest) {
     // Sync payouts (bank transfers from Square to seller's bank account)
     let payoutsAdded = 0;
     try {
-      const { listSquarePayouts, mapSquarePayout } = await import('@/lib/square');
       const { payouts } = await listSquarePayouts({
         accessToken,
         beginTime: startTime,
@@ -627,16 +661,12 @@ export async function POST(request: NextRequest) {
       console.log(`[Square Sync] Payout statuses:`, statusCounts);
       
       for (const payout of payouts) {
-        // Sync completed payouts (PAID or COMPLETED status)
-        const status = (payout.status || '').toUpperCase();
-        if (status !== 'PAID' && status !== 'COMPLETED' && status !== 'SENT') {
-          console.log(`[Square Sync] Skipping payout ${payout.id} with status: ${payout.status}`);
-          continue;
-        }
-        
-        const mapped = mapSquarePayout(payout);
-        const externalId = squarePayoutExternalId(mapped.id);
+        const status = String(payout.status ?? '').toUpperCase();
+        if (!['PAID', 'COMPLETED', 'SENT'].includes(status)) continue;
 
+        const mapped = mapSquarePayout(payout);
+        if (!mapped.id || !mapped.date) continue;
+        const externalId = squarePayoutExternalId(mapped.id);
         const existing = await db.transaction.findUnique({
           where: {
             accountId_externalId: {
@@ -646,33 +676,398 @@ export async function POST(request: NextRequest) {
           },
           select: { id: true },
         });
-        
-        await db.transaction.upsert({
+        const { entries: rawEntries } = await listSquarePayoutEntries({
+          accessToken,
+          payoutId: mapped.id,
+          limit: 2000,
+        });
+        const entries = rawEntries.map(mapSquarePayoutEntry);
+        const settlementAmount =
+          Number(payout.amountMoney?.amount ?? Math.round(mapped.amount * 100)) / 100;
+        const entryCheck = checkSettlementEntries(
+          settlementAmount,
+          entries.map((entry) => entry.netAmount)
+        );
+        const effectiveAt = new Date(payout.createdAt ?? mapped.date);
+        const arrivalDate = payout.arrivalDate
+          ? new Date(`${payout.arrivalDate}T00:00:00.000Z`)
+          : null;
+        const bankWindow = settlementBankDateWindow(arrivalDate ?? effectiveAt);
+        const bankCandidates = await db.transaction.findMany({
           where: {
-            accountId_externalId: {
-              accountId: account.id,
-              externalId,
+            account: {
+              userId: session.user.id,
+              plaidAccountId: { not: null },
             },
+            accountId: { not: account.id },
+            status: 'POSTED',
+            type: { in: ['INCOME', 'TRANSFER'] },
+            amount: Math.abs(settlementAmount),
+            date: { gte: bankWindow.from, lte: bankWindow.to },
+            OR: [
+              { description: { contains: 'square', mode: 'insensitive' } },
+              { merchantName: { contains: 'square', mode: 'insensitive' } },
+            ],
           },
-          create: {
+          select: { id: true, amount: true },
+        });
+        const reconciliationStatus = settlementReconciliationStatus({
+          entryCount: entries.length,
+          entriesBalanced: entryCheck.balanced,
+          bankMatchCount: bankCandidates.length,
+        });
+        const referencedExternalIds = entries.flatMap((entry) => [
+          ...(entry.paymentId ? [squarePaymentExternalId(entry.paymentId)] : []),
+          ...(entry.refundId ? [squareRefundExternalId(entry.refundId)] : []),
+        ]);
+        const referencedTransactions = await db.transaction.findMany({
+          where: {
             accountId: account.id,
-            amount: mapped.amount,
-            type: 'TRANSFER', // Payout = money moving from Square to bank, not true expense
-            status: 'POSTED',
-            date: new Date(mapped.date),
-            description: mapped.description,
-            merchantName: 'Square Payout',
-            externalId,
-            isReviewed: false,
+            externalId: { in: referencedExternalIds },
           },
-          update: {
-            amount: mapped.amount,
-            type: 'TRANSFER', // Payout = money moving from Square to bank, not true expense
-            status: 'POSTED',
-            date: new Date(mapped.date),
-            description: mapped.description,
-            merchantName: 'Square Payout',
-          },
+          select: { id: true, externalId: true },
+        });
+        const referencedByExternalId = new Map(
+          referencedTransactions
+            .filter((transaction) => !!transaction.externalId)
+            .map((transaction) => [transaction.externalId!, transaction.id])
+        );
+
+        await db.$transaction(async (tx) => {
+          const payoutTransaction = await tx.transaction.upsert({
+            where: {
+              accountId_externalId: {
+                accountId: account.id,
+                externalId,
+              },
+            },
+            create: {
+              accountId: account.id,
+              amount: Math.abs(settlementAmount),
+              type: 'TRANSFER',
+              status: 'POSTED',
+              date: effectiveAt,
+              description: mapped.description,
+              merchantName: 'Square Payout',
+              externalId,
+              isReviewed: false,
+              metadata: { source: 'square', transferDirection: 'out', payoutId: mapped.id },
+            },
+            update: {
+              amount: Math.abs(settlementAmount),
+              type: 'TRANSFER',
+              status: 'POSTED',
+              removedAt: null,
+              date: effectiveAt,
+              description: mapped.description,
+              merchantName: 'Square Payout',
+              metadata: { source: 'square', transferDirection: 'out', payoutId: mapped.id },
+            },
+          });
+          await upsertTransactionSourceIdentity(tx, {
+            transactionId: payoutTransaction.id,
+            sourceSystem: 'SQUARE',
+            sourceAccountId: connection.id,
+            externalId: mapped.id,
+          });
+          const settlement = await tx.processorSettlement.upsert({
+            where: {
+              accountId_provider_externalId: {
+                accountId: account.id,
+                provider: 'SQUARE',
+                externalId: mapped.id,
+              },
+            },
+            create: {
+              accountId: account.id,
+              transactionId: payoutTransaction.id,
+              provider: 'SQUARE',
+              externalId: mapped.id,
+              status,
+              amount: settlementAmount,
+              currency: mapped.currency,
+              effectiveAt,
+              arrivalDate,
+              reconciliationStatus,
+              reconciledAt: reconciliationStatus === 'MATCHED' ? new Date() : null,
+              metadata: {
+                entryNetAmount: entryCheck.entryNetAmount,
+                entryMismatchCents: entryCheck.mismatchCents,
+                entryCount: entries.length,
+                bankMatchCount: bankCandidates.length,
+              },
+            },
+            update: {
+              transactionId: payoutTransaction.id,
+              status,
+              amount: settlementAmount,
+              currency: mapped.currency,
+              effectiveAt,
+              arrivalDate,
+              reconciliationStatus,
+              reconciledAt: reconciliationStatus === 'MATCHED' ? new Date() : null,
+              metadata: {
+                entryNetAmount: entryCheck.entryNetAmount,
+                entryMismatchCents: entryCheck.mismatchCents,
+                entryCount: entries.length,
+                bankMatchCount: bankCandidates.length,
+              },
+            },
+          });
+          const currentEntryIds = entries.map((entry) => entry.id);
+          const staleEntries = await tx.processorSettlementEntry.findMany({
+            where: {
+              settlementId: settlement.id,
+              isCurrent: true,
+              ...(currentEntryIds.length
+                ? { providerEntryId: { notIn: currentEntryIds } }
+                : {}),
+            },
+            select: {
+              id: true,
+              allocations: {
+                where: { isCurrent: true },
+                select: { id: true, transactionId: true },
+              },
+            },
+          });
+          if (staleEntries.length) {
+            const removedAt = new Date();
+            const staleEntryIds = staleEntries.map((entry) => entry.id);
+            const staleAllocations = staleEntries.flatMap((entry) => entry.allocations);
+            await tx.processorSettlementEntry.updateMany({
+              where: { id: { in: staleEntryIds } },
+              data: { isCurrent: false, removedAt },
+            });
+            if (staleAllocations.length) {
+              await tx.reconciliationAllocation.updateMany({
+                where: {
+                  id: { in: staleAllocations.map((allocation) => allocation.id) },
+                },
+                data: { isCurrent: false, removedAt },
+              });
+              for (const transactionId of Array.from(
+                new Set(staleAllocations.map((allocation) => allocation.transactionId))
+              )) {
+                await refreshTransactionReconciliation(tx, transactionId);
+              }
+            }
+          }
+
+          const retainedBankTransactionId =
+            bankCandidates.length === 1 ? bankCandidates[0].id : null;
+          const staleBankAllocations = await tx.reconciliationAllocation.findMany({
+            where: {
+              settlementId: settlement.id,
+              role: 'BANK_SETTLEMENT',
+              isCurrent: true,
+              ...(retainedBankTransactionId
+                ? { transactionId: { not: retainedBankTransactionId } }
+                : {}),
+            },
+            select: { id: true, transactionId: true },
+          });
+          if (staleBankAllocations.length) {
+            await tx.reconciliationAllocation.updateMany({
+              where: {
+                id: { in: staleBankAllocations.map((allocation) => allocation.id) },
+              },
+              data: { isCurrent: false, removedAt: new Date() },
+            });
+            for (const transactionId of Array.from(
+              new Set(
+                staleBankAllocations.map((allocation) => allocation.transactionId)
+              )
+            )) {
+              await refreshTransactionReconciliation(tx, transactionId);
+            }
+          }
+
+          await tx.reconciliationAllocation.upsert({
+            where: {
+              transactionId_externalSystem_externalObjectType_externalObjectId_role: {
+                transactionId: payoutTransaction.id,
+                externalSystem: 'SQUARE',
+                externalObjectType: 'PAYOUT',
+                externalObjectId: mapped.id,
+                role: 'PROCESSOR_SETTLEMENT',
+              },
+            },
+            create: {
+              transactionId: payoutTransaction.id,
+              userId: session.user.id,
+              settlementId: settlement.id,
+              externalSystem: 'SQUARE',
+              externalObjectType: 'PAYOUT',
+              externalObjectId: mapped.id,
+              role: 'PROCESSOR_SETTLEMENT',
+              amount: Math.abs(settlementAmount),
+              currency: mapped.currency,
+              method: 'IMPORTED',
+              isCurrent: true,
+              removedAt: null,
+            },
+            update: {
+              settlementId: settlement.id,
+              amount: Math.abs(settlementAmount),
+              currency: mapped.currency,
+              method: 'IMPORTED',
+              isCurrent: true,
+              removedAt: null,
+            },
+          });
+
+          for (const entry of entries) {
+            const storedEntry = await tx.processorSettlementEntry.upsert({
+              where: {
+                settlementId_providerEntryId: {
+                  settlementId: settlement.id,
+                  providerEntryId: entry.id,
+                },
+              },
+              create: {
+                settlementId: settlement.id,
+                providerEntryId: entry.id,
+                type: entry.type,
+                effectiveAt: entry.effectiveAt ? new Date(entry.effectiveAt) : null,
+                grossAmount: entry.grossAmount,
+                feeAmount: entry.feeAmount,
+                netAmount: entry.netAmount,
+                currency: entry.currency,
+                paymentExternalId: entry.paymentId,
+                refundExternalId: entry.refundId,
+                metadata: entry.metadata,
+                isCurrent: true,
+                removedAt: null,
+              },
+              update: {
+                type: entry.type,
+                effectiveAt: entry.effectiveAt ? new Date(entry.effectiveAt) : null,
+                grossAmount: entry.grossAmount,
+                feeAmount: entry.feeAmount,
+                netAmount: entry.netAmount,
+                currency: entry.currency,
+                paymentExternalId: entry.paymentId,
+                refundExternalId: entry.refundId,
+                metadata: entry.metadata,
+                isCurrent: true,
+                removedAt: null,
+              },
+            });
+            const referencedTransactionId = entry.paymentId
+              ? referencedByExternalId.get(squarePaymentExternalId(entry.paymentId))
+              : entry.refundId
+                ? referencedByExternalId.get(squareRefundExternalId(entry.refundId))
+                : undefined;
+            const staleOriginAllocations =
+              await tx.reconciliationAllocation.findMany({
+                where: {
+                  settlementEntryId: storedEntry.id,
+                  role: 'ORIGINATING_ACTIVITY',
+                  isCurrent: true,
+                  ...(referencedTransactionId
+                    ? { transactionId: { not: referencedTransactionId } }
+                    : {}),
+                },
+                select: { id: true, transactionId: true },
+              });
+            if (staleOriginAllocations.length) {
+              await tx.reconciliationAllocation.updateMany({
+                where: {
+                  id: {
+                    in: staleOriginAllocations.map((allocation) => allocation.id),
+                  },
+                },
+                data: { isCurrent: false, removedAt: new Date() },
+              });
+              for (const transactionId of Array.from(
+                new Set(
+                  staleOriginAllocations.map((allocation) => allocation.transactionId)
+                )
+              )) {
+                await refreshTransactionReconciliation(tx, transactionId);
+              }
+            }
+            if (!referencedTransactionId) continue;
+            const allocationAmount = Math.abs(entry.grossAmount || entry.netAmount);
+            await tx.reconciliationAllocation.upsert({
+              where: {
+                transactionId_externalSystem_externalObjectType_externalObjectId_role: {
+                  transactionId: referencedTransactionId,
+                  externalSystem: 'SQUARE',
+                  externalObjectType: 'PAYOUT_ENTRY',
+                  externalObjectId: entry.id,
+                  role: 'ORIGINATING_ACTIVITY',
+                },
+              },
+              create: {
+                transactionId: referencedTransactionId,
+                userId: session.user.id,
+                settlementId: settlement.id,
+                settlementEntryId: storedEntry.id,
+                externalSystem: 'SQUARE',
+                externalObjectType: 'PAYOUT_ENTRY',
+                externalObjectId: entry.id,
+                role: 'ORIGINATING_ACTIVITY',
+                amount: allocationAmount,
+                currency: entry.currency,
+                method: 'IMPORTED',
+                isCurrent: true,
+                removedAt: null,
+              },
+              update: {
+                settlementId: settlement.id,
+                settlementEntryId: storedEntry.id,
+                amount: allocationAmount,
+                currency: entry.currency,
+                method: 'IMPORTED',
+                isCurrent: true,
+                removedAt: null,
+              },
+            });
+            await refreshTransactionReconciliation(tx, referencedTransactionId);
+          }
+
+          if (bankCandidates.length === 1) {
+            const bankTransaction = bankCandidates[0];
+            await tx.reconciliationAllocation.upsert({
+              where: {
+                transactionId_externalSystem_externalObjectType_externalObjectId_role: {
+                  transactionId: bankTransaction.id,
+                  externalSystem: 'SQUARE',
+                  externalObjectType: 'PAYOUT',
+                  externalObjectId: mapped.id,
+                  role: 'BANK_SETTLEMENT',
+                },
+              },
+              create: {
+                transactionId: bankTransaction.id,
+                userId: session.user.id,
+                settlementId: settlement.id,
+                externalSystem: 'SQUARE',
+                externalObjectType: 'PAYOUT',
+                externalObjectId: mapped.id,
+                role: 'BANK_SETTLEMENT',
+                amount: Math.abs(settlementAmount),
+                currency: mapped.currency,
+                method: 'AUTO',
+                confidence: 0.95,
+                isCurrent: true,
+                removedAt: null,
+              },
+              update: {
+                settlementId: settlement.id,
+                amount: Math.abs(settlementAmount),
+                currency: mapped.currency,
+                method: 'AUTO',
+                confidence: 0.95,
+                isCurrent: true,
+                removedAt: null,
+              },
+            });
+            await refreshTransactionReconciliation(tx, bankTransaction.id);
+          }
+          await refreshTransactionReconciliation(tx, payoutTransaction.id);
         });
 
         if (!existing) payoutsAdded++;

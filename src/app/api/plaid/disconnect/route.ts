@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { removeItem } from '@/lib/plaid';
+import { recordFinancialAudit } from '@/lib/financial-integrity';
 
 export async function POST(request: NextRequest) {
   try {
@@ -40,43 +41,56 @@ export async function POST(request: NextRequest) {
       console.error(`[Plaid Disconnect] Warning: Could not remove from Plaid API:`, error);
     }
 
-    // Delete transactions associated with accounts linked to this Plaid item
-    await db.transaction.deleteMany({
-      where: {
-        account: {
+    const disconnectedAt = new Date();
+    const disconnectedAccounts = await db.$transaction(async (tx) => {
+      const accounts = await tx.financialAccount.findMany({
+        where: {
+          userId: session.user.id,
           plaidItemId: plaidItem.itemId,
         },
-      },
+      });
+      await tx.financialAccount.updateMany({
+        where: { id: { in: accounts.map((account) => account.id) } },
+        data: { isActive: false },
+      });
+      await tx.plaidItem.update({
+        where: { id: plaidItem.id },
+        data: {
+          status: 'disconnected',
+          accessToken: '',
+          cursor: null,
+          errorCode: null,
+        },
+      });
+      for (const account of accounts) {
+        await recordFinancialAudit(tx, {
+          userId: session.user.id,
+          actorUserId: session.user.id,
+          financialAccountId: account.id,
+          action: 'PLAID_ACCOUNT_DISCONNECTED',
+          source: 'MANUAL',
+          reason: 'Plaid item disconnected by user',
+          changedFields: ['isActive', 'plaidItem.status', 'plaidItem.accessToken'],
+          before: {
+            isActive: account.isActive,
+            plaidItemStatus: plaidItem.status,
+          },
+          after: {
+            isActive: false,
+            plaidItemStatus: 'disconnected',
+            disconnectedAt,
+          },
+        });
+      }
+      return accounts;
     });
-    console.log(`[Plaid Disconnect] Deleted associated transactions`);
-
-    // Delete financial accounts linked to this Plaid item
-    await db.financialAccount.deleteMany({
-      where: {
-        plaidItemId: plaidItem.itemId,
-      },
-    });
-    console.log(`[Plaid Disconnect] Deleted associated financial accounts`);
-
-    // Delete Plaid accounts (this should cascade, but let's be explicit)
-    await db.plaidAccount.deleteMany({
-      where: {
-        plaidItemId: plaidItem.id,
-      },
-    });
-    console.log(`[Plaid Disconnect] Deleted Plaid accounts`);
-
-    // Delete the PlaidItem itself
-    await db.plaidItem.delete({
-      where: {
-        id: plaidItem.id,
-      },
-    });
-    console.log(`[Plaid Disconnect] Deleted PlaidItem from database`);
+    console.log(
+      `[Plaid Disconnect] Deactivated ${disconnectedAccounts.length} account(s); financial history preserved`
+    );
 
     return NextResponse.json({
       success: true,
-      message: 'Plaid account disconnected. You can now reconnect to get full transaction history.',
+      message: 'Plaid account disconnected. Existing financial history was preserved.',
     });
   } catch (error) {
     console.error('[Plaid Disconnect] Error:', error);

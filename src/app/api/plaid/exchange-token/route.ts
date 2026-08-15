@@ -12,6 +12,7 @@ import {
   mergePlaidTransactionMetadata,
 } from '@/lib/plaid';
 import { getVenmoBankRouting } from '@/lib/venmo-routing';
+import { upsertTransactionSourceIdentity } from '@/lib/financial-integrity';
 
 export async function POST(request: NextRequest) {
   try {
@@ -93,6 +94,15 @@ export async function POST(request: NextRequest) {
           plaidAccountId: account.account_id,
           plaidItemId: plaidItem.itemId, // Use itemId, not id
           lastSyncedAt: new Date(),
+          balanceSnapshots: {
+            create: {
+              balance: account.balances.current || 0,
+              availableBalance: account.balances.available || undefined,
+              currency: account.balances.iso_currency_code || 'USD',
+              effectiveAt: new Date(),
+              source: 'PLAID_LINK',
+            },
+          },
         },
       });
 
@@ -152,7 +162,7 @@ export async function POST(request: NextRequest) {
             merchantName: mappedTx.merchantName,
           });
           // Plaid convention: positive = money OUT (expense), negative = money IN (income)
-          await db.transaction.create({
+          const created = await db.transaction.create({
             data: {
               accountId: financialAccountId,
               amount: Math.abs(mappedTx.amount),
@@ -172,6 +182,12 @@ export async function POST(request: NextRequest) {
               ),
               ...(venmoRouting ? { classification: venmoRouting.classification } : {}),
             },
+          });
+          await upsertTransactionSourceIdentity(db, {
+            transactionId: created.id,
+            sourceSystem: 'PLAID',
+            sourceAccountId: mappedTx.accountId,
+            externalId: mappedTx.transactionId,
           });
           totalAdded++;
         }

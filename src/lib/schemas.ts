@@ -61,7 +61,21 @@ export const updateAccountSchema = createAccountSchema.partial();
 // ============================================================================
 
 export const transactionTypeEnum = z.enum(['INCOME', 'EXPENSE', 'TRANSFER']);
-export const transactionStatusEnum = z.enum(['PENDING', 'POSTED', 'CANCELLED']);
+export const transactionStatusEnum = z.enum([
+  'PENDING',
+  'POSTED',
+  'CANCELLED',
+  'REMOVED',
+  'REVERSED',
+  'SUPERSEDED',
+]);
+export const reconciliationStatusEnum = z.enum([
+  'UNMATCHED',
+  'PARTIAL',
+  'MATCHED',
+  'EXCLUDED',
+]);
+export const reconciliationMethodEnum = z.enum(['AUTO', 'MANUAL', 'IMPORTED']);
 export const classificationTypeEnum = z.enum([
   'COGS',
   'OPERATING',
@@ -101,8 +115,10 @@ export const updateTransactionSchema = createTransactionBaseSchema.partial().ext
   categoryId: z.string().nullable().optional(),
   classification: classificationTypeEnum.nullable().optional(),
   isReviewed: z.boolean().optional(),
-  isReconciled: z.boolean().optional(),
   userDescription: z.string().max(500).optional(),
+  reconciliationStatus: reconciliationStatusEnum.optional(),
+  reconciliationMethod: reconciliationMethodEnum.nullable().optional(),
+  reconciliationReason: z.string().max(1000).optional(),
 });
 
 export const transactionFiltersSchema = z.object({
@@ -113,7 +129,7 @@ export const transactionFiltersSchema = z.object({
   status: transactionStatusEnum.optional(),
   entityId: z.string().optional(),
   isReviewed: z.boolean().optional(),
-  isReconciled: z.boolean().optional(),
+  reconciliationStatus: reconciliationStatusEnum.optional(),
   search: z.string().optional(),
   minAmount: z.number().optional(),
   maxAmount: z.number().optional(),

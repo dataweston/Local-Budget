@@ -9,6 +9,11 @@ import {
 import { Prisma, type ClassificationType } from '@prisma/client';
 import { looksLikeMisclassifiedRevenue } from '@/lib/reclassify';
 import { recordCategoryFeedback } from '@/lib/ml/feedback';
+import {
+  changedFinancialFields,
+  recordFinancialAudit,
+  transactionBalanceEffect,
+} from '@/lib/financial-integrity';
 
 export const transactionsRouter = createTRPCRouter({
   // List transactions with filters
@@ -29,7 +34,9 @@ export const transactionsRouter = createTRPCRouter({
       if (input?.type) where.type = input.type;
       if (input?.status) where.status = input.status;
       if (input?.isReviewed !== undefined) where.isReviewed = input.isReviewed;
-      if (input?.isReconciled !== undefined) where.isReconciled = input.isReconciled;
+      if (input?.reconciliationStatus) {
+        where.reconciliationStatus = input.reconciliationStatus;
+      }
 
       if (input?.entityId) {
         where.OR = [
@@ -151,6 +158,10 @@ export const transactionsRouter = createTRPCRouter({
           splits: {
             include: { category: true },
           },
+          sourceIdentities: { orderBy: { firstSeenAt: 'asc' } },
+          allocations: { orderBy: { acceptedAt: 'asc' } },
+          auditEvents: { orderBy: { createdAt: 'desc' }, take: 100 },
+          settlement: { include: { entries: true } },
         },
       });
       return transaction;
@@ -179,36 +190,58 @@ export const transactionsRouter = createTRPCRouter({
         categoryDefaultClassification = category.defaultClassification;
       }
 
-      const transaction = await ctx.db.transaction.create({
-        data: {
-          accountId: input.accountId,
-          amount: input.amount,
-          type: input.type,
-          status: input.status,
-          date: input.date,
-          description: input.description,
-          merchantName: input.merchantName,
-          categoryId: input.categoryId,
-          classification:
-            input.classification ?? (categoryDefaultClassification as any) ?? undefined,
-          payerId: input.payerId,
-          incurredById: input.incurredById,
-          notes: input.notes,
-        },
-      });
-
-      // Update account balance
-      const balanceChange = input.type === 'EXPENSE' ? -Math.abs(Number(input.amount)) : Number(input.amount);
-      await ctx.db.financialAccount.update({
-        where: { id: input.accountId },
-        data: {
-          currentBalance: {
-            increment: balanceChange,
+      return ctx.db.$transaction(async (tx) => {
+        const transaction = await tx.transaction.create({
+          data: {
+            accountId: input.accountId,
+            amount: input.amount,
+            type: input.type,
+            status: input.status,
+            date: input.date,
+            description: input.description,
+            merchantName: input.merchantName,
+            categoryId: input.categoryId,
+            classification:
+              input.classification ?? categoryDefaultClassification ?? undefined,
+            payerId: input.payerId,
+            incurredById: input.incurredById,
+            notes: input.notes,
           },
-        },
-      });
+        });
 
-      return transaction;
+        const balanceChange = transactionBalanceEffect(transaction);
+        if (balanceChange !== 0) {
+          await tx.financialAccount.update({
+            where: { id: input.accountId },
+            data: { currentBalance: { increment: balanceChange } },
+          });
+        }
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          transactionId: transaction.id,
+          financialAccountId: input.accountId,
+          action: 'TRANSACTION_CREATED',
+          source: 'MANUAL',
+          reason: 'Manual transaction creation',
+          changedFields: [
+            'accountId',
+            'amount',
+            'type',
+            'status',
+            'date',
+            'description',
+            'merchantName',
+            'categoryId',
+            'classification',
+            'payerId',
+            'incurredById',
+            'notes',
+          ],
+          after: transaction,
+        });
+        return transaction;
+      });
     }),
 
   // Update transaction
@@ -229,7 +262,7 @@ export const transactionsRouter = createTRPCRouter({
       });
       if (!existing) throw new Error('Transaction not found');
 
-      const data = { ...input.data };
+      const { reconciliationReason, ...data } = input.data;
 
       // When the category is being changed (including unassigned), keep the
       // classification in sync with the new category's default unless the
@@ -272,60 +305,143 @@ export const transactionsRouter = createTRPCRouter({
         }
       }
 
-      const transaction = await ctx.db.transaction.update({
-        where: { id: input.id },
-        data,
-      });
-
-      // A manual category choice is durable training data. This is especially
-      // useful for Venmo, where the counterparty is now the merchant identity:
-      // the next payment to the same person/business can be suggested correctly.
-      if ('categoryId' in input.data && data.categoryId) {
-        await recordCategoryFeedback(ctx.db, {
-          userId: ctx.session.user.id,
-          merchantName: existing.merchantName,
-          description: existing.description,
-          type: existing.type,
-          categoryId: data.categoryId,
-          wasCorrection: existing.categoryId !== data.categoryId,
+      if (data.accountId && data.accountId !== existing.accountId) {
+        const targetAccount = await ctx.db.financialAccount.findFirst({
+          where: { id: data.accountId, userId: ctx.session.user.id },
+          select: { id: true },
         });
+        if (!targetAccount) throw new Error('Target account not found');
       }
-      return transaction;
+      if (data.reconciliationStatus) {
+        const reconciliationData = data as Prisma.TransactionUncheckedUpdateInput;
+        if (data.reconciliationStatus === 'MATCHED') {
+          reconciliationData.reconciliationMethod =
+            data.reconciliationMethod ?? 'MANUAL';
+          reconciliationData.reconciledAt = new Date();
+        } else {
+          reconciliationData.reconciledAt = null;
+        }
+      }
+
+      return ctx.db.$transaction(async (tx) => {
+        const transaction = await tx.transaction.update({
+          where: { id: input.id },
+          data,
+        });
+
+        const beforeEffect = transactionBalanceEffect(existing);
+        const afterEffect = transactionBalanceEffect(transaction);
+        if (existing.accountId === transaction.accountId) {
+          const delta = afterEffect - beforeEffect;
+          if (delta !== 0) {
+            await tx.financialAccount.update({
+              where: { id: transaction.accountId },
+              data: { currentBalance: { increment: delta } },
+            });
+          }
+        } else {
+          if (beforeEffect !== 0) {
+            await tx.financialAccount.update({
+              where: { id: existing.accountId },
+              data: { currentBalance: { increment: -beforeEffect } },
+            });
+          }
+          if (afterEffect !== 0) {
+            await tx.financialAccount.update({
+              where: { id: transaction.accountId },
+              data: { currentBalance: { increment: afterEffect } },
+            });
+          }
+        }
+
+        const auditedFields = changedFinancialFields(
+          existing as unknown as Record<string, unknown>,
+          transaction as unknown as Record<string, unknown>,
+          [
+            'accountId',
+            'amount',
+            'type',
+            'status',
+            'date',
+            'description',
+            'merchantName',
+            'categoryId',
+            'classification',
+            'payerId',
+            'incurredById',
+            'notes',
+            'userDescription',
+            'isReviewed',
+            'reconciliationStatus',
+            'reconciliationMethod',
+            'reconciledAt',
+          ]
+        );
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          transactionId: transaction.id,
+          financialAccountId: transaction.accountId,
+          action: 'TRANSACTION_UPDATED',
+          source: 'MANUAL',
+          reason: reconciliationReason ?? 'Manual transaction update',
+          changedFields: auditedFields,
+          before: existing,
+          after: transaction,
+        });
+
+        if ('categoryId' in input.data && data.categoryId) {
+          await recordCategoryFeedback(tx, {
+            userId: ctx.session.user.id,
+            merchantName: existing.merchantName,
+            description: existing.description,
+            type: existing.type,
+            categoryId: data.categoryId,
+            wasCorrection: existing.categoryId !== data.categoryId,
+          });
+        }
+        return transaction;
+      });
     }),
 
-  // Delete transaction
-  delete: protectedProcedure
-    .input(z.object({ id: z.string() }))
+  // Void a transaction while preserving its audit and provider history.
+  void: protectedProcedure
+    .input(z.object({ id: z.string(), reason: z.string().min(1).max(1000) }))
     .mutation(async ({ ctx, input }) => {
-      const transaction = await ctx.db.transaction.findFirst({
-        where: { 
+      const existing = await ctx.db.transaction.findFirst({
+        where: {
           id: input.id,
           account: { userId: ctx.session.user.id },
         },
-        select: { amount: true, accountId: true, type: true },
       });
+      if (!existing) throw new Error('Transaction not found');
 
-      if (!transaction) throw new Error('Transaction not found');
-
-      // Revert the balance change
-      const balanceRevert = transaction.type === 'EXPENSE' 
-        ? Math.abs(Number(transaction.amount)) 
-        : -Number(transaction.amount);
-      
-      await ctx.db.financialAccount.update({
-        where: { id: transaction.accountId },
-        data: {
-          currentBalance: {
-            increment: balanceRevert,
-          },
-        },
+      return ctx.db.$transaction(async (tx) => {
+        const transaction = await tx.transaction.update({
+          where: { id: input.id },
+          data: { status: 'CANCELLED' },
+        });
+        const previousEffect = transactionBalanceEffect(existing);
+        if (previousEffect !== 0) {
+          await tx.financialAccount.update({
+            where: { id: existing.accountId },
+            data: { currentBalance: { increment: -previousEffect } },
+          });
+        }
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          transactionId: transaction.id,
+          financialAccountId: transaction.accountId,
+          action: 'TRANSACTION_VOIDED',
+          source: 'MANUAL',
+          reason: input.reason,
+          changedFields: ['status'],
+          before: existing,
+          after: transaction,
+        });
+        return { success: true, transaction };
       });
-
-      await ctx.db.transaction.delete({
-        where: { id: input.id },
-      });
-
-      return { success: true };
     }),
 
   // Bulk categorize
@@ -335,6 +451,7 @@ export const transactionsRouter = createTRPCRouter({
         transactionIds: z.array(z.string()),
         categoryId: z.string().nullable().optional(),
         classification: classificationTypeEnum.nullable().optional(),
+        reason: z.string().min(1).max(1000).default('Bulk categorization'),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -350,6 +467,9 @@ export const transactionsRouter = createTRPCRouter({
           merchantName: true,
           description: true,
           type: true,
+          classification: true,
+          isReviewed: true,
+          accountId: true,
         },
       });
       if (owned.length !== input.transactionIds.length) {
@@ -386,25 +506,48 @@ export const transactionsRouter = createTRPCRouter({
         bulkUpdateData.classification = classificationToApply;
       }
 
-      await ctx.db.transaction.updateMany({
-        where: { id: { in: input.transactionIds } },
-        data: bulkUpdateData,
-      });
-
-      if (input.categoryId) {
-        await Promise.all(
-          owned.map((tx) =>
-            recordCategoryFeedback(ctx.db, {
+      await ctx.db.$transaction(async (tx) => {
+        await tx.transaction.updateMany({
+          where: { id: { in: input.transactionIds } },
+          data: bulkUpdateData,
+        });
+        for (const existing of owned) {
+          const after = {
+            ...existing,
+            ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
+            ...(classificationToApply !== undefined
+              ? { classification: classificationToApply }
+              : {}),
+            isReviewed: bulkUpdateData.isReviewed,
+          };
+          await recordFinancialAudit(tx, {
+            userId: ctx.session.user.id,
+            actorUserId: ctx.session.user.id,
+            transactionId: existing.id,
+            financialAccountId: existing.accountId,
+            action: 'TRANSACTION_BULK_CLASSIFIED',
+            source: 'MANUAL',
+            reason: input.reason,
+            changedFields: changedFinancialFields(
+              existing as unknown as Record<string, unknown>,
+              after as unknown as Record<string, unknown>,
+              ['categoryId', 'classification', 'isReviewed']
+            ),
+            before: existing,
+            after,
+          });
+          if (input.categoryId) {
+            await recordCategoryFeedback(tx, {
               userId: ctx.session.user.id,
-              merchantName: tx.merchantName,
-              description: tx.description,
-              type: tx.type,
-              categoryId: input.categoryId!,
-              wasCorrection: tx.categoryId !== input.categoryId,
-            })
-          )
-        );
-      }
+              merchantName: existing.merchantName,
+              description: existing.description,
+              type: existing.type,
+              categoryId: input.categoryId,
+              wasCorrection: existing.categoryId !== input.categoryId,
+            });
+          }
+        }
+      });
       return { success: true, count: input.transactionIds.length };
     }),
 

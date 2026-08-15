@@ -4,6 +4,7 @@ import {
   createAccountSchema,
   updateAccountSchema,
 } from '@/lib/schemas';
+import { recordFinancialAudit } from '@/lib/financial-integrity';
 
 export const accountsRouter = createTRPCRouter({
   // Get all accounts for the current user
@@ -93,20 +94,38 @@ export const accountsRouter = createTRPCRouter({
       return account;
     }),
 
-  // Delete an account
-  delete: protectedProcedure
-    .input(z.object({ id: z.string() }))
+  // Deactivate an account without destroying its financial history.
+  deactivate: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        reason: z.string().min(1).max(1000).default('Account deactivated'),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
-      // Verify ownership
       const existing = await ctx.db.financialAccount.findFirst({
         where: { id: input.id, userId: ctx.session.user.id },
       });
       if (!existing) throw new Error('Account not found');
 
-      await ctx.db.financialAccount.delete({
-        where: { id: input.id },
+      return ctx.db.$transaction(async (tx) => {
+        const account = await tx.financialAccount.update({
+          where: { id: input.id },
+          data: { isActive: false },
+        });
+        await recordFinancialAudit(tx, {
+          userId: ctx.session.user.id,
+          actorUserId: ctx.session.user.id,
+          financialAccountId: account.id,
+          action: 'ACCOUNT_DEACTIVATED',
+          source: 'MANUAL',
+          reason: input.reason,
+          changedFields: ['isActive'],
+          before: { isActive: existing.isActive },
+          after: { isActive: false },
+        });
+        return { success: true, account };
       });
-      return { success: true };
     }),
 
   // Get account balances summary

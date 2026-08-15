@@ -136,6 +136,7 @@ export interface PlaidTransactionData {
   merchantName?: string;
   category?: string[];
   pending: boolean;
+  pendingTransactionId?: string;
   originalDescription?: string;
   counterparties?: Array<{
     name?: string;
@@ -171,6 +172,7 @@ export function mapPlaidTransaction(transaction: any): PlaidTransactionData {
     merchantName: transaction.merchant_name || undefined,
     category: transaction.category || undefined,
     pending: transaction.pending,
+    pendingTransactionId: transaction.pending_transaction_id || undefined,
     originalDescription: transaction.original_description || undefined,
     counterparties: Array.isArray(transaction.counterparties)
       ? transaction.counterparties.map((counterparty: any) => ({
@@ -227,6 +229,7 @@ export function mergePlaidTransactionMetadata(
     paymentChannel: transaction.paymentChannel,
     paymentMeta: transaction.paymentMeta,
     category: transaction.category,
+    pendingTransactionId: transaction.pendingTransactionId,
   };
 
   return JSON.parse(

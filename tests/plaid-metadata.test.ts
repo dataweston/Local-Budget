@@ -11,6 +11,7 @@ describe('Plaid transaction metadata preservation', () => {
       name: 'Venmo',
       merchant_name: null,
       pending: false,
+      pending_transaction_id: 'pending-tx-1',
       original_description: 'VENMO PAYMENT 1234',
       counterparties: [{ name: 'Shared Kitchen LLC', type: 'merchant' }],
       payment_channel: 'other',
@@ -21,6 +22,7 @@ describe('Plaid transaction metadata preservation', () => {
       originalDescription: 'VENMO PAYMENT 1234',
       counterparties: [{ name: 'Shared Kitchen LLC', type: 'merchant' }],
       paymentMeta: { payee: 'Shared Kitchen LLC', reason: 'July kitchen rental' },
+      pendingTransactionId: 'pending-tx-1',
     });
   });
 

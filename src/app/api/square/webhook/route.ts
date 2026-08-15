@@ -5,6 +5,7 @@ import {
   bulkRetrieveSquareCustomers,
   squareCustomerDisplayName,
 } from '@/lib/square';
+import { upsertTransactionSourceIdentity } from '@/lib/financial-integrity';
 
 // Resolve a single Square customer id to a stored SquareCustomer row, using the
 // connection's access token. Returns the row id + display name, or nulls if the
@@ -281,24 +282,27 @@ async function handlePaymentEvent(
     },
   };
 
-  // If both legacy + canonical exist, drop legacy
   if (canonicalExisting && legacyExisting) {
-    await db.transaction.delete({ where: { id: legacyExisting.id } });
+    await db.transaction.update({
+      where: { id: legacyExisting.id },
+      data: { status: 'SUPERSEDED', removedAt: new Date() },
+    });
   }
 
-  // Prefer updating canonical; otherwise upgrade legacy to canonical; otherwise create
   const target = canonicalExisting ?? legacyExisting;
-  if (target) {
-    // Always update on payment.created/payment.updated to keep fields current
-    await db.transaction.update({
-      where: { id: target.id },
-      data: transactionData,
-    });
-    console.log(`Upserted Square payment ${payment.id}`);
-  } else {
-    await db.transaction.create({ data: transactionData });
-    console.log(`Created Square payment ${payment.id}`);
-  }
+  const stored = target
+    ? await db.transaction.update({
+        where: { id: target.id },
+        data: transactionData,
+      })
+    : await db.transaction.create({ data: transactionData });
+  await upsertTransactionSourceIdentity(db, {
+    transactionId: stored.id,
+    sourceSystem: 'SQUARE',
+    sourceAccountId: connection.id,
+    externalId: payment.id,
+  });
+  console.log(`${target ? 'Upserted' : 'Created'} Square payment ${payment.id}`);
 }
 
 async function handlePaymentCompleted(
@@ -368,7 +372,10 @@ async function handleRefundEvent(
   );
 
   if (canonicalExisting && legacyExisting) {
-    await db.transaction.delete({ where: { id: legacyExisting.id } });
+    await db.transaction.update({
+      where: { id: legacyExisting.id },
+      data: { status: 'SUPERSEDED', removedAt: new Date() },
+    });
   }
 
   const target = canonicalExisting ?? legacyExisting;
@@ -392,29 +399,30 @@ async function handleRefundEvent(
     },
   };
 
+  let storedId: string | null = null;
   if (target) {
-    if (eventType === 'refund.updated') {
-      await db.transaction.update({
-        where: { id: target.id },
-        data: {
-          status: mapSquareStatus(refund.status),
-          externalId: canonicalExternalId,
-        },
-      });
-      console.log(`Updated refund ${refund.id}`);
-    } else if (eventType === 'refund.created') {
-      await db.transaction.update({
-        where: { id: target.id },
-        data: baseData,
-      });
-      console.log(`Upserted refund transaction for ${refund.id}`);
-    }
-    return;
+    const stored = await db.transaction.update({
+      where: { id: target.id },
+      data:
+        eventType === 'refund.updated'
+          ? {
+              status: mapSquareStatus(refund.status),
+              externalId: canonicalExternalId,
+            }
+          : baseData,
+    });
+    storedId = stored.id;
+  } else if (eventType === 'refund.created') {
+    const stored = await db.transaction.create({ data: baseData });
+    storedId = stored.id;
   }
-
-  if (eventType === 'refund.created') {
-    await db.transaction.create({ data: baseData });
-    console.log(`Created refund transaction for ${refund.id}`);
+  if (storedId) {
+    await upsertTransactionSourceIdentity(db, {
+      transactionId: storedId,
+      sourceSystem: 'SQUARE',
+      sourceAccountId: connection.id,
+      externalId: refund.id,
+    });
   }
 }
 

@@ -61,7 +61,7 @@ export function AccountsList() {
   const router = useRouter();
   const { data: accounts, isLoading, refetch } = api.accounts.list.useQuery();
   const { data: balances } = api.accounts.balances.useQuery();
-  const deleteAccount = api.accounts.delete.useMutation({
+  const deactivateAccount = api.accounts.deactivate.useMutation({
     onSuccess: () => refetch(),
   });
 
@@ -93,14 +93,14 @@ export function AccountsList() {
     }
   };
 
-  const handleDeleteAccount = async (accountId: string) => {
-    if (confirm('Are you sure you want to delete this account? This will also delete all associated transactions.')) {
-      deleteAccount.mutate({ id: accountId });
+  const handleDeactivateAccount = async (accountId: string) => {
+    if (confirm('Deactivate this account? Its transactions and audit history will be preserved.')) {
+      deactivateAccount.mutate({ id: accountId, reason: 'Deactivated from accounts page' });
     }
   };
 
   const handleDisconnectPlaid = async (plaidItemId: string) => {
-    if (confirm('Disconnect this bank account? This will remove the account and all its transactions. You can reconnect to get up to 2 years of transaction history.')) {
+    if (confirm('Disconnect this bank account? Syncing will stop, but the account and all financial history will be preserved.')) {
       try {
         const response = await fetch('/api/plaid/disconnect', {
           method: 'POST',
@@ -410,15 +410,15 @@ export function AccountsList() {
                                 onClick={() => handleDisconnectPlaid(account.plaidItemId!)}
                               >
                                 <Link2 className="h-4 w-4 mr-2" />
-                                Disconnect & Reconnect (for 2yr history)
+                                Disconnect Bank Sync
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuItem 
                               className="text-red-600"
-                              onClick={() => handleDeleteAccount(account.id)}
+                              onClick={() => handleDeactivateAccount(account.id)}
                             >
                               <Trash2 className="h-4 w-4 mr-2" />
-                              Delete Account
+                              Deactivate Account
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>

@@ -1,4 +1,10 @@
-import { SquareClient, SquareEnvironment, SquareError } from 'square';
+import {
+  SquareClient,
+  SquareEnvironment,
+  SquareError,
+  type PayoutEntry,
+} from 'square';
+import type { Prisma } from '@prisma/client';
 
 const squareEnv = process.env.SQUARE_ENV || process.env.SQUARE_ENVIRONMENT;
 const isSquareProduction = squareEnv === 'production';
@@ -274,6 +280,18 @@ export async function listSquarePayouts(options: {
   return { payouts };
 }
 
+// List the authoritative balance activities that explain a payout.
+export async function listSquarePayoutEntries(options: {
+  accessToken?: string;
+  payoutId: string;
+  limit?: number;
+}) {
+  const client = options.accessToken ? createUserClient(options.accessToken) : squareClient;
+  const page = await client.payouts.listEntries({ payoutId: options.payoutId });
+  const entries = await collectAllPages(page, options.limit || 1000);
+  return { entries };
+}
+
 // Resolve opaque customer ids to profiles via the Customers API. Square's
 // BulkRetrieveCustomers returns a map keyed by customer id, each value a
 // GetCustomerResponse carrying `.customer`. Batched to be safe on large id sets.
@@ -543,6 +561,61 @@ export function mapSquarePayout(payout: any): SquareTransactionData {
     date: payout.createdAt,
     description: `Payout to ${destType}${payout.arrivalDate ? ` (${payout.arrivalDate})` : ''}`,
     status: payout.status,
+  };
+}
+
+export interface SquarePayoutEntryData {
+  id: string;
+  payoutId: string;
+  type: string;
+  effectiveAt?: string;
+  grossAmount: number;
+  feeAmount: number;
+  netAmount: number;
+  currency: string;
+  paymentId?: string;
+  refundId?: string;
+  metadata: Prisma.InputJsonObject;
+}
+
+function payoutEntryReference(
+  entry: Record<string, unknown>,
+  field: 'paymentId' | 'refundId'
+): string | undefined {
+  for (const [key, value] of Object.entries(entry)) {
+    if (!key.startsWith('type') || !value || typeof value !== 'object') continue;
+    const reference = (value as Record<string, unknown>)[field];
+    if (typeof reference === 'string' && reference) return reference;
+  }
+  return undefined;
+}
+
+function jsonSafeRecord(value: unknown): Prisma.InputJsonObject {
+  return JSON.parse(
+    JSON.stringify(value, (_key, item) =>
+      typeof item === 'bigint' ? item.toString() : item
+    )
+  ) as Prisma.InputJsonObject;
+}
+
+export function mapSquarePayoutEntry(entry: PayoutEntry): SquarePayoutEntryData {
+  const gross = entry.grossAmountMoney;
+  const fee = entry.feeAmountMoney;
+  const net = entry.netAmountMoney;
+  const currency = net?.currency ?? gross?.currency ?? fee?.currency ?? 'USD';
+  const entryRecord = entry as unknown as Record<string, unknown>;
+  return {
+    id: entry.id,
+    payoutId: entry.payoutId,
+    type: String(entry.type ?? 'UNKNOWN'),
+    effectiveAt: entry.effectiveAt ?? undefined,
+    grossAmount: Number(gross?.amount ?? 0) / 100,
+    feeAmount: Number(fee?.amount ?? 0) / 100,
+    netAmount: Number(net?.amount ?? 0) / 100,
+    currency: String(currency),
+    paymentId: payoutEntryReference(entryRecord, 'paymentId'),
+    refundId: payoutEntryReference(entryRecord, 'refundId'),
+    metadata: jsonSafeRecord(entry),
   };
 }
 

@@ -1,13 +1,13 @@
 # Integration Contract: Local Budget ⇄ local-effort-app
 
-> Local Budget is the **source of truth for transactions, vendors, Square
-> payment data, and P&L**. The primary consumer is the **brain** (knowledge
-> graph) in `local-effort-app` — anything that surfaces on WeeklyDemoPage goes
-> through the brain first. WeeklyDemoPage's own planner financials
-> (PlannerCard/PlannerCOGS/PlannerOverhead) are a *speculative planning tool*
-> with their own database; they are intentionally **not** synced from Local
-> Budget actuals today. If that ever hardens, the data must flow Local Budget
-> → brain → planner, not directly.
+> Local Budget is the **cash-side source of truth** for bank, cash, credit,
+> debt, processor-clearing postings, provider lineage, and reconciliation.
+> Finance Core owns contracts, invoices, AR/AP, inventory valuation, and final
+> GAAP recognition. Local Budget's existing P&L remains the operational report
+> during a controlled cutover; it is not evidence that cash timing equals GAAP
+> recognition. The primary consumer is the **brain** in `local-effort-app`.
+> See `docs/finance-subledger-upgrade.md` for the governing invariants and
+> ownership transition.
 
 ## The API (replaces direct database access)
 
@@ -23,6 +23,10 @@ the token is unconfigured. They bypass session middleware by design.
 | `GET /api/integration/v1/items` | Line-item export for recipe/margin costing. One row per `LineItem` with parent date/merchant/customer, `quantity`, `unitPrice`, `totalPrice`, `unitOfMeasure`, `lineType`, `vendorId`/`itemId`. Filters: `from`, `to`, `updatedSince`, `lineType` (default `ITEM`), `source` (`square\|receipt`), `limit`, `cursor`. |
 | `GET /api/integration/v1/price-drift` | Per-item unit-price trend for price-drift / inflation inferences and recipe re-costing. Each row: `itemId`, `itemName`, `unitOfMeasure`, `observations`, first/last/min/max unit price, `pctChange`, and the time-ordered `points`. Filters: `from`, `to`, `item`, `minPoints` (default 2). Sorted by biggest mover. |
 | `GET /api/integration/v1/pnl?year=YYYY` | P&L using the same method as `generate-local-budget-pnl.cjs`, so both repos report identical numbers. |
+| `GET /api/integration/v2/accounts` | Active financial accounts with integer-cent balances, dated balance evidence, provider freshness, opening anchors, and unresolved reconciliation counts. |
+| `GET /api/integration/v2/transactions/:id` | Cash-posting detail with lifecycle identities, classification splits, settlement entries, accepted reconciliation allocations, and audit history. |
+| `GET /api/integration/v2/reconciliation/unmatched` | Posted unmatched and partially matched cash postings with matched and unexplained integer-cent amounts. |
+| `GET /api/integration/v2/cash-position?asOf=YYYY-MM-DD` | Anchored account balances as of a date. Returns unresolved accounts and transfer-direction warnings rather than fabricating balances. |
 
 ### Income counterparty (resolves the brain's "415 blank INCOME rows" gap)
 
@@ -125,6 +129,16 @@ ingest — name mismatches are the #1 reason inferences stay empty. The `/v1/ven
 5. **Forecast ownership**: Local Budget exports accounting actuals and quality
    evidence. The consumer owns projections and must keep unclassified money
    visible rather than folding it into operating expense.
+6. **System ownership**: Local Budget owns cash postings, provider identities,
+   processor settlements, and the cash side of reconciliation. Finance Core
+   owns externally referenced economic objects and the final cash-to-GAAP
+   bridge.
+7. **P&L transition**: `/v1/pnl` remains contractual until Finance Core has
+   reproduced two closed cycles and every known consumer has migrated. Do not
+   remove it merely because the target ownership changed.
+8. **Delivery**: cursor-based pull remains the default. Webhooks require a
+   transactional outbox, signing, retries, idempotency, and replay; no partial
+   webhook contract is supported.
 
 ## Cashflow actuals semantics
 

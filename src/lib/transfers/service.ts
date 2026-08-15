@@ -11,7 +11,8 @@
  * value is pairing an INCOME leg with an EXPENSE leg and reclassifying BOTH as
  * internal transfers.
  */
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
+import { recordFinancialAudit } from '@/lib/financial-integrity';
 import {
   matchInternalTransfers,
   type TransferCandidate,
@@ -35,14 +36,16 @@ export type ReconcileSummary = {
   applied: boolean;
 };
 
-function signedAmount(type: string, amount: number, metadata: any): number | null {
+function signedAmount(type: string, amount: number, metadata: unknown): number | null {
   const abs = Math.abs(Number(amount));
   if (type === 'INCOME') return abs;
   if (type === 'EXPENSE') return -abs;
-  // TRANSFER: recover direction from metadata if present, else skip (ambiguous).
-  const dir = metadata?.transferDirection;
-  if (dir === 'in') return abs;
-  if (dir === 'out') return -abs;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return null;
+  }
+  const direction = (metadata as Prisma.JsonObject).transferDirection;
+  if (direction === 'in') return abs;
+  if (direction === 'out') return -abs;
   return null;
 }
 
@@ -93,55 +96,86 @@ export async function reconcileInternalTransfers(
 
   let legsReclassified = 0;
   if (options.apply && result.matches.length > 0) {
-    for (const m of result.matches) {
-      // Mark both legs as internal transfers (excluded from P&L) and link them.
-      await db.transaction.updateMany({
-        where: { id: { in: [m.outflowId, m.inflowId] } },
-        data: { type: 'TRANSFER', classification: 'TRANSFER' },
-      });
-      legsReclassified += 2;
+    for (const match of result.matches) {
+      const transferException =
+        match.boundary === 'business_to_personal'
+          ? 'owner_draw'
+          : match.boundary === 'personal_to_business'
+            ? 'owner_contribution'
+            : null;
 
-      await db.transactionLink.upsert({
-        where: {
-          fromId_toId_linkType: {
-            fromId: m.outflowId,
-            toId: m.inflowId,
-            linkType: 'transfer',
-          },
-        },
-        create: {
-          fromId: m.outflowId,
-          toId: m.inflowId,
-          linkType: 'transfer',
-          amount: m.amount,
-          notes: m.crossesBoundary
-            ? `Auto-paired internal transfer (${m.boundary})`
-            : 'Auto-paired internal transfer',
-        },
-        update: {},
-      });
-
-      // Tag boundary crossings so the review UI / brain can surface owner draws
-      // and contributions rather than burying them as plain transfers.
-      if (m.crossesBoundary) {
-        const reason =
-          m.boundary === 'business_to_personal' ? 'owner_draw' : 'owner_contribution';
-        for (const id of [m.outflowId, m.inflowId]) {
-          const existing = await db.transaction.findUnique({
-            where: { id },
-            select: { metadata: true },
+      await db.$transaction(async (tx) => {
+        for (const leg of [
+          { id: match.outflowId, direction: 'out' },
+          { id: match.inflowId, direction: 'in' },
+        ] as const) {
+          const existing = await tx.transaction.findUniqueOrThrow({
+            where: { id: leg.id },
+            select: {
+              type: true,
+              classification: true,
+              metadata: true,
+            },
           });
-          await db.transaction.update({
-            where: { id },
+          const priorMetadata =
+            existing.metadata &&
+            typeof existing.metadata === 'object' &&
+            !Array.isArray(existing.metadata)
+              ? existing.metadata
+              : {};
+          const metadata = {
+            ...priorMetadata,
+            transferDirection: leg.direction,
+            ...(transferException ? { transferException } : {}),
+          };
+          await tx.transaction.update({
+            where: { id: leg.id },
             data: {
-              metadata: {
-                ...((existing?.metadata as object) ?? {}),
-                transferException: reason,
-              },
+              type: 'TRANSFER',
+              classification: 'TRANSFER',
+              metadata,
+            },
+          });
+          await recordFinancialAudit(tx, {
+            userId,
+            transactionId: leg.id,
+            action: 'TRANSFER_RECONCILED',
+            source: 'AUTO',
+            reason: transferException ?? 'Auto-paired internal transfer',
+            changedFields: ['type', 'classification', 'metadata', 'transactionLink'],
+            before: {
+              type: existing.type,
+              classification: existing.classification,
+              metadata: existing.metadata,
+            },
+            after: {
+              type: 'TRANSFER',
+              classification: 'TRANSFER',
+              metadata,
             },
           });
         }
-      }
+
+        await tx.transactionLink.upsert({
+          where: {
+            fromId_toId_linkType: {
+              fromId: match.outflowId,
+              toId: match.inflowId,
+              linkType: 'TRANSFER',
+            },
+          },
+          create: {
+            fromId: match.outflowId,
+            toId: match.inflowId,
+            linkType: 'TRANSFER',
+            notes: match.crossesBoundary
+              ? `Boundary: ${match.boundary}`
+              : 'Auto-paired internal transfer',
+          },
+          update: {},
+        });
+      });
+      legsReclassified += 2;
     }
   }
 
