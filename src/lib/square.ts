@@ -641,6 +641,36 @@ export function mapSquareRefund(refund: any): SquareTransactionData {
 }
 
 // ============================================================================
+// External IDs
+// ============================================================================
+
+/**
+ * Canonical `Transaction.externalId` values for Square objects.
+ *
+ * These live here, shared, because both the polling sync and the webhook can
+ * record the same payment, and they de-duplicate against each other purely by
+ * arriving at the same string. `@@unique([accountId, externalId])` then makes
+ * one row out of two writes. Previously each route defined these privately, so
+ * editing one copy would have silently split every payment into two rows with
+ * no error anywhere — do not re-inline them.
+ */
+export function squarePaymentExternalId(paymentId: string) {
+  return `square_${paymentId}`;
+}
+
+export function squareOrderExternalId(orderId: string) {
+  return `square_order_${orderId}`;
+}
+
+export function squarePayoutExternalId(payoutId: string) {
+  return `square_payout_${payoutId}`;
+}
+
+export function squareRefundExternalId(refundId: string) {
+  return `square_refund_${refundId}`;
+}
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 

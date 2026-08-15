@@ -6,8 +6,14 @@ import {
   transactionFiltersSchema,
   classificationTypeEnum,
 } from '@/lib/schemas';
+import { TRPCError } from '@trpc/server';
 import { Prisma, type ClassificationType } from '@prisma/client';
 import { looksLikeMisclassifiedRevenue } from '@/lib/reclassify';
+import {
+  partitionProcessorLedger,
+  processorLedgerAccountIds,
+  PROCESSOR_LEDGER_REASON,
+} from '@/lib/processor-ledger';
 import { recordCategoryFeedback } from '@/lib/ml/feedback';
 import {
   changedFinancialFields,
@@ -497,6 +503,24 @@ export const transactionsRouter = createTRPCRouter({
           : input.categoryId !== undefined
             ? categoryDefaultClassification
             : undefined;
+
+      // Refuse to classify processor-ledger rows in bulk. Silently skipping
+      // them would be its own surprise — the caller selected these — so name
+      // the rows and let them narrow the selection.
+      if (classificationToApply !== undefined && classificationToApply !== null) {
+        const { protected: guarded } = partitionProcessorLedger(
+          owned,
+          await processorLedgerAccountIds(ctx.db, ctx.session.user.id)
+        );
+        if (guarded.length) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              `${guarded.length} of ${owned.length} selected transactions cannot be ` +
+              `classified. ${PROCESSOR_LEDGER_REASON}`,
+          });
+        }
+      }
 
       const bulkUpdateData: Prisma.TransactionUncheckedUpdateManyInput = {
         isReviewed: !(classificationToApply === null && !input.categoryId),

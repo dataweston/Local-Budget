@@ -1,3 +1,4 @@
+import './load-env';
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import path from 'path';
 import { PrismaClient, AccountType, TransactionStatus, TransactionType } from '@prisma/client';

@@ -13,6 +13,7 @@ import { splitsRouter } from './routers/splits';
 import { transfersRouter } from './routers/transfers';
 import { marginRouter } from './routers/margin';
 import { taxRouter } from './routers/tax';
+import { settlementsRouter } from './routers/settlements';
 
 /**
  * This is the primary router for the Local Budget API.
@@ -34,6 +35,7 @@ export const appRouter = createTRPCRouter({
   transfers: transfersRouter,
   margin: marginRouter,
   tax: taxRouter,
+  settlements: settlementsRouter,
 });
 
 // Export type definition of API

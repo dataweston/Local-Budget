@@ -31,6 +31,8 @@
     "classify:nulls:apply": "tsx scripts/classify-null-bucket.ts --apply",
     "transfers:reconcile": "tsx scripts/reconcile-transfers.ts",
     "transfers:reconcile:apply": "tsx scripts/reconcile-transfers.ts --apply",
+    "settlements:rematch": "tsx scripts/rematch-settlements.ts",
+    "settlements:rematch:apply": "tsx scripts/rematch-settlements.ts --apply",
     "classify:fix": "tsx scripts/fix-classification-2026-08.ts",
     "classify:fix:apply": "tsx scripts/fix-classification-2026-08.ts --apply",
     "snapshot:export": "tsx scripts/export-month-snapshot.ts",

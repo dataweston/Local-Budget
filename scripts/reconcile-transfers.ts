@@ -10,6 +10,7 @@
  *
  * Optional: --since=YYYY-MM-DD  --gap=<days>
  */
+import './load-env';
 import { PrismaClient } from '@prisma/client';
 import { reconcileInternalTransfers } from '../src/lib/transfers/service';
 

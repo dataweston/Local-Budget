@@ -11,6 +11,7 @@
  *   npm run square:backfill            # dry run
  *   npm run square:backfill:apply      # writes
  */
+import './load-env';
 import { PrismaClient } from '@prisma/client';
 import {
   bulkRetrieveSquareCustomers,

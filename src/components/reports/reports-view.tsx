@@ -100,6 +100,7 @@ export function ReportsView() {
     type: 'INCOME',
     clusterLimit: 4,
   });
+  const { data: fees, isLoading: feesLoading } = api.settlements.feeSummary.useQuery(dateInput);
   const { data: vendorData, isLoading: vendorLoading } = api.vendors.list.useQuery({
     ...dateInput,
     sortBy: 'spending',
@@ -237,6 +238,7 @@ export function ReportsView() {
             <TabsTrigger value="categories">Expense Categories</TabsTrigger>
             <TabsTrigger value="income-sources">Income Sources</TabsTrigger>
             <TabsTrigger value="top-vendors">Top Vendors</TabsTrigger>
+            <TabsTrigger value="processing-fees">Processing Fees</TabsTrigger>
           </TabsList>
 
           <TabsContent value="pnl" className="mt-6">
@@ -593,6 +595,135 @@ export function ReportsView() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="processing-fees" className="mt-6">
+            {feesLoading ? (
+              <Skeleton className="h-96" />
+            ) : !fees || fees.totals.count === 0 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Processing Fees</CardTitle>
+                  <CardDescription>
+                    No processor settlements in {dateRange.label}.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            ) : (
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Gross to Net</CardTitle>
+                    <CardDescription>
+                      What the processor withheld before the money reached the bank
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {[
+                      ['Gross receipts', fees.totals.gross, ''],
+                      ['Processing fees', -fees.totals.fees, 'text-destructive'],
+                      ['Refunds', -fees.totals.refunds, 'text-destructive'],
+                      ['Financing withheld', -fees.totals.financing, 'text-destructive'],
+                    ].map(([label, value, tone]) => (
+                      <div key={label as string} className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">{label as string}</span>
+                        <span className={cn('font-medium', tone as string)}>
+                          {formatCurrency(value as number)}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between border-t pt-2 text-sm font-semibold">
+                      <span>Net deposited</span>
+                      <span>{formatCurrency(fees.totals.net)}</span>
+                    </div>
+                    <div className="flex justify-between pt-1 text-sm">
+                      <span className="text-muted-foreground">Effective fee rate</span>
+                      <span className="font-medium">{fees.totals.feeRate.toFixed(2)}%</span>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Deduction Types</CardTitle>
+                    <CardDescription>Every entry behind the payouts</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-muted-foreground">
+                          <th className="p-2">Type</th>
+                          <th className="p-2 text-right">Count</th>
+                          <th className="p-2 text-right">Gross</th>
+                          <th className="p-2 text-right">Fees</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fees.byType.map((row) => (
+                          <tr key={row.type} className="border-b last:border-0">
+                            <td className="p-2 font-medium">{row.type.replace(/_/g, ' ')}</td>
+                            <td className="p-2 text-right text-muted-foreground">{row.count}</td>
+                            <td className="p-2 text-right">{formatCurrency(row.gross)}</td>
+                            <td className="p-2 text-right">{formatCurrency(row.fees)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </CardContent>
+                </Card>
+
+                <Card className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle>By Month</CardTitle>
+                    <CardDescription>
+                      Fee rate drifts with card mix — worth watching per month
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-muted-foreground">
+                          <th className="p-2">Month</th>
+                          <th className="p-2 text-right">Gross</th>
+                          <th className="p-2 text-right">Fees</th>
+                          <th className="p-2 text-right">Refunds</th>
+                          <th className="p-2 text-right">Net</th>
+                          <th className="p-2 text-right">Fee %</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fees.byMonth.map((row) => (
+                          <tr key={row.month} className="border-b last:border-0">
+                            <td className="p-2 font-medium">{row.month}</td>
+                            <td className="p-2 text-right">{formatCurrency(row.gross)}</td>
+                            <td className="p-2 text-right text-destructive">
+                              {formatCurrency(-row.fees)}
+                            </td>
+                            <td className="p-2 text-right text-destructive">
+                              {row.refunds ? formatCurrency(-row.refunds) : '—'}
+                            </td>
+                            <td className="p-2 text-right font-semibold">
+                              {formatCurrency(row.net)}
+                            </td>
+                            <td className="p-2 text-right">{row.feeRate.toFixed(2)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {fees.reconciliation.length > 0 && (
+                      <p className="mt-4 text-xs text-muted-foreground">
+                        Payout reconciliation:{' '}
+                        {fees.reconciliation
+                          .map((row) => `${row.count} ${row.status.toLowerCase()}`)
+                          .join(' · ')}
+                        . Unmatched payouts are still counted here — they affect
+                        confidence in the deposit linkage, not the fee arithmetic.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             )}
           </TabsContent>
         </Tabs>

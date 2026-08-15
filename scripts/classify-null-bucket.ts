@@ -13,7 +13,13 @@
  *   npm run classify:nulls           # dry run
  *   npm run classify:nulls:apply     # writes
  */
+import './load-env';
 import { PrismaClient } from '@prisma/client';
+import {
+  excludeProcessorLedger,
+  processorLedgerAccountIds,
+  PROCESSOR_LEDGER_REASON,
+} from '../src/lib/processor-ledger';
 
 const db = new PrismaClient();
 const APPLY = process.argv.includes('--apply');
@@ -26,8 +32,23 @@ const PERSON_PAYMENT =
 async function main() {
   console.log(`Null-classification pass (${APPLY ? 'APPLY' : 'DRY RUN'})`);
 
+  // Processor-ledger rows are unclassified on purpose — see PROCESSOR_LEDGER_REASON.
+  const processorAccountIds = await processorLedgerAccountIds(db);
+  if (processorAccountIds.length) {
+    const guarded = await db.transaction.count({
+      where: { classification: null, accountId: { in: processorAccountIds } },
+    });
+    console.log(
+      `Skipping ${guarded} unclassified transaction(s) on ${processorAccountIds.length} ` +
+        `processor-ledger account(s). ${PROCESSOR_LEDGER_REASON}`
+    );
+  }
+
   const rows = await db.transaction.findMany({
-    where: { classification: null },
+    where: {
+      classification: null,
+      ...excludeProcessorLedger(processorAccountIds),
+    },
     select: {
       id: true,
       type: true,

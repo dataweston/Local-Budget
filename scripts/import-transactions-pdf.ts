@@ -1,3 +1,4 @@
+import './load-env';
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';

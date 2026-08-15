@@ -4,8 +4,37 @@ import crypto from 'crypto';
 import {
   bulkRetrieveSquareCustomers,
   squareCustomerDisplayName,
+  squarePaymentExternalId,
+  squareRefundExternalId,
 } from '@/lib/square';
 import { upsertTransactionSourceIdentity } from '@/lib/financial-integrity';
+
+/**
+ * The single account that mirrors this Square connection's ledger.
+ *
+ * `accounts` is a list because the schema lets several accounts reference one
+ * connection, but only one can be the processor ledger. De-duplication between
+ * the webhook and the polling sync relies on both writing the same payment to
+ * the same account: the guarding constraint is `@@unique([accountId,
+ * externalId])`, which is scoped *per account*. If the two paths ever disagree
+ * about the target, every payment silently becomes two rows and no constraint
+ * catches it. So resolve deterministically — oldest account wins, matching the
+ * ordered include above — and log loudly when the configuration is ambiguous
+ * rather than letting row order decide.
+ */
+function resolveProcessorAccount<T extends { id: string }>(
+  connection: { id: string; accounts: T[] }
+): T | undefined {
+  if (connection.accounts.length > 1) {
+    console.error(
+      `[Square Webhook] SquareConnection ${connection.id} has ${connection.accounts.length} ` +
+        `linked accounts; only one can be the processor ledger. Using the oldest ` +
+        `(${connection.accounts[0]?.id}). Unlink the extras — a mismatch with the sync ` +
+        `target creates duplicate transactions that the unique constraint cannot catch.`
+    );
+  }
+  return connection.accounts[0];
+}
 
 // Resolve a single Square customer id to a stored SquareCustomer row, using the
 // connection's access token. Returns the row id + display name, or nulls if the
@@ -56,13 +85,6 @@ async function resolveWebhookCustomer(
   }
 }
 
-function squarePaymentExternalId(paymentId: string) {
-  return `square_${paymentId}`;
-}
-
-function squareRefundExternalId(refundId: string) {
-  return `square_refund_${refundId}`;
-}
 
 // Square webhook event types
 interface SquareWebhookEvent {
@@ -132,7 +154,12 @@ export async function POST(request: NextRequest) {
     // Find the Square connection for this merchant
     const squareConnection = await db.squareConnection.findFirst({
       where: { merchantId: merchant_id },
-      include: { accounts: true, user: true },
+      include: {
+        // Deterministic order: resolveProcessorAccount() takes the oldest, and
+        // an unordered include would let the target drift between calls.
+        accounts: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+        user: true,
+      },
     });
 
     if (!squareConnection) {
@@ -211,8 +238,7 @@ async function handlePaymentEvent(
     return;
   }
 
-  // Find or use the first Square-connected account
-  const account = connection.accounts[0];
+  const account = resolveProcessorAccount(connection);
   if (!account) {
     console.log('No account found for Square connection');
     return;
@@ -346,7 +372,7 @@ async function handleRefundEvent(
 
   if (!refund) return;
 
-  const account = connection.accounts[0];
+  const account = resolveProcessorAccount(connection);
   if (!account) return;
 
   const amount = refund.amount_money?.amount ?? 0;

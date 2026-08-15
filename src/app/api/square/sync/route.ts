@@ -18,6 +18,10 @@ import {
   listSquarePayouts,
   mapSquarePayout,
   mapSquarePayoutEntry,
+  squarePaymentExternalId,
+  squareOrderExternalId,
+  squarePayoutExternalId,
+  squareRefundExternalId,
 } from '@/lib/square';
 import {
   resolveVendorId,
@@ -32,22 +36,8 @@ import {
   settlementBankDateWindow,
   settlementReconciliationStatus,
 } from '@/lib/settlements';
+import { matchBatchedSettlements } from '@/lib/settlement-matching';
 
-function squarePaymentExternalId(paymentId: string) {
-  return `square_${paymentId}`;
-}
-
-function squareOrderExternalId(orderId: string) {
-  return `square_order_${orderId}`;
-}
-
-function squarePayoutExternalId(payoutId: string) {
-  return `square_payout_${payoutId}`;
-}
-
-function squareRefundExternalId(refundId: string) {
-  return `square_refund_${refundId}`;
-}
 
 // Auto-generated split descriptions. Splits with these descriptions are owned
 // by the sync (deleted + recreated each run); user-created splits are never
@@ -693,6 +683,22 @@ export async function POST(request: NextRequest) {
           ? new Date(`${payout.arrivalDate}T00:00:00.000Z`)
           : null;
         const bankWindow = settlementBankDateWindow(arrivalDate ?? effectiveAt);
+        // Match the payout to its bank deposit on amount + date window only.
+        //
+        // This deliberately does NOT filter on the descriptor containing
+        // "square": the bank rarely names the processor. Measured against live
+        // data, only 4 of 430 deposits into the settlement account mention
+        // "square" at all — the rest post as a bare "Transfer in" — so a
+        // descriptor requirement matched almost nothing and left every
+        // settlement stuck at PARTIAL.
+        //
+        // Amount+date is specific enough on its own: 83 of 122 resolvable
+        // payouts land on the exact anchor date and 14 more the next day, so
+        // the existing [-2, +5] window is already the right shape (widening it
+        // to [-5, +14] gained only 6). Ambiguity stays safe without the
+        // descriptor: settlementReconciliationStatus() only reports MATCHED on
+        // exactly one candidate, so a same-amount collision degrades to
+        // PARTIAL for review rather than binding the wrong deposit.
         const bankCandidates = await db.transaction.findMany({
           where: {
             account: {
@@ -704,10 +710,6 @@ export async function POST(request: NextRequest) {
             type: { in: ['INCOME', 'TRANSFER'] },
             amount: Math.abs(settlementAmount),
             date: { gte: bankWindow.from, lte: bankWindow.to },
-            OR: [
-              { description: { contains: 'square', mode: 'insensitive' } },
-              { merchantName: { contains: 'square', mode: 'insensitive' } },
-            ],
           },
           select: { id: true, amount: true },
         });
@@ -1073,6 +1075,19 @@ export async function POST(request: NextRequest) {
         if (!existing) payoutsAdded++;
       }
       console.log(`[Square Sync] Added ${payoutsAdded} new payouts`);
+
+      // The per-payout matcher above only sees one payout at a time, so it
+      // cannot resolve the days where Square batches several payouts into a
+      // single deposit. Sweep those as a group now that every payout for the
+      // window exists.
+      const batched = await matchBatchedSettlements(db, session.user.id, account.id, {
+        apply: true,
+      });
+      console.log(
+        `[Square Sync] Batched settlement sweep: linked ${batched.linkedSettlements} payout(s) ` +
+          `across ${batched.linkedDeposits} deposit(s); ${batched.ambiguousSettlements} ambiguous, ` +
+          `${batched.unexplainedSettlements} unexplained`
+      );
     } catch (payoutError) {
       console.log('[Square Sync] Error syncing payouts (non-fatal):', payoutError);
     }

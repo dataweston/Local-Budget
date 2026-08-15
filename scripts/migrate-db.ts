@@ -11,6 +11,7 @@
  * Safe to re-run: uses createMany({ skipDuplicates: true }).
  * Tables are copied in foreign-key dependency order.
  */
+import './load-env';
 import { PrismaClient } from "@prisma/client";
 
 const SOURCE_URL = process.env.SOURCE_DATABASE_URL;
