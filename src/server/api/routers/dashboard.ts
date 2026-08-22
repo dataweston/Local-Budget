@@ -12,6 +12,7 @@ import {
   derivePnlMetrics,
 } from '@/lib/pnl';
 import { ledgerAccountScope } from '@/lib/processor-ledger';
+import { cashReportScope, operatingReportScope } from '@/lib/reporting-scope';
 
 export const dashboardRouter = createTRPCRouter({
   // Get main dashboard stats
@@ -47,7 +48,7 @@ export const dashboardRouter = createTRPCRouter({
       // Current period transactions
       const currentTransactions = await ctx.db.transaction.findMany({
         where: {
-          account: ledgerAccountScope(ctx.session.user.id),
+          ...cashReportScope(ctx.session.user.id),
           date: { gte: startDate, lte: endDate },
         },
         select: {
@@ -65,7 +66,7 @@ export const dashboardRouter = createTRPCRouter({
       // Previous period transactions for trend
       const prevTransactions = await ctx.db.transaction.findMany({
         where: {
-          account: ledgerAccountScope(ctx.session.user.id),
+          ...cashReportScope(ctx.session.user.id),
           date: { gte: prevStartDate, lte: prevEndDate },
         },
         select: {
@@ -152,7 +153,7 @@ export const dashboardRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: ledgerAccountScope(ctx.session.user.id),
+          ...cashReportScope(ctx.session.user.id),
           date: { gte: startDate, lte: endDate },
         },
         select: {
@@ -259,19 +260,9 @@ export const dashboardRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          // Exclude processor-ledger accounts from the P&L entirely.
-          //
-          // Revenue in this ledger is the bank deposit, which the processor has
-          // already reduced by its fees and refunds. The processor's own rows
-          // describe the same money on the way there, so including them counts
-          // it twice — both as fee expense that is already netted out and as
-          // contra-revenue for refunds already deducted. Their unclassified
-          // rows also inflate the uncategorized-income bucket, which is what
-          // made them look like a permanent to-do.
-          //
-          // Fees stay visible: settlements.feeSummary reports them from the
-          // settlement entries, which is where the gross detail lives.
-          account: ledgerAccountScope(ctx.session.user.id),
+          // Use originating Square sales and deductions for operating results;
+          // exclude the later bank settlement carrying the same money.
+          ...operatingReportScope(ctx.session.user.id),
           date: { gte: startDate, lte: endDate },
         },
         select: {
@@ -304,6 +295,7 @@ export const dashboardRouter = createTRPCRouter({
       const derived = derivePnlMetrics(report);
 
       const {
+        revenue: grossRevenue,
         cogs,
         operatingExpenses,
         personalExpenses,
@@ -361,6 +353,8 @@ export const dashboardRouter = createTRPCRouter({
       return {
         period: { start: startDate, end: endDate },
         revenue: totalRevenue,
+        grossRevenue,
+        netSales: grossRevenue - refunds,
         refunds,
         cogs,
         grossProfit,

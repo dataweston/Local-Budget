@@ -28,6 +28,7 @@ import {
   derivePnlMetrics,
   type PnlCategoryRow,
 } from '../src/lib/pnl';
+import { operatingReportScope } from '../src/lib/reporting-scope';
 
 const db = new PrismaClient();
 
@@ -102,7 +103,10 @@ async function main() {
   const windowEnd = monthEndExclusive(keys[keys.length - 1]);
 
   const transactions = await db.transaction.findMany({
-    where: { date: { gte: windowStart, lt: windowEnd } },
+    where: {
+      ...operatingReportScope(),
+      date: { gte: windowStart, lt: windowEnd },
+    },
     select: {
       date: true,
       amount: true,
@@ -233,7 +237,7 @@ async function main() {
   // TRANSFER direction is not recoverable from a single row, so those are
   // counted separately and reported as an accuracy caveat rather than guessed.
   const after = await db.transaction.findMany({
-    where: { date: { gte: windowStart } },
+    where: { status: 'POSTED', date: { gte: windowStart } },
     select: { accountId: true, date: true, amount: true, type: true },
   });
 

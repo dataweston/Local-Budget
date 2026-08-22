@@ -8,12 +8,9 @@
  * where Plaid records it again. Both rows are correct and both are wanted: the
  * pair is what makes fees visible at all.
  *
- * What must not happen is counting both as revenue. The ledger treats bank
- * deposits as revenue, and the only thing keeping the processor side out of
- * every P&L is that those rows carry `classification = null`. Nothing else
- * excludes them. So a single well-meant bulk pass over "unclassified"
- * transactions — exactly what `classify:nulls` is for — would silently double
- * the revenue line.
+ * Operating reports use the originating processor activity and exclude its
+ * matched bank settlement. Cash reports use the bank posting and exclude this
+ * processor mirror. See reporting-scope.ts.
  *
  * These helpers make that failure mode loud instead of silent. They deliberately
  * do not block classifying one transaction by hand: that is a deliberate act on
@@ -25,20 +22,16 @@ type Db = Prisma.TransactionClient | PrismaClient;
 
 export const PROCESSOR_LEDGER_REASON =
   'These transactions belong to a payment-processor ledger account. They mirror ' +
-  'the gross side of sales that are already counted as revenue via their bank ' +
-  'deposits, so classifying them would count the same money twice. They are meant ' +
-  'to stay unclassified.';
+  'gross sales and settlement deductions. Operating reports read these rows while ' +
+  'cash reports read the bank settlement, so bulk classification can break the ' +
+  'reporting boundary. Review them through processor reporting instead.';
 
 /**
- * Account scope for ledger *totals and work queues* — the owner's accounts
- * excluding any processor ledger.
+ * Account scope for cash totals and work queues — the owner's accounts
+ * excluding any processor ledger. Operating reports use operatingReportScope.
  *
- * The rule this encodes: totals and queues exclude the processor ledger;
- * listings and detail views include it. A processor row is real and worth
- * looking at, but it is not revenue, not an expense, and not a task — it is the
- * gross side of money that is counted once, as a bank deposit. Feeding it into
- * a sum double-counts; feeding it into a review queue creates a backlog that
- * can never be cleared, because these rows are meant to stay unclassified.
+ * Listings, operating reports, and detail views may still include processor
+ * rows; cash totals must not.
  *
  * Use in `where: { account: ledgerAccountScope(userId) }`.
  */

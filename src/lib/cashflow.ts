@@ -1,9 +1,9 @@
 import type { EffectiveClassification } from '@/lib/pnl';
 
 export const CASHFLOW_CONTRACT_VERSION = 1;
-export const CASHFLOW_METHOD_VERSION = 'cashflow-actuals-v1';
+export const CASHFLOW_METHOD_VERSION = 'cashflow-actuals-v1.1';
 export const CASHFLOW_CONTRACT_VERSION_V2 = 2;
-export const CASHFLOW_METHOD_VERSION_V2 = 'cashflow-actuals-v2';
+export const CASHFLOW_METHOD_VERSION_V2 = 'cashflow-actuals-v2.1';
 
 export type CostBucket =
   | 'INVENTORY'

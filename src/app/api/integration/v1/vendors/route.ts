@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { authorizeServiceRequest } from '@/lib/service-auth';
 import { getEffectiveClassification } from '@/lib/pnl';
 import { normalizeVendorName } from '@/lib/normalization/vendors';
+import { operatingReportScope } from '@/lib/reporting-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +51,7 @@ export async function GET(req: NextRequest) {
 
   const transactions = await db.transaction.findMany({
     where: {
+      ...operatingReportScope(),
       merchantName: { not: null },
       ...(from || to
         ? {

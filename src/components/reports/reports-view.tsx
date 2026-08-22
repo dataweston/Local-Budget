@@ -249,10 +249,15 @@ export function ReportsView() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Profit & Loss Summary</CardTitle>
-                    <CardDescription>{dateRange.label}</CardDescription>
+                    <CardDescription>
+                      {dateRange.label} · originating sales basis; matched processor deposits excluded
+                    </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2">
-                    <div className="flex justify-between"><span>Revenue</span><span className="font-bold text-income">{formatCurrency(profitLoss.revenue)}</span></div>
+                    <div className="flex justify-between"><span>Gross sales</span><span className="font-bold text-income">{formatCurrency(profitLoss.grossRevenue)}</span></div>
+                    {profitLoss.refunds > 0 && <div className="flex justify-between"><span>Refunds</span><span className="text-expense">({formatCurrency(profitLoss.refunds)})</span></div>}
+                    <div className="flex justify-between"><span>Net sales</span><span className="font-medium text-income">{formatCurrency(profitLoss.netSales)}</span></div>
+                    {profitLoss.reimbursementIncome > 0 && <div className="flex justify-between"><span>Reimbursements / other income</span><span className="text-income">{formatCurrency(profitLoss.reimbursementIncome)}</span></div>}
                     <div className="flex justify-between"><span>COGS</span><span className="text-expense">({formatCurrency(profitLoss.cogs)})</span></div>
                     <div className="flex justify-between"><span>Operating Expenses</span><span className="text-expense">({formatCurrency(profitLoss.operatingExpenses)})</span></div>
                     <div className="flex justify-between"><span>Personal</span><span className="text-expense">({formatCurrency(profitLoss.personalExpenses)})</span></div>
@@ -264,7 +269,7 @@ export function ReportsView() {
                         <span className="text-expense">({formatCurrency(profitLoss.unclassifiedExpenses)})</span>
                       </div>
                     )}
-                    <div className="flex justify-between font-bold"><span>Net Income</span><span className={cn(profitLoss.netIncome >= 0 ? 'text-income' : 'text-expense')}>{formatCurrency(profitLoss.netIncome)}</span></div>
+                    <div className="flex justify-between font-bold"><span>Net business income</span><span className={cn(profitLoss.netBusinessIncome >= 0 ? 'text-income' : 'text-expense')}>{formatCurrency(profitLoss.netBusinessIncome)}</span></div>
                   </CardContent>
                 </Card>
 
@@ -352,8 +357,8 @@ export function ReportsView() {
             ) : (
               <Card>
                 <CardHeader>
-                  <CardTitle>Income vs Expenses</CardTitle>
-                  <CardDescription>{dateRange.label}</CardDescription>
+                  <CardTitle>Cash Receipts vs Outflows</CardTitle>
+                  <CardDescription>{dateRange.label} · bank/card postings; processor mirror excluded</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <ResponsiveContainer width="100%" height={320}>
@@ -363,13 +368,13 @@ export function ReportsView() {
                       <YAxis tickFormatter={(v) => `$${v}`} />
                       <Tooltip formatter={(value: number) => formatCurrency(value)} />
                       <Legend />
-                      <Bar dataKey="income" name="Income" fill={CHART_COLORS.income} />
-                      <Bar dataKey="expenses" name="Expenses" fill={CHART_COLORS.expense} />
+                      <Bar dataKey="income" name="Cash receipts" fill={CHART_COLORS.income} />
+                      <Bar dataKey="expenses" name="Cash outflows" fill={CHART_COLORS.expense} />
                     </BarChart>
                   </ResponsiveContainer>
                   <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Income</p><p className="font-semibold text-income">{formatCurrency(cashflowTotals.income)}</p></div>
-                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Expenses</p><p className="font-semibold text-expense">{formatCurrency(cashflowTotals.expenses)}</p></div>
+                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Cash receipts</p><p className="font-semibold text-income">{formatCurrency(cashflowTotals.income)}</p></div>
+                    <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Cash outflows</p><p className="font-semibold text-expense">{formatCurrency(cashflowTotals.expenses)}</p></div>
                     <div className="rounded border p-3"><p className="text-xs text-muted-foreground">Net</p><p className={cn('font-semibold', cashflowTotals.net >= 0 ? 'text-income' : 'text-expense')}>{formatCurrency(cashflowTotals.net)}</p></div>
                   </div>
                 </CardContent>
@@ -641,6 +646,10 @@ export function ReportsView() {
                       <span className="text-muted-foreground">Effective fee rate</span>
                       <span className="font-medium">{fees.totals.feeRate.toFixed(2)}%</span>
                     </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Financing withholding rate</span>
+                      <span className="font-medium">{fees.totals.financingRate.toFixed(2)}%</span>
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -690,6 +699,7 @@ export function ReportsView() {
                           <th className="p-2 text-right">Refunds</th>
                           <th className="p-2 text-right">Net</th>
                           <th className="p-2 text-right">Fee %</th>
+                          <th className="p-2 text-right">Loan %</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -707,6 +717,7 @@ export function ReportsView() {
                               {formatCurrency(row.net)}
                             </td>
                             <td className="p-2 text-right">{row.feeRate.toFixed(2)}%</td>
+                            <td className="p-2 text-right">{row.financingRate.toFixed(2)}%</td>
                           </tr>
                         ))}
                       </tbody>

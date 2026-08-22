@@ -9,6 +9,7 @@ import {
   CASHFLOW_METHOD_VERSION_V2,
   type CashflowMonth,
 } from '@/lib/cashflow';
+import { cashReportScope } from '@/lib/reporting-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
   const end = new Date(`${to}T00:00:00.000Z`);
   const [transactions, pendingRows, source, latestBankSync] = await Promise.all([
     db.transaction.findMany({
-      where: { status: 'POSTED', date: { gte: start, lt: end } },
+      where: { ...cashReportScope(), date: { gte: start, lt: end } },
       select: {
         id: true,
         date: true,
@@ -66,10 +67,17 @@ export async function GET(req: NextRequest) {
       orderBy: [{ date: 'asc' }, { id: 'asc' }],
     }),
     db.transaction.findMany({
-      where: { status: 'PENDING', date: { gte: start, lt: end } },
+      where: {
+        status: 'PENDING',
+        account: { squareConnectionId: null },
+        date: { gte: start, lt: end },
+      },
       select: { date: true },
     }),
-    db.transaction.aggregate({ where: { status: 'POSTED' }, _max: { date: true } }),
+    db.transaction.aggregate({
+      where: cashReportScope(),
+      _max: { date: true },
+    }),
     db.financialAccount.aggregate({
       where: { isActive: true, plaidAccountId: { not: null } },
       _max: { lastSyncedAt: true },

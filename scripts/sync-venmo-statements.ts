@@ -6,6 +6,11 @@ import {
   resolveVendorId,
   createVendorResolverCache,
 } from '../src/lib/normalization/vendor-resolver';
+import {
+  getVenmoCandidateAmounts,
+  venmoExpectsBankCounterpart,
+  type VenmoMatchAmountBasis,
+} from '../src/lib/venmo-matching';
 
 type ParsedArgs = {
   inputs: string[];
@@ -58,6 +63,9 @@ type BankCandidate = {
   classification: string | null;
   categoryId: string | null;
   metadata: unknown;
+  accountName: string;
+  accountInstitution: string | null;
+  accountNumber: string | null;
 };
 
 type MatchedPair = {
@@ -72,9 +80,13 @@ type MatchedPair = {
   amountDiff: number;
   score: number;
   reason: string;
+  candidateCount: number;
+  accountHintMatch: boolean;
+  confidence: 'HIGH' | 'MEDIUM';
+  amountBasis: VenmoMatchAmountBasis;
 };
 
-const DEFAULT_INPUT = path.join('imports', 'sofi', 'Your Orders_files', 'VenmoStatement_*.csv');
+const DEFAULT_INPUT = path.join('imports', 'sofi');
 const DEFAULT_REPORT = path.join('imports', 'sofi', 'venmo-sync-report.csv');
 
 function usage() {
@@ -295,6 +307,100 @@ function tokenMatches(entry: VenmoStatementEntry, candidate: BankCandidate): num
   return count;
 }
 
+function financialFingerprint(entry: VenmoStatementEntry): string {
+  return JSON.stringify({
+    statementDateTime: entry.statementDateTime.toISOString(),
+    type: entry.type,
+    status: entry.status,
+    amountTotalSigned: Number(entry.amountTotalSigned.toFixed(2)),
+    amountFeeSigned: Number(entry.amountFeeSigned.toFixed(2)),
+  });
+}
+
+function preferRicherText(a: string, b: string): string {
+  const first = a.trim();
+  const second = b.trim();
+  if (!first) return second;
+  if (!second) return first;
+  return second.length > first.length ? second : first;
+}
+
+function dedupeStatementEntries(entries: VenmoStatementEntry[]): {
+  entries: VenmoStatementEntry[];
+  duplicateCount: number;
+  descriptiveConflictCount: number;
+} {
+  const byId = new Map<string, VenmoStatementEntry>();
+  let duplicateCount = 0;
+  let descriptiveConflictCount = 0;
+  for (const entry of entries) {
+    const existing = byId.get(entry.statementId);
+    if (!existing) {
+      byId.set(entry.statementId, entry);
+      continue;
+    }
+    if (financialFingerprint(existing) !== financialFingerprint(entry)) {
+      throw new Error(
+        `Conflicting financial facts for Venmo statement ID ${entry.statementId}: ${existing.sourceFile} and ${entry.sourceFile}`
+      );
+    }
+    if (
+      existing.note !== entry.note ||
+      existing.from !== entry.from ||
+      existing.to !== entry.to ||
+      existing.fundingSource !== entry.fundingSource ||
+      existing.destination !== entry.destination
+    ) {
+      descriptiveConflictCount++;
+      byId.set(entry.statementId, {
+        ...existing,
+        note: preferRicherText(existing.note, entry.note),
+        from: preferRicherText(existing.from, entry.from),
+        to: preferRicherText(existing.to, entry.to),
+        fundingSource: preferRicherText(existing.fundingSource, entry.fundingSource),
+        destination: preferRicherText(existing.destination, entry.destination),
+        sourceFile: `${existing.sourceFile};${entry.sourceFile}`,
+      });
+    }
+    duplicateCount++;
+  }
+  return { entries: Array.from(byId.values()), duplicateCount, descriptiveConflictCount };
+}
+
+function lastFour(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const match = value.match(/(?:\*+|\b)(\d{4})(?!\d)/);
+  return match?.[1] ?? null;
+}
+
+function accountMatchesEntry(entry: VenmoStatementEntry, candidate: BankCandidate): boolean {
+  const entryText = `${entry.fundingSource} ${entry.destination}`.toLowerCase();
+  const entryLastFour = lastFour(entryText);
+  const accountLastFour = lastFour(candidate.accountNumber);
+  if (entryLastFour && accountLastFour && entryLastFour === accountLastFour) return true;
+
+  const accountTokens = tokenize(`${candidate.accountName} ${candidate.accountInstitution ?? ''}`)
+    .filter((token) => !['bank', 'checking', 'savings', 'credit', 'card', 'personal'].includes(token));
+  return accountTokens.some((token) => entryText.includes(token));
+}
+
+function existingReconciliationMatches(
+  metadata: unknown,
+  canonicalExternalId: string,
+  statementId: string
+): boolean {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+  const reconciliation = (metadata as Record<string, unknown>).venmoReconciliation;
+  if (!reconciliation || typeof reconciliation !== 'object' || Array.isArray(reconciliation)) {
+    return false;
+  }
+  const record = reconciliation as Record<string, unknown>;
+  return (
+    record.canonicalExternalId === canonicalExternalId ||
+    record.statementId === statementId
+  );
+}
+
 function parseVenmoStatementFile(filePath: string): VenmoStatementEntry[] {
   const content = readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
   const matrix = parseCsv(content);
@@ -378,7 +484,9 @@ async function run() {
       .sort((a, b) => a.localeCompare(b));
     if (csvFiles.length === 0) throw new Error('No Venmo statement CSV files found.');
 
-    const entries = csvFiles.flatMap((f) => parseVenmoStatementFile(f));
+    const parsedEntries = csvFiles.flatMap((f) => parseVenmoStatementFile(f));
+    const { entries, duplicateCount, descriptiveConflictCount } =
+      dedupeStatementEntries(parsedEntries);
     const completed = entries.filter((e) => e.status.toLowerCase() === 'complete');
     if (completed.length === 0) throw new Error('No complete Venmo statement rows found.');
 
@@ -439,28 +547,18 @@ async function run() {
       where: { userId, defaultClassification: 'TRANSFER' },
       select: { id: true },
     });
-    const preferredBankAccounts = await prisma.financialAccount.findMany({
+    const bankScopeAccounts = await prisma.financialAccount.findMany({
       where: {
         userId,
         id: { not: venmoAccount.id },
-        OR: [
-          { name: { equals: 'SoFi Checking', mode: 'insensitive' } },
-          { name: { equals: 'TOTAL CHECKING', mode: 'insensitive' } },
-        ],
+        isActive: true,
+        isInternal: true,
+        type: { in: [AccountType.CHECKING, AccountType.SAVINGS, AccountType.CREDIT_CARD] },
       },
-      select: { id: true, name: true },
+      select: { id: true, name: true, institution: true, accountNumber: true },
     });
-    const fallbackBankAccounts = await prisma.financialAccount.findMany({
-      where: {
-        userId,
-        id: { not: venmoAccount.id },
-        type: { in: [AccountType.CHECKING, AccountType.SAVINGS] },
-      },
-      select: { id: true, name: true },
-    });
-    const bankScopeAccounts =
-      preferredBankAccounts.length > 0 ? preferredBankAccounts : fallbackBankAccounts;
     const bankScopeAccountIds = bankScopeAccounts.map((a) => a.id);
+    const bankAccountById = new Map(bankScopeAccounts.map((account) => [account.id, account]));
 
     const vendorCache = createVendorResolverCache();
     const canonicalRows: CanonicalImportRow[] = [];
@@ -668,6 +766,9 @@ async function run() {
       ...r,
       amount: Math.abs(Number(r.amount)),
       classification: r.classification as string | null,
+      accountName: bankAccountById.get(r.accountId)?.name ?? 'Unknown account',
+      accountInstitution: bankAccountById.get(r.accountId)?.institution ?? null,
+      accountNumber: bankAccountById.get(r.accountId)?.accountNumber ?? null,
     }));
 
     const usedBankTxIds = new Set<string>();
@@ -695,8 +796,23 @@ async function run() {
       const entryType = source.metadata.venmoStatementEntry as Record<string, unknown>;
       const venmoType = String(entryType.type ?? '');
       const amountTotalSigned = Number(entryType.amountTotalSigned ?? 0);
+      const statementEntry: VenmoStatementEntry = {
+        statementId: String(entryType.statementId ?? ''),
+        statementDateTime: canonical.date,
+        statementDate: toUtcDay(canonical.date),
+        type: venmoType,
+        status: String(entryType.status ?? ''),
+        note: String(entryType.note ?? ''),
+        from: String(entryType.from ?? ''),
+        to: String(entryType.to ?? ''),
+        amountTotalSigned,
+        amountFeeSigned: Number(entryType.amountFeeSigned ?? 0),
+        fundingSource: String(entryType.fundingSource ?? ''),
+        destination: String(entryType.destination ?? ''),
+        sourceFile: String(entryType.sourceFile ?? ''),
+      };
 
-      if (canonical.type === 'INCOME' && !venmoType.toLowerCase().includes('transfer')) {
+      if (!venmoExpectsBankCounterpart(statementEntry)) {
         continue;
       }
 
@@ -720,35 +836,41 @@ async function run() {
         .filter((b) => expectedTypes.includes(b.type))
         .map((b) => {
           const dayDiff = daysBetween(b.date, canonical.date);
-          const amountDiff = Math.abs(b.amount - Math.abs(Number(canonical.amount)));
+          const amountOptions = getVenmoCandidateAmounts(statementEntry)
+            .map((option) => ({ ...option, diff: Math.abs(b.amount - option.amount) }))
+            .sort((a, b) => a.diff - b.diff);
+          const amountDiff = amountOptions[0].diff;
+          const amountBasis = amountOptions[0].basis;
           const text = `${b.description} ${b.merchantName ?? ''}`.toLowerCase();
           const hasVenmoText = text.includes('venmo');
           const hasTransferText = /transfer|ach|xfer|p2p|external|deposit|withdrawal|instant/.test(text);
-          const nameMatch = tokenMatches(
-            {
-              statementId: String(entryType.statementId ?? ''),
-              statementDateTime: canonical.date,
-              statementDate: toUtcDay(canonical.date),
-              type: venmoType,
-              status: String(entryType.status ?? ''),
-              note: String(entryType.note ?? ''),
-              from: String(entryType.from ?? ''),
-              to: String(entryType.to ?? ''),
-              amountTotalSigned,
-              amountFeeSigned: Number(entryType.amountFeeSigned ?? 0),
-              fundingSource: String(entryType.fundingSource ?? ''),
-              destination: String(entryType.destination ?? ''),
-              sourceFile: String(entryType.sourceFile ?? ''),
-            },
-            b
+          const nameMatch = tokenMatches(statementEntry, b);
+          const accountHintMatch = accountMatchesEntry(statementEntry, b);
+          const persistedMatch = existingReconciliationMatches(
+            b.metadata,
+            canonical.externalId ?? '',
+            statementEntry.statementId
           );
           const score =
+            (persistedMatch ? 1000 : 0) +
             nameMatch * 80 +
+            (accountHintMatch ? 60 : 0) +
             (hasVenmoText ? 35 : 0) +
             (hasTransferText ? 15 : 0) -
             dayDiff * 12 -
             amountDiff * 1000;
-          return { b, dayDiff, amountDiff, hasVenmoText, hasTransferText, nameMatch, score };
+          return {
+            b,
+            dayDiff,
+            amountDiff,
+            hasVenmoText,
+            hasTransferText,
+            nameMatch,
+            accountHintMatch,
+            persistedMatch,
+            amountBasis,
+            score,
+          };
         })
         .filter((x) => x.dayDiff <= args.maxDayGap && x.amountDiff <= 0.02)
         .filter((x) => {
@@ -761,7 +883,21 @@ async function run() {
       const best = candidates[0];
       const second = candidates[1];
       const scoreGap = second ? best.score - second.score : 999;
-      if (best.dayDiff > 2 && scoreGap < 10) continue;
+      const hasDistinctiveEvidence =
+        best.persistedMatch || best.nameMatch > 0 || best.accountHintMatch;
+      if (
+        (!hasDistinctiveEvidence && candidates.length > 1 && scoreGap < 20) ||
+        (best.dayDiff > 2 && !best.persistedMatch && scoreGap < 20)
+      ) {
+        continue;
+      }
+
+      const confidence: MatchedPair['confidence'] =
+        best.persistedMatch ||
+        (best.dayDiff <= 1 && best.amountDiff <= 0.01 && hasDistinctiveEvidence) ||
+        (best.dayDiff === 0 && best.amountDiff <= 0.01 && candidates.length === 1)
+          ? 'HIGH'
+          : 'MEDIUM';
 
       usedBankTxIds.add(best.b.id);
       matchedPairs.push({
@@ -776,11 +912,14 @@ async function run() {
         amountDiff: Number(best.amountDiff.toFixed(2)),
         score: Number(best.score.toFixed(2)),
         reason,
+        candidateCount: candidates.length,
+        accountHintMatch: best.accountHintMatch,
+        confidence,
+        amountBasis: best.amountBasis,
       });
     }
 
     let convertedBankToTransfer = 0;
-    let normalizedBankVenmoToTransfer = 0;
     if (args.apply && matchedPairs.length > 0) {
       for (const m of matchedPairs) {
         const prevMeta =
@@ -797,6 +936,13 @@ async function run() {
             reason: m.reason,
             dayDiff: m.dayDiff,
             amountDiff: m.amountDiff,
+            amountBasis: m.amountBasis,
+            canonicalAmount: m.canonicalAmount,
+            matchedBankAmount: m.bankTx.amount,
+            candidateCount: m.candidateCount,
+            accountHintMatch: m.accountHintMatch,
+            confidence: m.confidence,
+            score: m.score,
             reconciledAt: new Date().toISOString(),
             previousType: m.bankTx.type,
             previousClassification: m.bankTx.classification,
@@ -834,6 +980,13 @@ async function run() {
                 reason: m.reason,
                 dayDiff: m.dayDiff,
                 amountDiff: m.amountDiff,
+                amountBasis: m.amountBasis,
+                canonicalAmount: m.canonicalAmount,
+                matchedBankAmount: m.bankTx.amount,
+                candidateCount: m.candidateCount,
+                accountHintMatch: m.accountHintMatch,
+                confidence: m.confidence,
+                score: m.score,
                 reconciledAt: new Date().toISOString(),
               },
             },
@@ -864,62 +1017,8 @@ async function run() {
         convertedBankToTransfer++;
       }
     }
-    if (args.apply) {
-      // Normalize remaining bank-side Venmo rows to TRANSFER — but ONLY inside
-      // the date window the statement CSVs actually cover. Within that window
-      // the statement is authoritative for every wallet movement, so an
-      // unmatched bank "venmo" row is a duplicate the fuzzy matcher missed.
-      // OUTSIDE the window it can be real income or a real payment, and the
-      // old unscoped version silently erased that from the P&L. Rows a human
-      // already reviewed are never touched, and normalized rows stay
-      // unreviewed so they remain visible in the review queue.
-      const bankVenmoRows = await prisma.transaction.findMany({
-        where: {
-          account: { userId },
-          accountId: { in: bankScopeAccountIds },
-          date: { gte: minDate, lte: maxDate },
-          isReviewed: false,
-          OR: [
-            { description: { contains: 'venmo', mode: 'insensitive' } },
-            { merchantName: { contains: 'venmo', mode: 'insensitive' } },
-          ],
-        },
-        select: {
-          id: true,
-          type: true,
-          classification: true,
-          categoryId: true,
-          metadata: true,
-        },
-      });
-      for (const row of bankVenmoRows) {
-        if (row.type === 'TRANSFER' && row.classification === 'TRANSFER') continue;
-        const prevMeta =
-          row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-            ? (row.metadata as Record<string, unknown>)
-            : {};
-        await prisma.transaction.update({
-          where: { id: row.id },
-          data: {
-            type: 'TRANSFER',
-            classification: 'TRANSFER',
-            categoryId: transferCategory?.id ?? row.categoryId,
-            metadata: {
-              ...prevMeta,
-              venmoReconciliation: {
-                source: 'venmo-statement-sync',
-                reason: 'bank-venmo-normalized-to-transfer',
-                statementWindowStart: minDate.toISOString(),
-                statementWindowEnd: maxDate.toISOString(),
-                normalizedAt: new Date().toISOString(),
-              },
-            },
-          },
-        });
-        normalizedBankVenmoToTransfer++;
-      }
-    }
-
+    // Only explicit one-to-one matches are converted. Broad Venmo-text
+    // normalization hides unresolved rows and weakens auditability.
     const reportPath = path.resolve(process.cwd(), args.reportPath);
     const reportLines = [
       [
@@ -936,6 +1035,10 @@ async function run() {
         'amount_diff',
         'score',
         'reason',
+        'candidate_count',
+        'account_hint_match',
+        'confidence',
+        'amount_basis',
       ].join(','),
     ];
     for (const m of matchedPairs) {
@@ -954,16 +1057,80 @@ async function run() {
           escapeCsv(m.amountDiff),
           escapeCsv(m.score),
           escapeCsv(m.reason),
+          escapeCsv(m.candidateCount),
+          escapeCsv(m.accountHintMatch ? 'yes' : 'no'),
+          escapeCsv(m.confidence),
+          escapeCsv(m.amountBasis),
         ].join(',')
       );
     }
     writeFileSync(reportPath, reportLines.join('\n') + '\n', 'utf8');
 
-    const unmatchedStatementIds = new Set(
-      mainRows
-        .map((r) => r.externalId.replace('venmo-statement-main:', ''))
-        .filter((id) => !matchedPairs.some((m) => m.statementId === id))
+    const matchedStatementIds = new Set(matchedPairs.map((m) => m.statementId));
+    const expectedBankCounterpartIds = new Set(
+      completed.filter(venmoExpectsBankCounterpart).map((entry) => entry.statementId)
     );
+    const unmatchedExpectedStatementIds = new Set(
+      Array.from(expectedBankCounterpartIds).filter((id) => !matchedStatementIds.has(id))
+    );
+    const noBankMatchExpected = completed.length - expectedBankCounterpartIds.size;
+    const completedById = new Map(completed.map((entry) => [entry.statementId, entry]));
+    const coverageByFundingSource = new Map<string, { expected: number; matched: number }>();
+    for (const id of Array.from(expectedBankCounterpartIds)) {
+      const entry = completedById.get(id);
+      if (!entry) continue;
+      const key = entry.type.toLowerCase().includes('transfer')
+        ? `Transfer -> ${entry.destination || 'unspecified destination'}`
+        : entry.fundingSource || 'Unspecified funding source';
+      const coverage = coverageByFundingSource.get(key) ?? { expected: 0, matched: 0 };
+      coverage.expected++;
+      if (matchedStatementIds.has(id)) coverage.matched++;
+      coverageByFundingSource.set(key, coverage);
+    }
+    const coverageLines = Array.from(coverageByFundingSource.entries())
+      .sort((a, b) => b[1].expected - a[1].expected || a[0].localeCompare(b[0]))
+      .map(
+        ([source, coverage]) =>
+          `  - ${source}: ${coverage.matched}/${coverage.expected} matched (${(
+            (coverage.matched / coverage.expected) *
+            100
+          ).toFixed(1)}%)`
+      );
+
+    const unmatchedReportPath = reportPath.replace(/\.csv$/i, '-unmatched.csv');
+    const unmatchedReportLines = [
+      [
+        'statement_id',
+        'statement_datetime',
+        'type',
+        'amount_total',
+        'from',
+        'to',
+        'note',
+        'funding_source',
+        'destination',
+        'source_file',
+      ].join(','),
+    ];
+    for (const id of Array.from(unmatchedExpectedStatementIds)) {
+      const entry = completedById.get(id);
+      if (!entry) continue;
+      unmatchedReportLines.push(
+        [
+          escapeCsv(entry.statementId),
+          escapeCsv(entry.statementDateTime.toISOString()),
+          escapeCsv(entry.type),
+          escapeCsv(entry.amountTotalSigned.toFixed(2)),
+          escapeCsv(entry.from),
+          escapeCsv(entry.to),
+          escapeCsv(entry.note),
+          escapeCsv(entry.fundingSource),
+          escapeCsv(entry.destination),
+          escapeCsv(entry.sourceFile),
+        ].join(',')
+      );
+    }
+    writeFileSync(unmatchedReportPath, unmatchedReportLines.join('\n') + '\n', 'utf8');
 
     console.log(
       [
@@ -972,17 +1139,25 @@ async function run() {
         `Venmo account: ${venmoAccount.name} (${venmoAccount.id})`,
         `Bank scope accounts: ${bankScopeAccounts.map((a) => `${a.name} (${a.id})`).join(', ')}`,
         `CSV files: ${csvFiles.length}`,
-        `Rows parsed (all): ${entries.length}`,
+        `Rows parsed (all): ${parsedEntries.length}`,
+        `Duplicate statement rows ignored: ${duplicateCount}`,
+        `Duplicate rows with descriptive differences merged: ${descriptiveConflictCount}`,
+        `Unique statement rows: ${entries.length}`,
         `Rows parsed (complete): ${completed.length}`,
         `Canonical rows prepared (main + fee): ${canonicalRows.length}`,
         `Will create: ${created}`,
         `Will update: ${updated}`,
+        `Statement rows with no bank match expected: ${noBankMatchExpected}`,
+        `Statement rows expecting a bank counterpart: ${expectedBankCounterpartIds.size}`,
         `Matched bank duplicates/transfers: ${matchedPairs.length}`,
-        `Unmatched canonical statement rows: ${unmatchedStatementIds.size}`,
+        `Unmatched rows that expect a bank counterpart: ${unmatchedExpectedStatementIds.size}`,
+        'Coverage by funding source / transfer destination:',
+        ...coverageLines,
         args.apply
-          ? `Applied: ${created} created, ${updated} updated, ${convertedBankToTransfer} matched bank tx converted to TRANSFER, ${normalizedBankVenmoToTransfer} bank venmo tx normalized to TRANSFER`
+          ? `Applied: ${created} created, ${updated} updated, ${convertedBankToTransfer} matched bank tx converted to TRANSFER`
           : 'Dry run only. Re-run with --apply to persist.',
         `Report: ${path.relative(process.cwd(), reportPath) || reportPath}`,
+        `Unmatched report: ${path.relative(process.cwd(), unmatchedReportPath) || unmatchedReportPath}`,
       ].join('\n')
     );
   } finally {

@@ -24,6 +24,7 @@ import {
   CASHFLOW_CONTRACT_VERSION_V2,
   CASHFLOW_METHOD_VERSION_V2,
 } from '../src/lib/cashflow';
+import { cashReportScope } from '../src/lib/reporting-scope';
 
 const db = new PrismaClient();
 
@@ -53,7 +54,7 @@ async function main() {
 
   const [transactions, pendingRows, source, latestBankSync] = await Promise.all([
     db.transaction.findMany({
-      where: { status: 'POSTED', date: { gte: start, lt: end } },
+      where: { ...cashReportScope(), date: { gte: start, lt: end } },
       select: {
         id: true,
         date: true,
@@ -76,10 +77,14 @@ async function main() {
       },
     }),
     db.transaction.findMany({
-      where: { status: 'PENDING', date: { gte: start, lt: end } },
+      where: {
+        status: 'PENDING',
+        account: { squareConnectionId: null },
+        date: { gte: start, lt: end },
+      },
       select: { date: true },
     }),
-    db.transaction.aggregate({ where: { status: 'POSTED' }, _max: { date: true } }),
+    db.transaction.aggregate({ where: cashReportScope(), _max: { date: true } }),
     db.financialAccount.aggregate({
       where: { isActive: true, plaidAccountId: { not: null } },
       _max: { lastSyncedAt: true },

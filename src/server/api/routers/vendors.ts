@@ -4,6 +4,7 @@ import { TRPCError } from '@trpc/server';
 import { normalizeVendorName, findSimilarVendors } from '@/lib/normalization/vendors';
 import { Prisma } from '@prisma/client';
 import { isExpenseForSpending, isIncomeForReporting } from '@/lib/transaction-filters';
+import { operatingReportScope } from '@/lib/reporting-scope';
 
 export const vendorsRouter = createTRPCRouter({
   // List all unique vendors with spending data
@@ -36,7 +37,7 @@ export const vendorsRouter = createTRPCRouter({
       // Get all transactions with merchant names for the user
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          ...operatingReportScope(ctx.session.user.id),
           merchantName: { not: null },
           ...dateWhere,
           NOT: [
@@ -176,7 +177,7 @@ export const vendorsRouter = createTRPCRouter({
       // Get all transactions for this vendor
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          ...operatingReportScope(ctx.session.user.id),
           merchantName: { not: null },
         },
         include: {
@@ -365,7 +366,7 @@ export const vendorsRouter = createTRPCRouter({
 
       const transactions = await ctx.db.transaction.findMany({
         where: {
-          account: { userId: ctx.session.user.id },
+          ...operatingReportScope(ctx.session.user.id),
           merchantName: { not: null },
           type: 'EXPENSE',
           NOT: [

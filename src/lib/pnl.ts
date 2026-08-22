@@ -3,6 +3,7 @@ import {
   getEffectiveClassification as getEffectiveClassificationBase,
   type EffectiveClassification,
 } from '@/lib/transaction-filters';
+import { operatingReportScope } from '@/lib/reporting-scope';
 
 /**
  * Profit & loss aggregation — the single source of truth shared by the
@@ -346,7 +347,10 @@ export async function buildPnlReport(db: PrismaClient, year: number): Promise<Pn
   const endDate = new Date(`${year}-12-31T23:59:59.999Z`);
 
   const transactions = await db.transaction.findMany({
-    where: { date: { gte: startDate, lte: endDate } },
+    where: {
+      ...operatingReportScope(),
+      date: { gte: startDate, lte: endDate },
+    },
     select: {
       id: true,
       amount: true,

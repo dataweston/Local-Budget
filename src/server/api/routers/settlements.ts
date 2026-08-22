@@ -105,9 +105,18 @@ export const settlementsRouter = createTRPCRouter({
 
     return {
       range: { startDate, endDate },
-      totals: { ...totals, feeRate: rate(totals.fees, totals.gross) },
+      totals: {
+        ...totals,
+        feeRate: rate(totals.fees, totals.gross),
+        financingRate: rate(totals.financing, totals.gross),
+      },
       byMonth: Array.from(byMonth.entries())
-        .map(([month, bucket]) => ({ month, ...bucket, feeRate: rate(bucket.fees, bucket.gross) }))
+        .map(([month, bucket]) => ({
+          month,
+          ...bucket,
+          feeRate: rate(bucket.fees, bucket.gross),
+          financingRate: rate(bucket.financing, bucket.gross),
+        }))
         .sort((a, b) => a.month.localeCompare(b.month)),
       byType: Array.from(byType.entries())
         .map(([type, bucket]) => ({ type, ...bucket }))

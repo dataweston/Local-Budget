@@ -10,6 +10,26 @@ import {
   settlementBankDateWindow,
   settlementReconciliationStatus,
 } from '@/lib/settlements';
+import { cashReportScope, operatingReportScope } from '@/lib/reporting-scope';
+
+describe('reporting scopes', () => {
+  it('uses posted originating activity for operating reports', () => {
+    expect(operatingReportScope('user-1')).toEqual({
+      status: 'POSTED',
+      account: { userId: 'user-1' },
+      allocations: {
+        none: { isCurrent: true, role: 'BANK_SETTLEMENT' },
+      },
+    });
+  });
+
+  it('uses posted non-processor accounts for cash reports', () => {
+    expect(cashReportScope('user-1')).toEqual({
+      status: 'POSTED',
+      account: { userId: 'user-1', squareConnectionId: null },
+    });
+  });
+});
 
 describe('cash posting balance effects', () => {
   it('excludes non-posted lifecycle states from account balances', () => {

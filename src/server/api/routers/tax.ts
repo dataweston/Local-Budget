@@ -8,6 +8,7 @@ import {
   getEffectiveClassification,
 } from '@/lib/pnl';
 import { scheduleCLineForCategory, LINE_COGS } from '@/lib/tax';
+import { cashReportScope, operatingReportScope } from '@/lib/reporting-scope';
 
 const yearInput = z.object({ year: z.number().int().min(2000).max(2100) });
 
@@ -72,7 +73,7 @@ export const taxRouter = createTRPCRouter({
   ownerEquity: protectedProcedure.input(yearInput).query(async ({ ctx, input }) => {
     const rows = await ctx.db.transaction.findMany({
       where: {
-        account: { userId: ctx.session.user.id },
+        ...cashReportScope(ctx.session.user.id),
         date: yearRange(input.year),
         metadata: {
           path: ['transferException'],
@@ -122,10 +123,9 @@ export const taxRouter = createTRPCRouter({
   contractorCandidates: protectedProcedure.input(yearInput).query(async ({ ctx, input }) => {
     const rows = await ctx.db.transaction.findMany({
       where: {
-        account: { userId: ctx.session.user.id },
+        ...operatingReportScope(ctx.session.user.id),
         date: yearRange(input.year),
         type: 'EXPENSE',
-        status: 'POSTED',
       },
       select: {
         amount: true,
@@ -180,9 +180,8 @@ export const taxRouter = createTRPCRouter({
   scheduleC: protectedProcedure.input(yearInput).query(async ({ ctx, input }) => {
     const transactions = await ctx.db.transaction.findMany({
       where: {
-        account: { userId: ctx.session.user.id },
+        ...operatingReportScope(ctx.session.user.id),
         date: yearRange(input.year),
-        status: 'POSTED',
       },
       select: {
         id: true,
