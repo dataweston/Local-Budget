@@ -37,6 +37,7 @@ import {
   settlementReconciliationStatus,
 } from '@/lib/settlements';
 import { matchBatchedSettlements } from '@/lib/settlement-matching';
+import { selectSquareProcessorLedgerAccount } from '@/lib/square-processor-ledger';
 
 
 // Auto-generated split descriptions. Splits with these descriptions are owned
@@ -68,7 +69,13 @@ export async function POST(request: NextRequest) {
         userId: session.user.id,
       },
       include: {
-        squareConnection: true,
+        squareConnection: {
+          include: {
+            accounts: {
+              select: { id: true, providerData: true },
+            },
+          },
+        },
       },
     });
 
@@ -77,6 +84,25 @@ export async function POST(request: NextRequest) {
     }
 
     const connection = account.squareConnection;
+    const selected = selectSquareProcessorLedgerAccount(connection.accounts);
+    if (!selected.account) {
+      console.error(
+        `[Square Sync] SquareConnection ${connection.id} has no unambiguous processor-ledger account (${selected.reason})`
+      );
+      return NextResponse.json(
+        { error: 'Square processor-ledger account is not configured', reason: selected.reason },
+        { status: 409 }
+      );
+    }
+    if (selected.account.id !== account.id) {
+      return NextResponse.json(
+        {
+          error: 'Square sync must run from the processor-ledger account',
+          processorAccountId: selected.account.id,
+        },
+        { status: 409 }
+      );
+    }
     let accessToken = connection.accessToken;
 
     // Check if token is expired and refresh if needed

@@ -1,6 +1,7 @@
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 
 type StoreReceiptFileInput = {
   userId: string;
@@ -15,6 +16,7 @@ type StoreReceiptFileResult = {
   publicPath: string;
   fileType: string;
   fileSize: number;
+  contentHash: string;
   ocrBuffer: Buffer;
   storageMeta: {
     source: string;
@@ -106,6 +108,7 @@ function usingBlobStorage(): boolean {
 
 export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<StoreReceiptFileResult> {
   const originalSize = input.buffer.length;
+  const contentHash = receiptContentHash(input.buffer);
   let storedBuffer = input.buffer;
   let storedMimeType = input.mimeType;
   let optimized = false;
@@ -129,11 +132,11 @@ export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<St
   if (usingBlobStorage()) {
     const { put } = await import('@vercel/blob');
     const blob = await put(`receipts/${input.userId}/${fileName}`, storedBuffer, {
-      access: 'public',
+      access: 'private',
       contentType: storedMimeType,
       addRandomSuffix: true,
     });
-    filePath = blob.url;
+    filePath = `vercel-blob:${blob.pathname}`;
     storage = 'blob';
   } else {
     const userDir = path.join(localUploadRoot(), input.userId);
@@ -152,6 +155,7 @@ export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<St
     publicPath: filePath,
     fileType: storedMimeType,
     fileSize: storedSize,
+    contentHash,
     ocrBuffer: storedBuffer,
     storageMeta: {
       source: input.source,
@@ -167,12 +171,25 @@ export async function storeReceiptFile(input: StoreReceiptFileInput): Promise<St
   };
 }
 
+export function receiptContentHash(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
 /**
  * Read back a stored receipt file from whichever backend holds it.
  * Supports blob URLs, the relative local key written by storeReceiptFile,
  * and the legacy absolute/public paths written by earlier versions.
  */
 export async function readReceiptFile(filePath: string): Promise<Buffer> {
+  if (filePath.startsWith('vercel-blob:')) {
+    const { get } = await import('@vercel/blob');
+    const stored = await get(filePath.slice('vercel-blob:'.length), {
+      access: 'private',
+      useCache: false,
+    });
+    if (!stored?.stream) throw new Error('Private receipt blob not found');
+    return Buffer.from(await new Response(stored.stream as any).arrayBuffer());
+  }
   if (/^https?:\/\//i.test(filePath)) {
     const response = await fetch(filePath);
     if (!response.ok) {

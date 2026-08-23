@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { formatCurrency, cn } from '@/lib/utils';
 import { ACCOUNT_TYPE_COLORS } from '@/lib/colors';
+import { selectSquareProcessorLedgerAccount } from '@/lib/square-processor-ledger';
 import { AddAccountModal } from './AddAccountModal';
 import { PlaidLinkButton } from './PlaidLinkButton';
 import { SquareConnectButton } from './SquareConnectButton';
@@ -67,6 +68,18 @@ export function AccountsList() {
 
   const handleAccountLinked = () => {
     refetch();
+  };
+
+  const isSyncableSquareAccount = (account: {
+    id: string;
+    squareConnectionId: string | null;
+    providerData?: unknown;
+  }) => {
+    if (!account.squareConnectionId) return false;
+    const connectionAccounts = (accounts ?? []).filter(
+      (candidate) => candidate.squareConnectionId === account.squareConnectionId
+    );
+    return selectSquareProcessorLedgerAccount(connectionAccounts).account?.id === account.id;
   };
 
   const handleSyncAccount = async (accountId: string, squareConnectionId?: string | null, plaidItemId?: string | null, fullSync = false) => {
@@ -147,7 +160,9 @@ export function AccountsList() {
       }
 
       // Sync Square accounts
-      const squareAccounts = linkedAccounts.filter((a) => a.squareConnectionId);
+      const squareAccounts = linkedAccounts.filter(
+        isSyncableSquareAccount
+      );
       for (const account of squareAccounts) {
         try {
           await fetch('/api/square/sync', {
@@ -385,9 +400,13 @@ export function AccountsList() {
                             >
                               View Transactions
                             </DropdownMenuItem>
-                            {(account.squareConnectionId || account.plaidItemId) && (
+                            {(isSyncableSquareAccount(account) || account.plaidItemId) && (
                               <DropdownMenuItem 
-                                onClick={() => handleSyncAccount(account.id, account.squareConnectionId, account.plaidItemId)}
+                                onClick={() => handleSyncAccount(
+                                  account.id,
+                                  isSyncableSquareAccount(account) ? account.squareConnectionId : null,
+                                  account.plaidItemId
+                                )}
                                 disabled={syncingAccountId === account.id}
                               >
                                 {syncingAccountId === account.id ? (

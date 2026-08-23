@@ -3,16 +3,27 @@ import { getServerSession } from 'next-auth';
 import { unstable_noStore as noStore } from 'next/cache';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { exchangeSquareAuthCode, getSquareBalance, getSquareBankAccounts } from '@/lib/square';
+import { exchangeSquareAuthCode, getSquareBalance } from '@/lib/square';
+import { selectSquareProcessorLedgerAccount } from '@/lib/square-processor-ledger';
+import { oauthStatesMatch } from '@/lib/oauth-state';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+function redirectAndClearState(request: NextRequest, path: string) {
+  const response = NextResponse.redirect(new URL(path, request.url));
+  response.cookies.set('square_oauth_state', '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/api/square/callback',
+    maxAge: 0,
+  });
+  return response;
+}
+
 export async function GET(request: NextRequest) {
   noStore(); // Ensure dynamic rendering
-  
-  console.log('[Square Callback] Received callback request');
-  console.log('[Square Callback] URL:', request.url);
   
   try {
     const session = await getServerSession(authOptions);
@@ -21,7 +32,7 @@ export async function GET(request: NextRequest) {
     if (!session?.user?.id) {
       // Redirect to login with return URL
       console.log('[Square Callback] No session, redirecting to login');
-      return NextResponse.redirect(new URL('/login?callbackUrl=/api/square/callback', request.url));
+      return redirectAndClearState(request, '/login?callbackUrl=/api/square/callback');
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -29,21 +40,22 @@ export async function GET(request: NextRequest) {
     const state = searchParams.get('state');
     const error = searchParams.get('error');
     
-    console.log('[Square Callback] Code:', code ? 'present' : 'missing');
-    console.log('[Square Callback] State:', state ? 'present' : 'missing');
-    console.log('[Square Callback] Error:', error || 'none');
+    const expectedState = request.cookies.get('square_oauth_state')?.value;
+    if (!oauthStatesMatch(expectedState, state)) {
+      console.error('[Square Callback] OAuth state verification failed');
+      return redirectAndClearState(request, '/accounts?error=invalid_oauth_state');
+    }
 
     if (error) {
       console.error('[Square Callback] OAuth error:', error);
-      return NextResponse.redirect(new URL('/accounts?error=square_denied', request.url));
+      return redirectAndClearState(request, '/accounts?error=square_denied');
     }
 
     if (!code) {
       console.error('[Square Callback] No authorization code received');
-      return NextResponse.redirect(new URL('/accounts?error=no_code', request.url));
+      return redirectAndClearState(request, '/accounts?error=no_code');
     }
 
-    // TODO: Verify state parameter against stored value
     console.log('[Square Callback] Exchanging code for token...');
 
     // Construct the redirect URI (must match what was used in the authorization request)
@@ -57,12 +69,12 @@ export async function GET(request: NextRequest) {
       console.log('[Square Callback] Token exchange successful, merchantId:', tokenResponse.merchantId);
     } catch (tokenError) {
       console.error('[Square Callback] Token exchange failed:', tokenError);
-      return NextResponse.redirect(new URL('/accounts?error=token_exchange_failed', request.url));
+      return redirectAndClearState(request, '/accounts?error=token_exchange_failed');
     }
 
     if (!tokenResponse.accessToken) {
       console.error('[Square Callback] No access token in response');
-      return NextResponse.redirect(new URL('/accounts?error=token_failed', request.url));
+      return redirectAndClearState(request, '/accounts?error=token_failed');
     }
 
     console.log('[Square Callback] Getting merchant locations...');
@@ -110,14 +122,24 @@ export async function GET(request: NextRequest) {
         },
       });
 
-      // Check if there's already a financial account linked to this connection
-      const existingAccount = await db.financialAccount.findFirst({
+      // A connection may have historical destination-bank placeholders. Only a
+      // tagged processor-ledger account is allowed to receive Square activity.
+      const linkedAccounts = await db.financialAccount.findMany({
         where: { squareConnectionId: squareConnection.id },
+        select: { id: true, providerData: true },
       });
+      const selected = selectSquareProcessorLedgerAccount(linkedAccounts);
 
-      if (existingAccount) {
-        console.log('[Square Callback] Square account already exists, redirecting to accounts');
-        return NextResponse.redirect(new URL('/accounts?connected=square&updated=true', request.url));
+      if (selected.account) {
+        console.log('[Square Callback] Processor-ledger account already exists, redirecting to accounts');
+        return redirectAndClearState(request, '/accounts?connected=square&updated=true');
+      }
+
+      if (linkedAccounts.length > 0) {
+        console.warn(
+          `[Square Callback] Existing Square accounts are ${selected.reason}; ` +
+            'creating a tagged processor ledger without modifying historical accounts or rows.'
+        );
       }
     } else {
       // Create new Square connection record
@@ -136,7 +158,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Create a financial account for Square balance
-    const squareAccount = await db.financialAccount.create({
+    await db.financialAccount.create({
       data: {
         userId: session.user.id,
         entityId: defaultEntity.id,
@@ -149,43 +171,20 @@ export async function GET(request: NextRequest) {
         squareConnectionId: squareConnection.id,
         providerData: {
           provider: 'square',
+          role: 'processor_ledger',
         },
       },
     });
 
-    // Try to get linked bank accounts from Square
-    try {
-      const bankAccounts = await getSquareBankAccounts(tokenResponse.accessToken);
-      
-      for (const bankAccount of bankAccounts) {
-        await db.financialAccount.create({
-          data: {
-            userId: session.user.id,
-            entityId: defaultEntity.id,
-            name: `Bank Account (via Square)`,
-            type: 'CHECKING',
-            institution: 'Square Bank Account',
-            accountNumber: bankAccount.accountNumberSuffix || undefined,
-            currency: 'USD',
-            currentBalance: 0,
-            isActive: true,
-            squareConnectionId: squareConnection.id,
-            providerData: {
-              provider: 'square_bank',
-              squareBankAccountId: bankAccount.id,
-              parentSquareAccountId: squareAccount.id,
-            },
-          },
-        });
-      }
-    } catch (bankError) {
-      console.log('No bank accounts linked to Square or error fetching:', bankError);
-    }
+    // Do not create FinancialAccounts for Square payout destinations. Those
+    // are bank accounts and must ingest their cash activity from their own
+    // bank/Plaid feed; attaching them to this connection used to let each one
+    // independently ingest a second copy of Square sales.
 
     // Redirect to accounts page with success message
-    return NextResponse.redirect(new URL('/accounts?connected=square', request.url));
+    return redirectAndClearState(request, '/accounts?connected=square');
   } catch (error) {
     console.error('Error in Square callback:', error);
-    return NextResponse.redirect(new URL('/accounts?error=callback_failed', request.url));
+    return redirectAndClearState(request, '/accounts?error=callback_failed');
   }
 }

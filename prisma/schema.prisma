@@ -30,6 +30,13 @@ model User {
   sessions          Session[]
   entities          Entity[]
   financialAccounts FinancialAccount[]
+  sourceEvents      SourceEvent[]
+  chartAccounts     ChartAccount[]
+  accountingPeriods AccountingPeriod[]
+  journalEntries    JournalEntry[]
+  closedPeriods     AccountingPeriod[]         @relation("AccountingPeriodClosedBy")
+  preparedCloseRuns CloseRun[]                 @relation("CloseRunPreparedBy")
+  reviewedCloseRuns CloseRun[]                 @relation("CloseRunReviewedBy")
   categories        Category[]
   rules             ClassificationRule[]
   receipts          Receipt[]
@@ -106,10 +113,12 @@ model Entity {
   updatedAt   DateTime   @updatedAt
 
   // Relations
-  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   financialAccounts      FinancialAccount[]
-  transactionsAsPayer    Transaction[]      @relation("TransactionPayer")
-  transactionsAsIncurred Transaction[]      @relation("TransactionIncurred")
+  accountOwnerships      FinancialAccountOwner[]
+  transactionsAsPayer    Transaction[]           @relation("TransactionPayer")
+  transactionsAsIncurred Transaction[]           @relation("TransactionIncurred")
+  journalLines           JournalLine[]           @relation("JournalLineLegalOwner")
 
   @@index([userId])
   @@map("entities")
@@ -129,10 +138,28 @@ enum AccountType {
   OTHER
 }
 
+// Custody is where funds are physically held; it is intentionally separate
+// from the legal/economic owner (Entity).
+enum CustodyRole {
+  BUSINESS
+  PERSONAL
+  PROCESSOR
+  SHARED
+  UNKNOWN
+}
+
+enum AccountOwnershipRole {
+  SOLE_OWNER
+  JOINT_OWNER
+  CUSTODIAN
+  AUTHORIZED_SIGNER
+}
+
 model FinancialAccount {
   id                 String      @id @default(cuid())
   userId             String
   entityId           String? // Optional: which entity owns this account
+  custodyRole        CustodyRole @default(UNKNOWN)
   name               String
   type               AccountType
   institution        String?
@@ -165,20 +192,46 @@ model FinancialAccount {
   updatedAt DateTime @updatedAt
 
   // Relations
-  user             User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entity           Entity?                  @relation(fields: [entityId], references: [id])
-  transactions     Transaction[]
-  plaidItem        PlaidItem?               @relation(fields: [plaidItemId], references: [itemId])
-  squareConnection SquareConnection?        @relation(fields: [squareConnectionId], references: [id])
-  plaidAccount     PlaidAccount?
-  balanceSnapshots AccountBalanceSnapshot[]
-  settlements      ProcessorSettlement[]
-  auditEvents      FinancialAuditEvent[]
+  user              User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity            Entity?                  @relation(fields: [entityId], references: [id])
+  accountOwnerships FinancialAccountOwner[]
+  transactions      Transaction[]
+  plaidItem         PlaidItem?               @relation(fields: [plaidItemId], references: [itemId])
+  squareConnection  SquareConnection?        @relation(fields: [squareConnectionId], references: [id])
+  plaidAccount      PlaidAccount?
+  balanceSnapshots  AccountBalanceSnapshot[]
+  settlements       ProcessorSettlement[]
+  auditEvents       FinancialAuditEvent[]
+  journalLines      JournalLine[]
 
   @@index([userId])
   @@index([plaidItemId])
   @@index([squareConnectionId])
+  @@index([userId, custodyRole])
   @@map("financial_accounts")
+}
+
+// Legal custody may be joint even though every journal line has one economic
+// owner. Keep account ownership many-to-many and effective-dated so household
+// custody never collapses Weston and Catherine into one generic person.
+model FinancialAccountOwner {
+  id            String               @id @default(cuid())
+  accountId     String
+  entityId      String
+  role          AccountOwnershipRole
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  sourceRef     String?
+  confirmedAt   DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  account FinancialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  entity  Entity           @relation(fields: [entityId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, entityId, role])
+  @@index([entityId, role])
+  @@map("financial_account_owners")
 }
 
 model PlaidItem {
@@ -245,6 +298,189 @@ model SquareConnection {
   @@unique([userId, merchantId])
   @@index([userId])
   @@map("square_connections")
+}
+
+// Provider-neutral immutable ingress envelope. Processing fields may advance,
+// but source identity and evidence fields are append-only (see migration
+// trigger). Corrections are represented by a new event or journal reversal.
+enum SourceEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+model SourceEvent {
+  id              String            @id @default(cuid())
+  userId          String
+  sourceSystem    String
+  sourceNamespace String
+  externalId      String
+  eventType       String
+  eventVersion    String            @default("1")
+  occurredAt      DateTime?
+  settledAt       DateTime?
+  receivedAt      DateTime          @default(now())
+  payloadHash     String
+  payload         Json?
+  payloadUri      String?
+  signatureStatus String?
+  parserVersion   String?
+  status          SourceEventStatus @default(RECEIVED)
+  processingError String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  journalEntries JournalEntry[]
+
+  // externalId is idempotent only within this tenant/provider/account scope.
+  @@unique([userId, sourceSystem, sourceNamespace, externalId])
+  @@index([userId, sourceSystem, sourceNamespace])
+  @@index([status, receivedAt])
+  @@map("source_events")
+}
+
+enum ChartAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  CONTRA_REVENUE
+  EXPENSE
+  CONTRA_ASSET
+}
+
+enum AccountingPeriodStatus {
+  OPEN
+  REVIEW
+  CLOSED
+}
+
+enum JournalEntryStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
+enum CloseRunStatus {
+  DRAFT
+  BLOCKED
+  READY
+  CLOSED
+}
+
+model ChartAccount {
+  id        String           @id @default(cuid())
+  userId    String
+  code      String
+  name      String
+  type      ChartAccountType
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lines JournalLine[]
+
+  @@unique([userId, code])
+  @@index([userId, type])
+  @@map("chart_accounts")
+}
+
+model AccountingPeriod {
+  id         String                 @id @default(cuid())
+  userId     String
+  name       String
+  startsAt   DateTime
+  endsAt     DateTime
+  status     AccountingPeriodStatus @default(OPEN)
+  closedAt   DateTime?
+  closedById String?
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  closedBy  User?          @relation("AccountingPeriodClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+  entries   JournalEntry[]
+  closeRuns CloseRun[]
+
+  @@unique([userId, startsAt, endsAt])
+  @@index([userId, status, startsAt, endsAt])
+  @@map("accounting_periods")
+}
+
+model CloseRun {
+  id           String         @id @default(cuid())
+  periodId     String
+  status       CloseRunStatus @default(DRAFT)
+  preparedById String
+  reviewedById String?
+  metrics      Json
+  blockers     Json
+  snapshotHash String
+  reviewedAt   DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  period     AccountingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  preparedBy User             @relation("CloseRunPreparedBy", fields: [preparedById], references: [id], onDelete: Restrict)
+  reviewedBy User?            @relation("CloseRunReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
+
+  @@index([periodId, status, createdAt])
+  @@index([preparedById])
+  @@map("close_runs")
+}
+
+model JournalEntry {
+  id            String             @id @default(cuid())
+  userId        String
+  periodId      String
+  status        JournalEntryStatus @default(DRAFT)
+  entryDate     DateTime
+  description   String
+  sourceEventId String?
+  reversalOfId  String?
+  postedAt      DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  period      AccountingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  sourceEvent SourceEvent?     @relation(fields: [sourceEventId], references: [id], onDelete: SetNull)
+  reversalOf  JournalEntry?    @relation("JournalReversals", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversals   JournalEntry[]   @relation("JournalReversals")
+  lines       JournalLine[]
+
+  @@unique([reversalOfId])
+  @@index([userId, entryDate])
+  @@index([periodId, status])
+  @@index([sourceEventId])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id               String   @id @default(cuid())
+  journalEntryId   String
+  chartAccountId   String
+  description      String?
+  debitAmount      Decimal  @default(0) @db.Decimal(19, 4)
+  creditAmount     Decimal  @default(0) @db.Decimal(19, 4)
+  legalOwnerId     String?
+  custodyAccountId String?
+  taxCode          String?
+  createdAt        DateTime @default(now())
+
+  journalEntry   JournalEntry      @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  chartAccount   ChartAccount      @relation(fields: [chartAccountId], references: [id], onDelete: Restrict)
+  legalOwner     Entity?           @relation("JournalLineLegalOwner", fields: [legalOwnerId], references: [id], onDelete: Restrict)
+  custodyAccount FinancialAccount? @relation(fields: [custodyAccountId], references: [id], onDelete: Restrict)
+
+  @@index([journalEntryId])
+  @@index([chartAccountId])
+  @@index([legalOwnerId, custodyAccountId])
+  @@map("journal_lines")
 }
 
 // Resolved Square customer directory entries. Square payments only carry an
@@ -751,10 +987,13 @@ model Receipt {
   status ReceiptStatus @default(PENDING)
 
   // File info
-  fileName String
-  fileType String
-  filePath String
-  fileSize Int
+  fileName    String
+  fileType    String
+  filePath    String
+  fileSize    Int
+  contentHash String?
+  capturedAt  DateTime  @default(now())
+  deletedAt   DateTime?
 
   // Extracted data
   vendorName  String?
@@ -782,8 +1021,10 @@ model Receipt {
   lineItems        LineItem[]
   transactionLinks ReceiptTransaction[]
 
+  @@unique([userId, contentHash])
   @@index([userId])
   @@index([status])
+  @@index([userId, deletedAt])
   @@map("receipts")
 }
 

@@ -8,32 +8,27 @@ import {
   squareRefundExternalId,
 } from '@/lib/square';
 import { upsertTransactionSourceIdentity } from '@/lib/financial-integrity';
+import { selectSquareProcessorLedgerAccount } from '@/lib/square-processor-ledger';
 
 /**
  * The single account that mirrors this Square connection's ledger.
  *
  * `accounts` is a list because the schema lets several accounts reference one
- * connection, but only one can be the processor ledger. De-duplication between
- * the webhook and the polling sync relies on both writing the same payment to
- * the same account: the guarding constraint is `@@unique([accountId,
- * externalId])`, which is scoped *per account*. If the two paths ever disagree
- * about the target, every payment silently becomes two rows and no constraint
- * catches it. So resolve deterministically — oldest account wins, matching the
- * ordered include above — and log loudly when the configuration is ambiguous
- * rather than letting row order decide.
+ * connection, but only one can be the processor ledger. The shared selector
+ * uses the explicit provider tag and fails closed on ambiguity, so polling and
+ * webhooks write the same external id to the same account.
  */
-function resolveProcessorAccount<T extends { id: string }>(
+function resolveProcessorAccount<T extends { id: string; providerData?: unknown }>(
   connection: { id: string; accounts: T[] }
 ): T | undefined {
-  if (connection.accounts.length > 1) {
+  const selected = selectSquareProcessorLedgerAccount(connection.accounts);
+  if (!selected.account) {
     console.error(
-      `[Square Webhook] SquareConnection ${connection.id} has ${connection.accounts.length} ` +
-        `linked accounts; only one can be the processor ledger. Using the oldest ` +
-        `(${connection.accounts[0]?.id}). Unlink the extras — a mismatch with the sync ` +
-        `target creates duplicate transactions that the unique constraint cannot catch.`
+      `[Square Webhook] SquareConnection ${connection.id} has no unambiguous ` +
+        `processor-ledger account (${selected.reason}); no Square rows were written.`
     );
   }
-  return connection.accounts[0];
+  return selected.account;
 }
 
 // Resolve a single Square customer id to a stored SquareCustomer row, using the
@@ -155,9 +150,7 @@ export async function POST(request: NextRequest) {
     const squareConnection = await db.squareConnection.findFirst({
       where: { merchantId: merchant_id },
       include: {
-        // Deterministic order: resolveProcessorAccount() takes the oldest, and
-        // an unordered include would let the target drift between calls.
-        accounts: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+        accounts: { select: { id: true, providerData: true } },
         user: true,
       },
     });
@@ -215,7 +208,12 @@ export async function POST(request: NextRequest) {
 async function handlePaymentEvent(
   eventType: string,
   data: { type: string; id: string; object?: Record<string, unknown> },
-  connection: { id: string; userId: string; accessToken: string; accounts: { id: string }[] }
+  connection: {
+    id: string;
+    userId: string;
+    accessToken: string;
+    accounts: { id: string; providerData: unknown }[];
+  }
 ) {
   const payment = data.object as {
     id: string;
@@ -333,7 +331,7 @@ async function handlePaymentEvent(
 
 async function handlePaymentCompleted(
   data: { type: string; id: string; object?: Record<string, unknown> },
-  connection: { id: string; accounts: { id: string }[] }
+  connection: { id: string; accounts: { id: string; providerData: unknown }[] }
 ) {
   const payment = data.object as { id: string } | undefined;
   if (!payment) return;
@@ -341,25 +339,30 @@ async function handlePaymentCompleted(
   const canonicalExternalId = squarePaymentExternalId(payment.id);
   const legacyExternalId = payment.id;
 
-  // Update transaction status to POSTED
-  for (const account of connection.accounts) {
-    await db.transaction.updateMany({
-      where: {
-        accountId: account.id,
-        OR: [{ externalId: canonicalExternalId }, { externalId: legacyExternalId }],
-      },
-      data: {
-        status: 'POSTED',
-      },
-    });
-  }
+  const account = resolveProcessorAccount(connection);
+  if (!account) return;
+
+  // Only the processor ledger is allowed to receive a Square payment state.
+  await db.transaction.updateMany({
+    where: {
+      accountId: account.id,
+      OR: [{ externalId: canonicalExternalId }, { externalId: legacyExternalId }],
+    },
+    data: {
+      status: 'POSTED',
+    },
+  });
   console.log(`Payment ${payment.id} marked as completed`);
 }
 
 async function handleRefundEvent(
   eventType: string,
   data: { type: string; id: string; object?: Record<string, unknown> },
-  connection: { id: string; userId: string; accounts: { id: string }[] }
+  connection: {
+    id: string;
+    userId: string;
+    accounts: { id: string; providerData: unknown }[];
+  }
 ) {
   const refund = data.object as {
     id: string;

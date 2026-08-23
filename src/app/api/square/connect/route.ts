@@ -18,18 +18,17 @@ export async function POST(request: NextRequest) {
     const origin = request.headers.get('origin') || process.env.NEXTAUTH_URL || '';
     const redirectUri = `${origin}/api/square/callback`;
     
-    console.log('[Square Connect] Origin:', origin);
-    console.log('[Square Connect] Redirect URI:', redirectUri);
-
     // Generate OAuth URL with explicit redirect URI
     const authUrl = getSquareOAuthUrl(state, redirectUri);
-    
-    console.log('[Square Connect] Generated auth URL:', authUrl);
-
-    return NextResponse.json({
-      authUrl,
-      state, // Client should store this securely
+    const response = NextResponse.json({ authUrl });
+    response.cookies.set('square_oauth_state', state, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/api/square/callback',
+      maxAge: 10 * 60,
     });
+    return response;
   } catch (error) {
     console.error('[Square Connect] Error initiating Square OAuth:', error);
     return NextResponse.json(

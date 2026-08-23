@@ -26,8 +26,8 @@ export const transfersRouter = createTRPCRouter({
     }),
 
   /**
-   * Apply reconciliation: mark matched legs as TRANSFER, link them, and tag
-   * boundary crossings (owner_draw / owner_contribution) for review.
+   * Apply only proposal pairs explicitly accepted by the reviewer. Amount/date
+   * similarity never authorizes a write by itself.
    */
   apply: protectedProcedure
     .input(
@@ -36,8 +36,10 @@ export const transfersRouter = createTRPCRouter({
           maxDayGap: z.number().min(0).max(30).optional(),
           amountTolerance: z.number().min(0).optional(),
           since: z.date().optional(),
+          approvedPairs: z
+            .array(z.object({ outflowId: z.string().min(1), inflowId: z.string().min(1) }))
+            .min(1),
         })
-        .optional()
     )
     .mutation(async ({ ctx, input }) => {
       return reconcileInternalTransfers(ctx.db, ctx.session.user.id, {

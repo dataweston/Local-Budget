@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { api } from '@/lib/trpc';
+import { selectSquareProcessorLedgerAccount } from '@/lib/square-processor-ledger';
 import { Header } from './header';
 import { StatsCards } from './stats-cards';
 import { CashflowChart } from './cashflow-chart';
@@ -91,7 +92,13 @@ export function Dashboard() {
     ).filter(Boolean) as string[];
 
     const squareAccountIds = linkedAccounts
-      .filter((a) => a.squareConnectionId)
+      .filter((account) => {
+        if (!account.squareConnectionId) return false;
+        const connectionAccounts = allAccounts.filter(
+          (candidate) => candidate.squareConnectionId === account.squareConnectionId
+        );
+        return selectSquareProcessorLedgerAccount(connectionAccounts).account?.id === account.id;
+      })
       .map((a) => a.id);
 
     const syncAll = async () => {

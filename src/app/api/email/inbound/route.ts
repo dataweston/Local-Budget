@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { parseInboundEmail, extractUserIdFromEmail, isReceiptAttachment } from '@/lib/email/parser';
-import { storeReceiptFile } from '@/lib/receipt-storage';
+import { receiptContentHash, storeReceiptFile } from '@/lib/receipt-storage';
 import { enqueueReceiptOcrJob } from '@/lib/receipt-processing';
 import { authorizeServiceRequest } from '@/lib/service-auth';
 
@@ -83,6 +83,15 @@ export async function POST(req: NextRequest) {
     for (const attachment of receiptAttachments) {
       try {
         const contentBuffer = Buffer.from(attachment.content, 'base64');
+        const contentHash = receiptContentHash(contentBuffer);
+        const duplicate = await db.receipt.findFirst({
+          where: { userId, contentHash },
+          select: { id: true, fileName: true, status: true },
+        });
+        if (duplicate) {
+          receipts.push(duplicate);
+          continue;
+        }
         const stored = await storeReceiptFile({
           userId,
           originalName: attachment.filename,
@@ -99,6 +108,7 @@ export async function POST(req: NextRequest) {
             fileType: stored.fileType,
             filePath: stored.filePath,
             fileSize: stored.fileSize,
+            contentHash: stored.contentHash,
             source: 'email',
             sourceId: email.from,
             extractedData: {

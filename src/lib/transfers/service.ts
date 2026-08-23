@@ -22,6 +22,8 @@ import {
 
 export type ReconcileOptions = MatchOptions & {
   apply?: boolean;
+  /** Exact proposal pairs accepted by a human reviewer. */
+  approvedPairs?: { outflowId: string; inflowId: string }[];
   /** Only consider transactions on/after this date. */
   since?: Date;
 };
@@ -29,12 +31,17 @@ export type ReconcileOptions = MatchOptions & {
 export type ReconcileSummary = {
   candidatesConsidered: number;
   pairsMatched: number;
+  pairsApproved: number;
   legsReclassified: number;
   ownerDraws: TransferMatch[]; // business -> personal
   ownerContributions: TransferMatch[]; // personal -> business
   unmatchedInflows: { id: string; amount: number; accountId: string; date: string }[];
   applied: boolean;
 };
+
+export function transferApprovalKey(input: { outflowId: string; inflowId: string }): string {
+  return `${input.outflowId}:${input.inflowId}`;
+}
 
 function signedAmount(type: string, amount: number, metadata: unknown): number | null {
   const abs = Math.abs(Number(amount));
@@ -95,8 +102,16 @@ export async function reconcileInternalTransfers(
   );
 
   let legsReclassified = 0;
-  if (options.apply && result.matches.length > 0) {
-    for (const match of result.matches) {
+  const approvedKeys = new Set((options.approvedPairs ?? []).map(transferApprovalKey));
+  const approvedMatches = result.matches.filter((match) => approvedKeys.has(transferApprovalKey(match)));
+  if (options.apply && approvedKeys.size === 0) {
+    throw new Error('transfer apply requires at least one explicitly approved proposal pair');
+  }
+  if (options.apply && approvedMatches.length !== approvedKeys.size) {
+    throw new Error('an approved transfer pair is no longer a current reconciliation proposal');
+  }
+  if (options.apply && approvedMatches.length > 0) {
+    for (const match of approvedMatches) {
       const transferException =
         match.boundary === 'business_to_personal'
           ? 'owner_draw'
@@ -140,8 +155,8 @@ export async function reconcileInternalTransfers(
             userId,
             transactionId: leg.id,
             action: 'TRANSFER_RECONCILED',
-            source: 'AUTO',
-            reason: transferException ?? 'Auto-paired internal transfer',
+            source: 'MANUAL',
+            reason: transferException ?? 'Reviewer-approved internal transfer proposal',
             changedFields: ['type', 'classification', 'metadata', 'transactionLink'],
             before: {
               type: existing.type,
@@ -170,7 +185,7 @@ export async function reconcileInternalTransfers(
             linkType: 'TRANSFER',
             notes: match.crossesBoundary
               ? `Boundary: ${match.boundary}`
-              : 'Auto-paired internal transfer',
+              : 'Reviewer-approved internal transfer proposal',
           },
           update: {},
         });
@@ -182,6 +197,7 @@ export async function reconcileInternalTransfers(
   return {
     candidatesConsidered: candidates.length,
     pairsMatched: result.matches.length,
+    pairsApproved: options.apply ? approvedMatches.length : 0,
     legsReclassified,
     ownerDraws,
     ownerContributions,

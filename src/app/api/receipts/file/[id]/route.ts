@@ -18,7 +18,7 @@ export async function GET(
   }
 
   const receipt = await db.receipt.findFirst({
-    where: { id: params.id, userId: session.user.id },
+    where: { id: params.id, userId: session.user.id, deletedAt: null },
     select: { filePath: true, fileType: true, fileName: true },
   });
 

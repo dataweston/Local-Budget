@@ -18,6 +18,11 @@ const db = new PrismaClient();
 const APPLY = process.argv.includes('--apply');
 const sinceArg = process.argv.find((a) => a.startsWith('--since='))?.split('=')[1];
 const gapArg = process.argv.find((a) => a.startsWith('--gap='))?.split('=')[1];
+const approvedPairs = process.argv
+  .filter((a) => a.startsWith('--approve='))
+  .map((a) => a.slice('--approve='.length).split(':'))
+  .filter((parts) => parts.length === 2 && parts.every(Boolean))
+  .map(([outflowId, inflowId]) => ({ outflowId, inflowId }));
 
 async function main() {
   console.log(`Transfer reconciliation (${APPLY ? 'APPLY' : 'DRY RUN'})`);
@@ -29,12 +34,13 @@ async function main() {
       apply: APPLY,
       since: sinceArg ? new Date(sinceArg) : undefined,
       maxDayGap: gapArg ? Number(gapArg) : undefined,
+      approvedPairs,
     });
     if (summary.candidatesConsidered === 0) continue;
 
     console.log(`\n${user.email}:`);
     console.log(`  candidates: ${summary.candidatesConsidered}`);
-    console.log(`  pairs matched: ${summary.pairsMatched} (legs reclassified: ${summary.legsReclassified})`);
+    console.log(`  pairs proposed: ${summary.pairsMatched}; approved: ${summary.pairsApproved} (legs reclassified: ${summary.legsReclassified})`);
     console.log(`  owner draws (business->personal): ${summary.ownerDraws.length}`);
     console.log(`  owner contributions (personal->business): ${summary.ownerContributions.length}`);
     console.log(`  unmatched inbound (candidate income/investor): ${summary.unmatchedInflows.length}`);
@@ -43,7 +49,7 @@ async function main() {
     }
   }
 
-  if (!APPLY) console.log('\nRe-run with --apply to write.');
+  if (!APPLY) console.log('\nApply only reviewed pairs with --apply --approve=<outflowId>:<inflowId>.');
 }
 
 main()

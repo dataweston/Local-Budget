@@ -53,9 +53,6 @@ export const SquareConnectButton = React.forwardRef<
 
         const data = await response.json();
 
-        // Store state for verification (in sessionStorage for simplicity)
-        sessionStorage.setItem('square_oauth_state', data.state);
-
         // Redirect to Square OAuth
         window.location.href = data.authUrl;
       } catch (err) {

@@ -29,7 +29,7 @@ export const receiptsRouter = createTRPCRouter({
       const limit = input?.limit ?? 20;
       const skip = (page - 1) * limit;
 
-      const where: any = { userId: ctx.session.user.id };
+      const where: any = { userId: ctx.session.user.id, deletedAt: null };
       if (input?.status) where.status = input.status;
       if (input?.search?.trim()) {
         const q = input.search.trim();
@@ -98,7 +98,7 @@ export const receiptsRouter = createTRPCRouter({
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
       const receipt = await ctx.db.receipt.findFirst({
-        where: { id: input.id, userId: ctx.session.user.id },
+        where: { id: input.id, userId: ctx.session.user.id, deletedAt: null },
         include: {
           lineItems: {
             include: {
@@ -127,7 +127,7 @@ export const receiptsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       // Verify ownership
       const existing = await ctx.db.receipt.findFirst({
-        where: { id: input.id, userId: ctx.session.user.id },
+        where: { id: input.id, userId: ctx.session.user.id, deletedAt: null },
       });
       if (!existing) throw new Error('Receipt not found');
 
@@ -138,18 +138,19 @@ export const receiptsRouter = createTRPCRouter({
       return receipt;
     }),
 
-  // Delete receipt
+  // Retire receipt evidence without destroying the source record or file.
   delete: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       // Verify ownership
       const existing = await ctx.db.receipt.findFirst({
-        where: { id: input.id, userId: ctx.session.user.id },
+        where: { id: input.id, userId: ctx.session.user.id, deletedAt: null },
       });
       if (!existing) throw new Error('Receipt not found');
 
-      await ctx.db.receipt.delete({
+      await ctx.db.receipt.update({
         where: { id: input.id },
+        data: { deletedAt: new Date() },
       });
       return { success: true };
     }),
@@ -161,7 +162,7 @@ export const receiptsRouter = createTRPCRouter({
       // Verify ownership of both receipt and transaction
       const [receipt, transaction] = await Promise.all([
         ctx.db.receipt.findFirst({
-          where: { id: input.receiptId, userId: ctx.session.user.id },
+          where: { id: input.receiptId, userId: ctx.session.user.id, deletedAt: null },
         }),
         ctx.db.transaction.findFirst({
           where: { id: input.transactionId, account: { userId: ctx.session.user.id } },
@@ -190,7 +191,7 @@ export const receiptsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       // Verify ownership
       const receipt = await ctx.db.receipt.findFirst({
-        where: { id: input.receiptId, userId: ctx.session.user.id },
+        where: { id: input.receiptId, userId: ctx.session.user.id, deletedAt: null },
       });
       if (!receipt) throw new Error('Receipt not found');
 
@@ -206,7 +207,7 @@ export const receiptsRouter = createTRPCRouter({
   // Get pending count
   pendingCount: protectedProcedure.query(async ({ ctx }) => {
     const count = await ctx.db.receipt.count({
-      where: { userId: ctx.session.user.id, status: { in: ['PENDING', 'PROCESSING'] } },
+      where: { userId: ctx.session.user.id, deletedAt: null, status: { in: ['PENDING', 'PROCESSING'] } },
     });
     return count;
   }),
@@ -218,6 +219,7 @@ export const receiptsRouter = createTRPCRouter({
       const receipts = await ctx.db.receipt.findMany({
         where: {
           userId: ctx.session.user.id,
+          deletedAt: null,
           transactionLinks: { none: {} },
           status: { in: ['PROCESSED', 'REVIEWED'] },
         },
@@ -847,7 +849,7 @@ export const receiptsRouter = createTRPCRouter({
     .input(z.object({ receiptId: z.string() }))
     .query(async ({ ctx, input }) => {
       const receipt = await ctx.db.receipt.findFirst({
-        where: { id: input.receiptId, userId: ctx.session.user.id },
+        where: { id: input.receiptId, userId: ctx.session.user.id, deletedAt: null },
       });
 
       if (!receipt || !receipt.totalAmount) {

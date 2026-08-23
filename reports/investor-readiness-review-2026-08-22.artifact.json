@@ -1,0 +1,421 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Local Budget investor-readiness review",
+    "description": "Architecture, data-quality, Square, entity-separation, and close-control assessment as of August 22, 2026.",
+    "generatedAt": "2026-08-22T19:35:08.863Z",
+    "cards": [
+      {
+        "id": "gross_drift_card",
+        "description": "Change in reported gross revenue for the same August 2025 through July 2026 window between the August 21 export and the August 22 live calculation.",
+        "dataset": "summary_metrics",
+        "sourceId": "reviewed_snapshot_sql",
+        "metrics": [{ "label": "Gross revenue drift", "field": "gross_drift_pct", "format": "percent", "signed": true }]
+      },
+      {
+        "id": "entity_mix_card",
+        "description": "Share of current reporting-window gross revenue received into accounts not assigned to Local Effort. This measures custody and attribution work, not invalid revenue.",
+        "dataset": "summary_metrics",
+        "sourceId": "reviewed_snapshot_sql",
+        "metrics": [{ "label": "Gross outside business accounts", "field": "nonbusiness_gross_share", "format": "percent" }]
+      },
+      {
+        "id": "receipt_card",
+        "description": "Durable Local Budget receipt-to-transaction linkage across COGS and operating-expense postings. This does not measure documents recoverable from Gmail, vendors, or external portals.",
+        "dataset": "summary_metrics",
+        "sourceId": "reviewed_snapshot_sql",
+        "metrics": [{ "label": "Expense receipt coverage", "field": "receipt_coverage_pct", "format": "percent" }]
+      },
+      {
+        "id": "settlement_card",
+        "description": "Square payout value still classified PARTIAL rather than fully allocated to bank transactions.",
+        "dataset": "summary_metrics",
+        "sourceId": "reviewed_snapshot_sql",
+        "metrics": [{ "label": "Partially matched payouts", "field": "partial_settlements", "format": "currency" }]
+      },
+      {
+        "id": "personal_card",
+        "description": "PERSONAL-classified value since the working April 1, 2026 policy cutoff without a payer or incurred-by member.",
+        "dataset": "summary_metrics",
+        "sourceId": "reviewed_snapshot_sql",
+        "metrics": [{ "label": "Unattributed PERSONAL", "field": "personal_unattributed", "format": "currency" }]
+      }
+    ],
+    "charts": [
+      {
+        "id": "report_drift_chart",
+        "title": "P&L version change",
+        "subtitle": "August 2025 through July 2026; August 22 live calculation versus August 21 export; percent change.",
+        "headerMarkdown": "The same nominal reporting window produced materially different totals one day apart.",
+        "question": "How much did the three headline P&L measures change between report versions?",
+        "rationale": "A single-series categorical bar shows the percentage instability across the three discrete measures without a redundant legend.",
+        "type": "bar",
+        "dataset": "report_drift_changes",
+        "sourceId": "reviewed_snapshot_sql",
+        "valueFormat": "percent",
+        "layout": "full",
+        "maxRows": 3,
+        "encodings": {
+          "x": { "field": "metric", "type": "nominal", "label": "Measure" },
+          "y": { "field": "change_pct", "type": "quantitative", "label": "Change", "format": "percent" },
+          "tooltip": [
+            { "field": "export_amount", "type": "quantitative", "label": "August 21 export", "format": "currency" },
+            { "field": "live_amount", "type": "quantitative", "label": "August 22 live", "format": "currency" },
+            { "field": "change_pct", "type": "quantitative", "label": "Change", "format": "percent" }
+          ]
+        }
+      },
+      {
+        "id": "entity_scope_chart",
+        "title": "Gross revenue by account-owner entity",
+        "subtitle": "August 2025 through July 2026; current all-account P&L scope; USD.",
+        "headerMarkdown": "The business statement is assembled from account classifications rather than a business-only legal-entity boundary.",
+        "question": "How much reported gross revenue comes from business, personal, and unassigned accounts?",
+        "rationale": "The three categories are the complete population and expose the legal-entity composition directly.",
+        "type": "bar",
+        "dataset": "entity_scope",
+        "sourceId": "reviewed_snapshot_sql",
+        "valueFormat": "currency",
+        "layout": "full",
+        "maxRows": 3,
+        "encodings": {
+          "x": { "field": "owner_entity", "type": "nominal", "label": "Account-owner entity" },
+          "y": { "field": "gross_revenue", "type": "quantitative", "label": "Gross revenue", "format": "currency" },
+          "tooltip": [
+            { "field": "gross_share", "type": "quantitative", "label": "Share of combined gross", "format": "percent" },
+            { "field": "operating_income", "type": "quantitative", "label": "Operating income", "format": "currency" }
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "square_table",
+        "title": "Square reconciliation evidence",
+        "subtitle": "Observed aggregates; rows have different scopes and are not one additive bridge.",
+        "dataset": "square_reconciliation",
+        "sourceId": "reviewed_snapshot_sql",
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          { "field": "measure", "label": "Measure", "type": "text" },
+          { "field": "amount", "label": "Amount", "format": "currency" },
+          { "field": "scope", "label": "Scope", "type": "text" },
+          { "field": "accounting_treatment", "label": "Required treatment", "type": "text" }
+        ]
+      },
+      {
+        "id": "code_risks_table",
+        "title": "Material software and integration risks",
+        "subtitle": "Read-only code review; current and latent risks are distinguished.",
+        "dataset": "code_risks",
+        "sourceId": "reviewed_snapshot_sql",
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          { "field": "severity", "label": "Severity", "type": "text" },
+          { "field": "component", "label": "Component", "type": "text" },
+          { "field": "finding", "label": "Finding", "type": "text" },
+          { "field": "impact", "label": "Accounting/control impact", "type": "text" }
+        ]
+      },
+      {
+        "id": "remediation_table",
+        "title": "Remediation sequence and acceptance gates",
+        "subtitle": "The order is designed to stop further ambiguity before historical cleanup or feature work.",
+        "dataset": "remediation_plan",
+        "sourceId": "reviewed_snapshot_sql",
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          { "field": "phase", "label": "Phase", "type": "text" },
+          { "field": "action", "label": "Action", "type": "text" },
+          { "field": "acceptance_gate", "label": "Acceptance gate", "type": "text" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "reviewed_snapshot_sql",
+        "label": "Reviewed portable report snapshot",
+        "path": "reports/investor-readiness-review-2026-08-22.sql"
+      },
+      {
+        "id": "live_audit",
+        "label": "Read-only aggregate database audit",
+        "path": "scripts/audit-investor-readiness.ts"
+      },
+      {
+        "id": "venmo_audit",
+        "label": "Read-only Venmo duplicate and revenue audit",
+        "path": "scripts/audit-venmo-revenue.ts"
+      },
+      {
+        "id": "drift_analysis",
+        "label": "P&L version comparison",
+        "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+      },
+      {
+        "id": "repo_review",
+        "label": "Local Budget and local-effort-app code review",
+        "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+      },
+      {
+        "id": "review_recommendations",
+        "label": "Investor-readiness control design",
+        "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+      },
+      {
+        "id": "followup_evidence",
+        "label": "Follow-up receipt, Gmail, channel, and company-record review",
+        "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+      },
+      {
+        "id": "implementation_status",
+        "label": "Remediation implementation status — August 23, 2026",
+        "path": "docs/remediation-implementation-status-2026-08-23.md"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Executive summary\n\n**Verdict: not ready for tax filing, investor diligence, or formal cooperative disclosures.** The application is useful as a cash-operations subledger, but the current statements do not enforce legal-entity boundaries, do not produce a complete balance sheet, and do not maintain a complete source-to-close audit trail. They should be labeled **management draft** until the acceptance gates in this report are met.\n\nThe most dangerous feature is accidental plausibility. For August 2025 through July 2026, the current all-account operating income is $36,861.60 and the business-owned-account result is $36,790.44—only $71.16 apart. That apparent agreement is caused by a personal-account loss of $15,874.32 nearly canceling unassigned-account income of $15,945.48. Revenue received through Zelle or Venmo into a personal account can still be valid business revenue; the control failure is that account custody, legal ownership, business purpose, and member attribution are not separately proven.\n\nThere is also valuable recoverable evidence. Square settlement entries already distinguish gross charges, processing fees, refunds, and $4,031.02 of net Square Capital withholding. The immediate task is to convert that evidence into controlled clearing, debt, related-party, and close subledgers—not to create another Square cash account."
+      },
+      { "id": "metric_strip", "type": "metric-strip", "cardIds": ["gross_drift_card", "entity_mix_card", "receipt_card", "settlement_card", "personal_card"] },
+      {
+        "id": "evidence_standard",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Evidence standard and scope\n\nDocuments, memories, roadmaps, and prior exports were treated as hypotheses. A claim is labeled observed only when supported by current database aggregates, executable code, or an authoritative external source. The review was read-only; it did not inspect or disclose transaction descriptions, customer names, account numbers, tokens, or provider payloads.\n\nThe database snapshot contains 6,611 transactions, of which 6,576 are posted. It has two entities, seven active financial accounts, 199 Square settlements, 584 current reconciliation allocations, zero ingested `Receipt` rows, and only 37 financial audit events beginning August 15, 2026. The latest transaction date was August 21, 2026. Zero ingested receipt rows measures ledger linkage, not whether source documents exist elsewhere.\n\nThe business repository was also reviewed because it consumes Local Budget data. Historical documents there were not treated as accounting authority."
+      },
+      {
+        "id": "report_instability_intro",
+        "type": "markdown",
+        "sourceId": "drift_analysis",
+        "body": "## Finding 1 — the same reporting window is not reproducible\n\nA saved P&L generated August 21 reported $176,359.13 gross revenue, $172,058.13 net revenue, and $78,555.73 operating income for August 2025 through July 2026. The live calculation on August 22 reports $135,678.31, $131,835.31, and $36,861.60. The declines are 23.07%, 23.38%, and 53.08%, respectively.\n\nNo tax return, investor schedule, covenant calculation, or board disclosure should depend on figures that can move this far without a versioned close, approved adjusting entries, and an explainable bridge."
+      },
+      {
+        "id": "historical_coverage",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Historical coverage gap\n\nThe Minnesota Secretary of State Certificate of Organization establishes that Local Effort was formed or registered under Chapter 308B on April 21, 2026, file 1644146400023. The owner reports that operations began in 2023, while a capital master record refers to 2022 activity. The legal formation date is now proven; the remaining question is whether earlier activity belongs to a predecessor and how it carries into the cooperative's tax and accounting records. Filed returns, processor statements, and destination-bank records must establish that continuity.\n\nThe current Local Budget transaction history begins January 11, 2024 and has no active Stripe account. The located `unified_customers.csv` artifacts are customer aggregates, not a processor ledger. Therefore, this review does not establish completeness for the opening period or for legacy Stripe gross sales, fees, refunds, disputes, payouts, or 1099-K reconciliation. Obtain Stripe balance-transaction and payout exports plus every destination-bank statement from inception through final activity, then apply the same processor-clearing model used for Square."
+      },
+      { "id": "report_drift_visual", "type": "chart", "chartId": "report_drift_chart" },
+      {
+        "id": "entity_intro",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Finding 2 — account custody and business-purpose attribution are conflated\n\nThe current P&L has no mandatory business-entity filter. Business-owned accounts contribute $87,426.05 of gross revenue in the reporting window; personal accounts contribute $29,322.26 and the unassigned Venmo account contributes $18,930.00. The 35.56% received outside business-owned accounts is **not presumed invalid**: the owners report legitimate business receipts through Zelle and Venmo. It is the amount requiring explicit business-purpose, processor/customer, legal-entity, and member-custody attribution.\n\nThe owner has now mapped all seven active accounts: Square and Local Pizza are Weston custody for Local Effort activity; the two SoFi accounts are joint Weston/Catherine custody; TOTAL CHECKING and Venmo are Catherine; General savings is Weston. Square remains a processor ledger and Local Pizza its distinct Plaid destination-bank ledger. The mapping is encoded and tested but not yet deployed or backfilled. All 6,576 posted transactions still have null `payerId` and null `incurredById`, so transaction-level benefits and related-party balances remain unresolved."
+      },
+      {
+        "id": "venmo_finding",
+        "type": "markdown",
+        "sourceId": "venmo_audit",
+        "body": "## Venmo duplicate review\n\nThe current database contains 472 Venmo-wallet postings derived from 352 canonical statement rows plus 120 separate fee rows. It reports 139 Venmo revenue transactions totaling $29,562.50. The wallet itself has no entity owner and therefore still needs cooperative/member custody attribution.\n\nThe duplicate tests found **no current P&L double-count**: zero duplicate canonical financial facts; zero duplicate source identities; zero repeated statement identities where multiple active legs still contribute to P&L; zero explicitly linked bank legs still contributing to P&L; and zero unlinked Venmo-text bank credits still counted as revenue. No wallet-to-bank revenue pair shared an exact amount within seven days.\n\nOf 181 statement rows expected to have a bank counterpart, 175 are explicitly linked. One has a clear unlinked candidate and five have ambiguous candidates; every candidate leg is already P&L-neutral. Those six items should remain in a reconciliation queue until statement-to-bank evidence selects the correct link, but they do not currently inflate revenue."
+      },
+      {
+        "id": "square_finding",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Finding 3 — Square contains the right economic clues but not a complete accounting bridge\n\nSquare should be modeled as a processor clearing account, not as a second revenue-bearing bank account. Each sale, fee, refund, loan withholding, adjustment, and payout is a separate economic event. [Square says processing fees are deducted before bank transfer](https://squareup.com/help/us/en/article/5068-what-are-square-s-fees), while its loan repayment is a fixed percentage of gross card sales and is **in addition to** processing fees ([Square loan repayment](https://squareup.com/help/us/en/article/8546-repay-your-loan)). The IRS also defines Form 1099-K gross without netting fees and similar adjustments ([IRS Form 1099-K instructions](https://www.irs.gov/instructions/i1099k)).\n\nObserved settlement entries include $65,343.70 of entry-backed gross charges, $2,029.99 of associated fees, and $4,031.02 of net Square Capital payments after reversals. Across all payout settlements, $55,428.56 is matched to bank activity and $7,115.09 remains PARTIAL. Separate Square fee transactions total $2,318.50, leaving a $288.51 difference from entry-level fees that may reflect timing or coverage and must be bridged rather than guessed.\n\nRequired posting pattern: gross card receivable to Square clearing; fees to merchant-fee expense; Square Capital withholding to the loan liability; refunds and taxes/tips to their own accounts; bank payout as a clearing transfer. The bank deposit is never independent sales revenue."
+      },
+      {
+        "id": "square_evidence",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "### Square reconciliation evidence\n\n- All payout settlements: **$62,543.65** across 199 settlements.\n- Matched to bank activity: **$55,428.56**; PARTIAL: **$7,115.09**.\n- Entry-backed gross charges: **$65,343.70**; entry-level processing fees: **$2,029.99**.\n- Separate fee transaction rows: **$2,318.50**, creating a **$288.51** bridge item.\n- Net Square Capital withholding: **$4,031.02**, which belongs in the loan roll-forward.\n\nThese figures have different source coverage and are not one additive bridge."
+      },
+      {
+        "id": "personal_finding",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Finding 4 — `PERSONAL` is a useful flag, not an accounting conclusion\n\nUsing April 1, 2026 as a working cutoff, 285 transactions touch the PERSONAL classification for $14,939.91. None is attributed to a specific member. The cutoff year and exact effective date must be confirmed.\n\nA business-paid personal charge should initially post to **Due from member — [person]**, not disappear as a non-P&L classification. It can be cleared only by repayment or by a dated, authorized reclassification to the treatment selected by the CPA and cooperative counsel—such as wages, a distribution/patronage item, or another legally supported category. A personal-paid business cost should post to **Due to member — [person]** only with receipt, business purpose, and approval.\n\nThe statement that these payments are made “in lieu of W-2 pay” raises a tax and governance question; it does not answer it. The IRS distinguishes owner pay by entity form and notes that corporate officers are generally employees ([IRS: Paying Yourself](https://www.irs.gov/businesses/small-businesses-self-employed/paying-yourself)). Personal expenses are generally nondeductible and mixed expenses must be separated ([IRS business-expense FAQ](https://www.irs.gov/faqs/small-business-self-employed-other-business/income-expenses/income-expenses-1)). Minnesota cooperative conflict and approval rules also depend on the entity’s actual chapter, articles, bylaws, and transaction facts ([Minn. Stat. § 308B.461](https://www.revisor.mn.gov/statutes/cite/308B.461))."
+      },
+      {
+        "id": "evidence_finding",
+        "type": "markdown",
+        "sourceId": "live_audit",
+        "body": "## Finding 5 — source linkage and balance-sheet controls are below a tax-ready threshold\n\nLocal Budget contains zero ingested `Receipt` rows and therefore zero durable receipt-to-transaction links. That makes current ledger-linked coverage 0% for 881 COGS transactions totaling $51,926.60 and 1,360 operating-expense transactions totaling $90,673.53. It does **not** mean the underlying documents are unavailable. The database also contains 184 transaction-linked provider/order line items, 178 with a source UID; those are useful operational detail but are not a complete expense-document archive.\n\nNo account has an opening-balance anchor, only five of seven have balance snapshots, and the current balance-sheet export describes itself as incomplete. There is no represented Square loan liability, no due-to/due-from member subledger, and no complete inventory, accounts payable, fixed asset, or equity layer. The IRS requires records that support gross receipts, deductions, and credits, including invoices, receipts, deposit information, and cancelled checks ([IRS recordkeeping guidance](https://www.irs.gov/businesses/small-businesses-self-employed/what-kind-of-records-should-i-keep))."
+      },
+      {
+        "id": "receipt_recovery",
+        "type": "markdown",
+        "sourceId": "followup_evidence",
+        "body": "### Source documents appear substantially recoverable\n\nThe evidence hunt supports the owner’s correction. Local Effort’s Brain contains 43 historical receipt-extraction events, and hundreds of Eastside `.eml` files are available to its deterministic extractor. Local Budget retains saved Amazon order HTML and match metadata. Bounded Gmail searches returned more than 100 messages for broad receipt/invoice, Venmo, Square, SoFi, and attachment-bearing invoice queries; 29 for Eastside; and 19 for Amazon. These are discovery leads, not verified receipts or ledger matches.\n\nThe Brain Gmail application token is currently unavailable even though the workspace Gmail connector can search the mailbox. A one-message application test returned `Gmail not authorized`; current vendor-document cursors show zero processed. Cursor authorization, stale-claim, and lossless page-retry bugs have been fixed and tested, but an admin must complete `/api/brain/gmail/auth` before ingestion resumes.\n\nLocal saved Amazon exports and provider order detail offer additional recovery paths, while Venmo statements establish movement and counterparty but do not by themselves substantiate the purchased item or business purpose. The new code uses private, authenticated, content-hashed receipt storage and recoverable deletion, but its migration is not deployed. Bulk recovery should follow transaction identity and custody stabilization so evidence attaches to stable canonical events."
+      },
+      {
+        "id": "implementation_update",
+        "type": "markdown",
+        "sourceId": "implementation_status",
+        "body": "## Remediation implementation began August 23\n\nTested foundations now exist for joint account ownership and custody, immutable source events, balanced journal entries, exact one-time reversals, immutable closed periods, Square single-ledger selection, server-verified Square OAuth state, reviewer-approved transfer application, strict Stripe balance-history ingestion, private hash-deduplicated receipt evidence, Gmail cursor reliability, and deterministic close blockers.\n\nThese changes are additive and remain behind the legacy transaction/reporting path. Database status confirms that all three remediation migrations are pending review and have not been applied; no historical transaction has been deleted, merged, or reclassified. Local Budget passed 131 tests, TypeScript validation, Prisma validation/generation, and a production build. The Local Effort Gmail reliability suite passed three focused tests."
+      },
+      {
+        "id": "architecture_finding",
+        "type": "markdown",
+        "sourceId": "repo_review",
+        "body": "## Architecture assessment\n\nThe application is a Next.js/Prisma cash-operations system with Plaid and Square connectors, classification rules, transaction splits, reconciliation allocations, reports, and Local Effort integration APIs. Its strongest building blocks are source-identity records, processor settlement entries, allocation records, migrations, and a passing automated test/build baseline. Its central weakness is that a cash transaction plus classification is asked to serve simultaneously as source event, accounting entry, entity attribution, reconciliation unit, and report line.\n\nThat overload explains the recurring creative fixes. Gross Square orders and net bank deposits are different grains and dates; a PERSONAL flag is not a member receivable or compensation entry; an exact-amount transfer guess is not a controlled intercompany or equity posting; and a P&L filter cannot replace a balanced ledger."
+      },
+      {
+        "id": "code_risks",
+        "type": "markdown",
+        "sourceId": "repo_review",
+        "body": "### Material software and integration risks\n\n- **Critical, latent — Square account duplication:** multiple accounts can share one Square connection and sync concurrently, while uniqueness is account-scoped.\n- **Critical, current design — incomplete webhook revenue:** webhooks post total payment before polling adds tax and tip splits, so report truth depends on enrichment timing.\n- **High — settlement matching:** exact amount/date matching does not prove the bank candidate is unused and unambiguous.\n- **High — transfer matching:** greedy equal-amount pairing treats all active accounts as internal and can hide equity, reimbursement, or revenue.\n- **High — entity ownership:** write paths do not consistently enforce same-user and legal-entity ownership for referenced IDs.\n- **High — split and tax reporting:** P&L and 1099-candidate paths use different grains and can disagree.\n- **High — imports and Plaid identity:** some paths bypass common posting/audit controls or scope external IDs too broadly.\n- **High — downstream integration:** Local Effort Brain still reads the Local Budget database directly and can double-subtract Square fees.\n- **High — security control:** Square OAuth state verification, callback logging, and the repository-history remediation item require immediate verification without exposing secrets.\n\nExact file and line references are preserved in the report workpaper and source detail."
+      },
+      {
+        "id": "target_architecture",
+        "type": "markdown",
+        "body": "## Target architecture\n\nMake Local Budget the accounting system and preserve a strict boundary with Local Effort:\n\n1. **Immutable source events** — preserve Plaid/bank, Square, Stripe, Venmo, Zelle, receipt, and manual-import identities with idempotency keys, raw hashes, ingestion timestamps, and custody metadata.\n2. **Normalized economic events** — represent sale, tax, tip, refund, fee, loan withholding, payout, personal benefit, reimbursement, transfer, contribution, distribution, and adjustment explicitly. Local Effort may supply stable commercial identities such as order, customer, menu item, vendor document, and payment attempt; those facts do not post cash by themselves.\n3. **Balanced journal** — every posted event produces debits and credits by legal entity, account role, counterparty/member, effective date, source date, and evidence link. Posted entries are never edited in a closed period; corrections reverse and replace.\n4. **Subledgers and reconciliation** — bank cash, processor clearing, Square loan, sales tax, tips, accounts payable, inventory, due-from/due-to each member, fixed assets, and equity reconcile to external statements.\n5. **Statements and close packets** — entity-scoped P&L, balance sheet, cash flow, related-party roll-forward, processor/loan roll-forward, and audit log derive only from posted journal lines in a locked period.\n\nThe current `Transaction` model can remain a compatibility view over the cash/operational source layer while the posting spine is introduced. Local Effort’s append-only Brain ledger is evidence and inference infrastructure, and Neo4j is its projection; neither may become a second accounting ledger or write journal entries. Replace direct cross-database reads with versioned, cursor-based contracts and stable source references."
+      },
+      {
+        "id": "external_systems",
+        "type": "markdown",
+        "body": "## Industry lessons, not product dependencies\n\nThe suite will not work directly with QuickBooks or MarginEdge. Their value here is as tested control design. QuickBooks’ Square connector separates gross sales, fees, adjustments, holds, loan payments, and bank payout matching ([Intuit Square connector](https://quickbooks.intuit.com/learn-support/en-us/help-article/manage-integrations/connect-manage-square-transactions-quickbooks/L0mBsyBTP_US_en_US)); Local Budget should implement that clearing pattern natively. QuickBooks also demonstrates why a period lock and audit log must be paired with durable monthly archives rather than described as immutability ([Intuit audit log](https://quickbooks.intuit.com/learn-support/en-us/help-article/audit-log/use-audit-log-quickbooks-online/L2WoVnW6I_US_en_US), [close books](https://quickbooks.intuit.com/learn-support/en-us/help-article/close-books/close-books-quickbooks-online/L59LelyPM_US_en_US)).\n\nMarginEdge’s useful lesson is operational grain: retain the source invoice, extract line items, map vendor/item/category, require review before posting, track export/post status, and correct prior activity through an explicit reversal/resend workflow. Implement those controls inside this suite. There must be exactly one accounting-posting route for each economic event even when Square, Local Effort commerce records, bank activity, Gmail documents, and manual imports all describe it."
+      },
+      {
+        "id": "remediation",
+        "type": "markdown",
+        "sourceId": "review_recommendations",
+        "body": "## Remediation sequence\n\n1. **Preserve and contain (P0):** label reports management draft; freeze raw exports, Gmail/vendor discovery pointers, statements, and the current pre-cleanup snapshot; close the security-control items.\n2. **Separate custody (P0):** create Weston, Catherine, and Local Effort dimensions; map every account and wallet; require custody, payer/incurred-by, and same-owner validation.\n3. **Build the accounting spine (P0/P1):** add immutable source identities, normalized economic events, balanced journal lines, reversible corrections, account roles, and period locks behind compatibility views.\n4. **Resolve Square and debt (P0):** establish Square clearing and loan liability; reconcile every sale, fee, tax/tip, refund, Capital payment, payout, and bank deposit exactly once.\n5. **Resolve personal custody and policy (P0):** assign post-April PERSONAL activity to the correct member and route it through due-from/due-to until repayment or an authorized CPA/counsel-approved treatment.\n6. **Reconstruct history (P1):** import Stripe’s complete historical balance activity and reconcile occasional Zelle/Venmo business receipts in personal accounts without duplicating the customer receipt or bank transfer.\n7. **Substantiate and analyze margin (P1):** recover and privately archive receipts/invoices, link them to stable transactions, allocate line items, then build vendor/item/inventory economics.\n8. **Prove (P1):** move Local Effort off direct database reads and complete two independently reviewed monthly closes that meet every readiness gate."
+      },
+      {
+        "id": "close_gates",
+        "type": "markdown",
+        "body": "## Definition of investor/tax readiness\n\nDo not remove the **management draft** label until two consecutive monthly closes meet all gates:\n\n- every bank, card, wallet, processor-clearing, and member-custody account reconciles to its external statement or controlled roll-forward with a $0 unexplained difference;\n- Square clearing is $0.00 or contains only documented timing items, and every payout residual has an owner, evidence, and expected clearance date;\n- Square loan opening balance + advances/fees − payments = ending lender statement, with CPA-approved fee presentation;\n- 100% of active accounts have a legal owner/entity, custody role, and opening-balance anchor;\n- 100% of post-policy PERSONAL items name the member and resolve through due-from, repayment, or approved reclassification;\n- every material expense has source evidence and business purpose, with an accountant-approved sampling/control policy for immaterial items;\n- trial balance debits equal credits; balance sheet balances; comparative reports reproduce from a locked snapshot;\n- no duplicate economic event exists among provider events, bank feeds, Local Effort projections, manual imports, and journal postings;\n- closed-period changes require a reversing/correcting entry, approval, and durable audit evidence; and\n- Weston, Catherine, and Local Effort can each be reported independently, with all related-party balances and activity explicitly disclosed."
+      },
+      {
+        "id": "counterargument",
+        "type": "markdown",
+        "body": "## Strongest case against the recommendation\n\nBuilding a tax-grade accounting core in-house creates a larger correctness, maintenance, security, and professional-review burden than adopting a mature ledger. It can also tempt the team to encode uncertain tax judgments as software defaults.\n\nThe owners have chosen the in-house suite, so the reversible path is to introduce the source-event and journal spine behind compatibility views, preserve accountant-readable exports, and require independent review of posting rules and close packets. No historical row should be destructively rewritten to force the new model.\n\n**Kill/review condition:** stop expanding the custom ledger and reassess the system-of-record decision if two consecutive shadow closes cannot reproduce a balanced trial balance and all external statements, if a locked-period report changes without an approved bridge, or if Square clearing, the loan, or member-custody balances cannot reconcile."
+      },
+      {
+        "id": "skills_and_automation",
+        "type": "markdown",
+        "body": "## Codex/ChatGPT workflow recommendation\n\nUse AI as a read-only control layer, not as the accounting authority. The useful recurring workflows are data-quality assessment, report validation, source-to-settlement exception detection, and close-packet assembly. Once the accountant-approved close playbook is stable, encode it as a custom `local-budget-monthly-close` Codex skill that runs deterministic checks, produces an exception register, and packages evidence—but cannot post, approve, delete, or reclassify transactions. OpenAI’s official guidance recommends reusable skills for stable, repeatable workflows rather than repeating long instructions ([Reusable Codex skills](https://learn.chatgpt.com/use-cases/reusable-codex-skills)).\n\nThe current read-only audit script is the first narrow building block. It deliberately emits aggregate financial controls and excludes sensitive transaction text and provider payloads."
+      },
+      {
+        "id": "questions",
+        "type": "markdown",
+        "body": "## Decisions and documents required from the owners\n\n1. Establish tax/legal continuity for reported operations before the April 21, 2026 Chapter 308B formation using prior returns, formation/predecessor records, processor statements, and bank activity.\n2. Confirm the cooperative’s tax election, articles, bylaws, fiscal year, accepted member agreements, current cap table, voting rights, and July 2026 transfers.\n3. Complete the Brain Gmail admin authorization at `/api/brain/gmail/auth`, then permit only a one-message verification before a larger sweep.\n4. Confirm the exact April PERSONAL-policy effective date and provide the board/member authorization, intended compensation terms, and which charges belong to which member.\n5. Provide the Square loan agreement, opening advance, fixed fee, lender statements/reports, current balance, and the board approval for the debt.\n6. Provide Stripe balance-history and payout exports—not only unified-customer aggregates—plus complete bank/card/wallet statements, Square reports, 1099-K forms, sales-tax reports, payroll records, high-risk evidence, inventory counts, vehicle loan documents, and prior filed returns.\n7. Name the CPA/controller and Minnesota cooperative counsel who will approve historical reclassifications, migration/cutover policy, and close design.\n\n## Caveats\n\nThis is an engineering and bookkeeping-control assessment, not a legal opinion, audit, reviewed financial statement, or tax determination. Exact wage, patronage, distribution, related-party, loan-fee, sales-tax, predecessor-continuity, and cooperative treatment requires the underlying agreements and professional review. The April 1, 2026 cutoff was an explicit working assumption and must be confirmed. Exact-duplicate groups are candidates, not proven duplicates. The $288.51 Square fee difference and partial settlements may contain legitimate timing items; they require reconciliation, not automatic deletion. Venmo’s six unresolved counterpart links are P&L-neutral but still require final statement-to-bank evidence. Gmail and provider search counts are discovery evidence, not proof that any specific receipt is complete, attributable, and retained."
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-22T19:35:08.863Z",
+    "status": "partial",
+    "datasets": {
+      "summary_metrics": [
+        {
+          "gross_drift_pct": -0.2307,
+          "nonbusiness_gross_share": 0.3556,
+          "receipt_coverage_pct": 0,
+          "partial_settlements": 7115.09,
+          "personal_unattributed": 14939.91
+        }
+      ],
+      "report_drift": [
+        { "metric": "Gross revenue", "version": "Aug 21 export", "amount": 176359.13, "change_pct": 0 },
+        { "metric": "Gross revenue", "version": "Aug 22 live", "amount": 135678.31, "change_pct": -0.2307 },
+        { "metric": "Net revenue", "version": "Aug 21 export", "amount": 172058.13, "change_pct": 0 },
+        { "metric": "Net revenue", "version": "Aug 22 live", "amount": 131835.31, "change_pct": -0.2338 },
+        { "metric": "Operating income", "version": "Aug 21 export", "amount": 78555.73, "change_pct": 0 },
+        { "metric": "Operating income", "version": "Aug 22 live", "amount": 36861.6, "change_pct": -0.5308 }
+      ],
+      "report_drift_changes": [
+        { "metric": "Gross revenue", "export_amount": 176359.13, "live_amount": 135678.31, "change_pct": -0.2307 },
+        { "metric": "Net revenue", "export_amount": 172058.13, "live_amount": 131835.31, "change_pct": -0.2338 },
+        { "metric": "Operating income", "export_amount": 78555.73, "live_amount": 36861.6, "change_pct": -0.5308 }
+      ],
+      "entity_scope": [
+        { "owner_entity": "Local Effort", "gross_revenue": 87426.05, "gross_share": 0.6444, "operating_income": 36790.44 },
+        { "owner_entity": "Personal", "gross_revenue": 29322.26, "gross_share": 0.2161, "operating_income": -15874.32 },
+        { "owner_entity": "Unassigned", "gross_revenue": 18930, "gross_share": 0.1395, "operating_income": 15945.48 }
+      ],
+      "square_reconciliation": [
+        { "measure": "All payout settlements", "amount": 62543.65, "scope": "199 payout settlements", "accounting_treatment": "Credit Square clearing; match to bank receipt" },
+        { "measure": "Matched payout value", "amount": 55428.56, "scope": "122 bank allocations across 105 bank transactions", "accounting_treatment": "Proven clearing transfer" },
+        { "measure": "PARTIAL payout value", "amount": 7115.09, "scope": "77 settlements without full bank allocation", "accounting_treatment": "Reconciliation exception; do not classify as revenue" },
+        { "measure": "Entry-backed gross charges", "amount": 65343.7, "scope": "176 CHARGE entries", "accounting_treatment": "Gross sales/tax/tips side of Square clearing" },
+        { "measure": "Entry-level processing fees", "amount": 2029.99, "scope": "Fees on entry-backed charges", "accounting_treatment": "Merchant-fee expense; reduce clearing" },
+        { "measure": "Separate fee transaction rows", "amount": 2318.5, "scope": "230 posted fee transactions", "accounting_treatment": "Reconcile $288.51 difference before posting" },
+        { "measure": "Net Square Capital withholding", "amount": 4031.02, "scope": "$4,133.64 payments less $102.62 reversals", "accounting_treatment": "Reduce loan liability; never reduce sales" }
+      ],
+      "code_risks": [
+        { "severity": "Critical", "state": "Latent", "component": "Square OAuth/account setup", "finding": "Callback creates processor and bank accounts with the same connection ID; dashboard can sync every linked account concurrently; uniqueness is account-scoped.", "impact": "The same Square activity can be duplicated across accounts after another linked Square account appears.", "reference": "src/app/api/square/callback/route.ts:138; src/app/api/square/sync/route.ts:58; src/app/page.tsx:83" },
+        { "severity": "Critical", "state": "Current design", "component": "Square webhook enrichment", "finding": "Webhook posts total payment including tax/tip without splits; polling later adds tax/tip splits.", "impact": "Revenue is temporarily overstated and report results depend on whether enrichment has completed.", "reference": "src/app/api/square/webhook/route.ts:247; src/app/api/square/sync/route.ts:244" },
+        { "severity": "High", "state": "Current design", "component": "Settlement matching", "finding": "Matches exact amount/date without proving the candidate deposit is unused or unambiguous.", "impact": "A Square payout can attach to an unrelated deposit and suppress real revenue or cash evidence.", "reference": "src/app/api/square/sync/route.ts:685; src/server/services/settlement-matching.ts:84" },
+        { "severity": "High", "state": "Current design", "component": "Transfer matching", "finding": "Greedy nearest-date, equal-amount pairing treats all active accounts as internal.", "impact": "Contributions, distributions, reimbursements, and third-party income can be hidden as transfers.", "reference": "src/server/services/transfers/service.ts:57; src/server/services/transfers/matcher.ts:98" },
+        { "severity": "High", "state": "Current design", "component": "Entity ownership", "finding": "Transaction, account, split, and rule writes accept referenced IDs without enforcing same-user/legal-entity ownership.", "impact": "Entity scope is advisory and future multi-user data can cross boundaries.", "reference": "src/server/routers/transactions.ts:181; accounts.ts:55; splits.ts:70; rules.ts:48" },
+        { "severity": "High", "state": "Current design", "component": "Split/tax reporting", "finding": "The P&L trusts splits without a database sum constraint; tax vendor totals use the parent transaction instead of split lines.", "impact": "Reports can disagree and 1099 candidate totals can be materially wrong.", "reference": "src/server/routers/splits.ts:92; src/server/services/reporting/pnl.ts:299; src/server/routers/tax.ts:123" },
+        { "severity": "High", "state": "Current design", "component": "CSV/PDF imports", "finding": "Bulk imports create transactions directly rather than using the common posting, identity, balance, and audit services.", "impact": "Imports can bypass idempotency, audit, and reconciliation invariants.", "reference": "src/server/services/import/csv.ts:409; src/server/services/import/pdf.ts:646" },
+        { "severity": "High", "state": "Current design", "component": "Plaid idempotency", "finding": "Initial/full sync checks external ID globally rather than by account/user.", "impact": "Provider ID collisions can suppress or misassociate transactions.", "reference": "src/app/api/plaid/sync/route.ts:92; src/app/api/plaid/exchange-token/route.ts:155" },
+        { "severity": "High", "state": "Current design", "component": "Integration APIs", "finding": "Some item/margin reads do not consistently enforce POSTED/current status and tenant scope.", "impact": "Removed, superseded, pending, or future-tenant data can leak into downstream metrics.", "reference": "src/app/api/integration/v1/items/route.ts:60" },
+        { "severity": "High", "state": "Current integration", "component": "Local Effort Brain sync", "finding": "The business repo still reads the Local Budget database directly, lacks processor-ledger exclusions/status guards on some paths, and does not consume the source-identity contract.", "impact": "Square fee rows can be treated as cash expense while the net deposit is also used, double-subtracting fees and bypassing API fixes.", "reference": "local-effort-app/backend/api/brain/localBudgetSync.js:69,137,210" },
+        { "severity": "High", "state": "Security control", "component": "Square OAuth and repository history", "finding": "OAuth state is generated but not persistently verified; callback logging can include the authorization code. The remediation document also records an unverified credential-rotation/history-rewrite item.", "impact": "Authentication integrity and credential exposure risk require immediate verification without printing secrets.", "reference": "src/app/api/square/connect/route.ts:12; callback/route.ts:27; docs/security-remediation.md" }
+      ],
+      "remediation_plan": [
+        { "phase": "0 — Preserve", "priority": "P0", "action": "Label statements management draft; snapshot raw data, provider exports, documents, Gmail discovery pointers, and current reports; stop historical destructive cleanup.", "acceptance_gate": "Versioned evidence packet exists before any reclassification.", "owner": "Treasurer/controller" },
+        { "phase": "0 — Secure", "priority": "P0", "action": "Verify credentials, Square OAuth state validation, private receipt storage, and sensitive repository-history remediation without exposing secret values.", "acceptance_gate": "Independent security checklist closed; evidence objects are private and content-hashed.", "owner": "Engineering owner" },
+        { "phase": "1 — Separate", "priority": "P0", "action": "Create Weston, Catherine, and Local Effort legal-entity/member dimensions; assign every account and wallet; require custody, payer/incurred-by, and same-owner validation.", "acceptance_gate": "No active unassigned accounts; all post-policy PERSONAL items attributed.", "owner": "Owners + accountant" },
+        { "phase": "1 — Accounting spine", "priority": "P0/P1", "action": "Add immutable source identities, normalized economic events, balanced journal lines, account roles, reversible corrections, and period locks behind compatibility views.", "acceptance_gate": "Trial balance balances; closed-period mutations fail; source-to-journal lineage is complete.", "owner": "Engineering + controller" },
+        { "phase": "2 — Square/debt", "priority": "P0", "action": "Create Square clearing and loan liability; reconcile sales, tax/tips, payouts, fees, refunds, Capital payments, deposits, and lender reports exactly once.", "acceptance_gate": "All $7,115.09 partial value is resolved or documented timing; loan roll-forward matches lender statement.", "owner": "Controller" },
+        { "phase": "2 — Personal custody", "priority": "P0", "action": "Route post-policy personal benefits and personal-paid business costs through member-specific due-from/due-to until repayment or authorized reclassification.", "acceptance_gate": "Every item has a member, evidence trail, approval state, and zero unexplained aging.", "owner": "Board + CPA/counsel" },
+        { "phase": "3 — History/channels", "priority": "P1", "action": "Reconstruct Stripe from inception through final activity and reconcile Zelle/Venmo business receipts held in personal custody without duplicating bank/provider events.", "acceptance_gate": "Processor and wallet roll-forwards tie to statements and destination bank accounts.", "owner": "Engineering + controller" },
+        { "phase": "4 — Evidence/margin", "priority": "P1", "action": "Recover receipts/invoices, retain originals privately, link to stable transactions, allocate line items, and build vendor/item/inventory economics.", "acceptance_gate": "Material evidence exceptions are zero or formally approved; line allocations reconcile to source totals.", "owner": "Bookkeeper + owners" },
+        { "phase": "5 — Prove", "priority": "P1", "action": "Move Local Effort off direct database reads; run two independent monthly closes, archive packets, reproduce statements, and obtain external accountant review.", "acceptance_gate": "All readiness gates pass for two consecutive periods with no duplicate postings.", "owner": "Controller + external CPA" }
+      ]
+    },
+    "accessIssues": [
+      { "id": "bank_statements_unavailable", "scope": "balance-sheet reconciliation", "message": "Complete bank/card statements and reconciliation reports were not available in the repository review." },
+      { "id": "loan_agreement_unavailable", "scope": "Square loan", "message": "The executed Square loan agreement, lender opening balance, fixed fee, and current statement were not available." },
+      { "id": "entity_documents_unavailable", "scope": "cooperative governance", "message": "Articles, bylaws, Minnesota statutory chapter, tax election, resolutions, and prior returns were not verified." },
+      { "id": "member_mapping_unavailable", "scope": "related parties", "message": "The generic Personal entity and account list do not identify which accounts or benefits belong to the user versus the wife." },
+      { "id": "stripe_history_unavailable", "scope": "historical revenue completeness", "message": "The 2023 opening period and legacy Stripe balance-transaction, fee, refund, dispute, payout, 1099-K, and destination-bank evidence were not available." }
+    ]
+  },
+  "sources": [
+    {
+      "id": "reviewed_snapshot_sql",
+      "label": "Reviewed portable report snapshot",
+      "path": "reports/investor-readiness-review-2026-08-22.sql"
+    },
+    {
+      "id": "live_audit",
+      "label": "Read-only aggregate database audit",
+      "path": "scripts/audit-investor-readiness.ts"
+    },
+    {
+      "id": "venmo_audit",
+      "label": "Read-only Venmo duplicate and revenue audit",
+      "path": "scripts/audit-venmo-revenue.ts"
+    },
+    {
+      "id": "drift_analysis",
+      "label": "P&L version comparison",
+      "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+    },
+    {
+      "id": "repo_review",
+      "label": "Local Budget and local-effort-app code review",
+      "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+    },
+    {
+      "id": "review_recommendations",
+      "label": "Investor-readiness control design",
+      "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+    },
+    {
+      "id": "followup_evidence",
+      "label": "Follow-up receipt, Gmail, channel, and company-record review",
+      "path": "reports/investor-readiness-review-2026-08-22-workpaper.md"
+    }
+  ],
+  "package_info": {
+    "originUrl": "artifact://local-budget-investor-readiness-2026-08-22",
+    "controls": { "edit": false, "refresh": false }
+  }
+}

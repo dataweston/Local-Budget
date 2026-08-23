@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { storeReceiptFile } from '@/lib/receipt-storage';
+import { receiptContentHash, storeReceiptFile } from '@/lib/receipt-storage';
 import { runReceiptOcr } from '@/lib/receipt-processing';
 
 export async function POST(request: NextRequest) {
@@ -47,6 +47,22 @@ export async function POST(request: NextRequest) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
+    const contentHash = receiptContentHash(buffer);
+    const duplicate = await db.receipt.findFirst({
+      where: { userId: session.user.id, contentHash },
+      select: { id: true, status: true, deletedAt: true },
+    });
+    if (duplicate) {
+      return NextResponse.json(
+        {
+          error: 'This evidence file has already been ingested',
+          duplicateReceiptId: duplicate.id,
+          status: duplicate.status,
+          retired: Boolean(duplicate.deletedAt),
+        },
+        { status: 409 }
+      );
+    }
     const stored = await storeReceiptFile({
       userId: session.user.id,
       originalName: file.name,
@@ -63,6 +79,7 @@ export async function POST(request: NextRequest) {
         fileType: stored.fileType,
         filePath: stored.filePath,
         fileSize: stored.fileSize,
+        contentHash: stored.contentHash,
         source: 'upload',
         status: 'PROCESSING',
         extractedData: {
