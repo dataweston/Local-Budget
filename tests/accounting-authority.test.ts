@@ -20,11 +20,15 @@ describe('owner-confirmed accounting authority', () => {
     const square = findAccountAuthority('Square');
     const localPizza = findAccountAuthority('Local Pizza');
     const venmo = findAccountAuthority('Venmo Wallet');
+    const stripe = findAccountAuthority('Stripe');
 
     expect(square?.canonicalAccountKey).toBe('square-processor-weston');
     expect(localPizza?.canonicalAccountKey).toBe('local-pizza-bank-weston');
     expect(square?.legalOwners).toEqual(['WESTON']);
     expect(localPizza?.legalOwners).toEqual(square?.legalOwners);
+    expect(stripe?.canonicalAccountKey).toBe('stripe-processor-weston');
+    expect(stripe?.legalOwners).toEqual(['WESTON']);
+    expect(stripe?.economicScope).toBe('REVIEW_REQUIRED');
     expect(square?.economicScope).toBe('LOCAL_EFFORT');
     expect(localPizza?.economicScope).toBe('LOCAL_EFFORT');
     expect(venmo?.legalOwners).toEqual(['CATHERINE']);
@@ -43,6 +47,6 @@ describe('owner-confirmed accounting authority', () => {
     const reviewRules = ACCOUNT_AUTHORITY_RULES.filter(
       (rule) => rule.economicScope === 'REVIEW_REQUIRED'
     );
-    expect(reviewRules.length).toBe(5);
+    expect(reviewRules.length).toBe(6);
   });
 });

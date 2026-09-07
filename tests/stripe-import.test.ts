@@ -20,6 +20,21 @@ describe('Stripe balance-history import', () => {
     expect(row.payloadHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('accepts the Amount header from Stripe balance-history exports', () => {
+    const csv = [
+      'id,Type,Source,Amount,Fee,Net,Currency,Created (UTC),Available On (UTC),Description',
+      'txn_1,payment,ch_1,100.00,3.20,96.80,usd,2023-05-01 12:00,2023-05-03 00:00,Order',
+    ].join('\n');
+    const [row] = parseStripeBalanceCsv(csv);
+    expect(row).toMatchObject({
+      grossCents: 10000,
+      feeCents: 320,
+      netCents: 9680,
+      arithmeticOk: true,
+      reportingCategory: 'payment',
+    });
+  });
+
   it('rejects customer aggregates that are not a balance ledger', () => {
     const customerAggregate = 'customer_id,email,total_spend,payment_count\ncus_1,a@example.com,100,2';
     expect(() => parseStripeBalanceCsv(customerAggregate)).toThrow(StripeImportError);

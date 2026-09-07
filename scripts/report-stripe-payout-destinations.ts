@@ -124,7 +124,7 @@ async function buildReport(): Promise<string> {
 
   const transactionDates = matchedAccountIds.size
     ? await db.transaction.findMany({
-        where: { accountId: { in: [...matchedAccountIds] } },
+        where: { accountId: { in: Array.from(matchedAccountIds) } },
         select: { accountId: true, date: true },
         orderBy: [{ accountId: 'asc' }, { date: 'asc' }],
       })
@@ -233,8 +233,8 @@ async function buildReport(): Promise<string> {
     .reduce((total, row) => total + toCents(row.settlement.amount), 0);
   const beforeUnmatched = prepared.filter((row) => !row.hasCashBridge).length;
   const afterUnmatched = beforeUnmatched;
-  const sofiMonths = [...(destinationMonths.get('6183') || [])].sort();
-  const cardMonths = [...(destinationMonths.get('0041') || [])].sort();
+  const sofiMonths = Array.from(destinationMonths.get('6183') ?? new Set<string>()).sort();
+  const cardMonths = Array.from(destinationMonths.get('0041') ?? new Set<string>()).sort();
 
   const lines = [
     '# Stripe payout destination-leg reconciliation — 2026-09-06',

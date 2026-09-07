@@ -88,7 +88,7 @@ export function parseStripeBalanceCsv(text: string): StripeBalanceRow[] {
     created: findColumn(headers, ['created utc', 'created', 'created date utc']),
     available: findColumn(headers, ['available on utc', 'available on', 'available date utc'], false),
     currency: findColumn(headers, ['currency']),
-    gross: findColumn(headers, ['gross']),
+    gross: findColumn(headers, ['gross', 'amount']),
     fee: findColumn(headers, ['fee']),
     net: findColumn(headers, ['net']),
     category: findColumn(headers, ['reporting category', 'type'], false),

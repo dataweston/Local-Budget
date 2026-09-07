@@ -25,15 +25,17 @@ All documents and memories are treated as hypotheses. Current owner statements c
 - Local Budget has 289 posted Amazon-text transactions totaling $8,101.17 from January 16, 2024 through August 19, 2026. Eleven carry an Amazon order-match candidate; 278 do not.
 - Local Budget has 515 posted Eastside-text transactions totaling $25,840.49 from January 11, 2024 through August 17, 2026.
 - Local Budget has 170 posted Zelle income rows totaling $40,855.25. Their account entity is populated, but payer, business purpose, and personal-custody treatment still require transaction-level evidence.
-- No current Local Budget row contains a Stripe identifier or descriptor. Current database history starts January 11, 2024.
+- Local Budget's legacy `Transaction` rows still contain no Stripe identifier or descriptor, but production now contains 224 immutable Stripe `SourceEvent` rows under `acct_1NxcXbAMgX7ghwAp`. Weston Smith is the owner-confirmed legal owner of the processor account.
+- The Stripe balance history covers January 12, 2024 through March 4, 2025 with zero arithmetic exceptions. The first import created 224 source events and an immediate replay created zero. The owner-confirmed $25,000 personal loan is excluded from operating revenue.
+- The Stripe customer aggregate contains 35 customers and 69 payments. Its $36,232.60 Total Spend reconciles to $41,117.60 of charge rows less $2,885.00 Refunded Volume and $2,000.00 Dispute Losses. It supports attribution, not ledger posting.
 - The Venmo audit found no current P&L double count. Of 181 wallet rows expected to have a bank counterpart, 175 are linked and six P&L-neutral exceptions remain.
 - The Brain has 43 historical `extraction.receipts` events, but the newer Gmail vendor-document job has produced zero document events. Its sixteen windows have processed zero messages; one has been stuck in `running` since July 13, 2026 and fifteen remain pending.
 - A bounded Gmail discovery check found at least 100 broad receipt/invoice candidates, at least 100 Square candidates, at least 100 Venmo candidates, 29 Eastside candidates, and 19 Amazon candidates since January 1, 2023. These are search hits, not validated documents or coverage percentages.
 
 ### What remains hypothetical or conflicted
 
-- The owner currently states that the business started in 2023. Capital Master Record v2.3 says it was operating since 2022. The cleanup start date must be established from formation documents, tax returns, first sales, first bank activity, and legacy Stripe records; 2022 may represent predecessor activity.
-- The Minnesota Secretary of State Certificate of Organization establishes that Local Effort was formed/registered under Chapter 308B on April 21, 2026 (file 1644146400023). Activity before that date remains a predecessor/cutover question rather than a formation-date ambiguity.
+- The owner reports first use of the `Local Effort` brand in September 2022 for private-chef services sold as an individual contractor. The Delaware certificate establishes Local Effort, Inc. on April 10, 2024. The Minnesota certificate establishes Local Effort Cooperative on April 21, 2026. These facts establish brand history and three possible legal-operator periods; they do not establish a statutory continuation or the exact accounting cutovers.
+- No reviewed record shows a filed merger or conversion, asset transfer, liability assumption, or dissolution between the Delaware corporation and Minnesota cooperative. Until counsel and the CPA establish continuity, treat pre-cooperative activity as candidate predecessor activity and retain each transaction's actual legal operator and tax owner.
 - Capital Master Record v2.3 describes a Minnesota Chapter 308B cooperative taxed as a partnership and an accepted ownership schedule of Catherine 56.5%, Weston 36.5%, Sarah Olsen 5%, and Renee Owens 2%. Older Brain records contain different founder percentages and compensation. Executed member, transfer, voting, and tax documents—not the graph—must establish the legal record.
 - The current owner policy is $45,000 annual compensation for each founder effective April 1, 2026, with qualifying business-paid personal expenses intended to offset deferred compensation. `PERSONAL` rows are only candidates until they name the member, document the benefit, and receive the approved accounting and governance treatment.
 - The Square Capital advance is described as $2,110 with repayment near 11% of gross card sales. The executed agreement, fixed fee, payoff balance, and complete repayment schedule remain required.
@@ -124,7 +126,7 @@ Transfer matching remains proposal-only unless stable statement identities or ex
 
 ### Legacy Stripe
 
-Create a date-bounded legacy Stripe connection and clearing subledger. Import charges, refunds, disputes, fees, and payouts from the first business activity through final Stripe activity, scoped by Stripe account ID. Tie each payout to its destination-bank deposit and reconcile the 1099-K gross bridge. Unexplained amounts remain dated suspense, not forced revenue or equity.
+The legacy Stripe processor account and source namespace now exist in production. The validated 224-row balance history is imported; 59 payout settlements and 119 component entries are recorded; and the isolated $25,000 payment is classified as Weston's personal loan rather than revenue. Twenty-eight payout/component bridges reconcile internally, while 31 remain component exceptions and all 59 lack destination bank/card matches. Obtain 2024 SoFi 6183 history, the card-0041 ledger, 1099-Ks, and readable filed returns before posting historical journals. Unexplained amounts remain dated suspense, not forced revenue or equity.
 
 ## Remediation sequence
 
@@ -176,10 +178,10 @@ Acceptance gate: no business revenue is duplicated when personal custody clears;
 
 ### Tranche 5 — historical completeness and Stripe (P1)
 
-1. Establish whether the accounting perimeter begins in 2022 or 2023 and whether predecessor activity belongs in the business record.
-2. Import legacy Stripe balance transactions and payouts.
-3. Load all bank/card statements and prior filed returns for the historical perimeter.
-4. Produce annual cash, processor, revenue, fee, refund, tax, and 1099-K bridges.
+1. In progress: establish the legal operator and tax owner transaction by transaction across the September 2022 individual-contractor history and the candidate post-April 10, 2024 corporation and post-April 21, 2026 cooperative periods.
+2. Completed September 3: import 224 balance-history source events under `acct_1NxcXbAMgX7ghwAp`; owner confirmed Weston Smith as account owner.
+3. Partially completed: record 59 payouts and 119 processor components. Still obtain 2024 SoFi 6183 history, card-0041 records, prior filed returns, and Stripe 1099-Ks.
+4. Partially completed: the customer/charge bridge reconciles exactly and the $25,000 personal loan is excluded from revenue; tax and destination-cash bridges remain open.
 
 Acceptance gate: each historical month closes to provider and bank statements; every opening/cutoff exception is documented.
 

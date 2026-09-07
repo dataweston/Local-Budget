@@ -7,7 +7,7 @@
  * account without becoming the founder's revenue or expense.
  */
 
-export const ACCOUNTING_AUTHORITY_VERSION = '2026-08-23.v1' as const;
+export const ACCOUNTING_AUTHORITY_VERSION = '2026-09-03.v2' as const;
 
 export type AuthorityActor = 'WESTON' | 'CATHERINE' | 'LOCAL_EFFORT';
 
@@ -31,6 +31,16 @@ export const ACCOUNT_AUTHORITY_RULES: readonly AccountAuthorityRule[] = [
     economicScope: 'LOCAL_EFFORT',
     note:
       'Square is the Weston-held processor ledger for Local Effort activity. It records gross processor facts, not bank cash.',
+  },
+  {
+    canonicalAccountKey: 'stripe-processor-weston',
+    accountNames: ['Stripe'],
+    legalOwners: ['WESTON'],
+    custodyRole: 'PROCESSOR',
+    economicScope: 'REVIEW_REQUIRED',
+    note:
+      'Owner confirms Stripe account acct_1NxcXbAMgX7ghwAp belongs to Weston. ' +
+      'Preserve processor facts while attributing each receipt to revenue, personal financing, or another economic owner from source evidence.',
   },
   {
     canonicalAccountKey: 'local-pizza-bank-weston',
